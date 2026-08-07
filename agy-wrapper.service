@@ -10,7 +10,7 @@ Restart=on-failure
 RestartSec=5
 
 # Environment variables
-Environment="AGY_API_KEY=sk-dummy"
+EnvironmentFile=/home/truong/agy2api/.env
 Environment="PATH=/home/truong/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 [Install]

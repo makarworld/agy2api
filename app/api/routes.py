@@ -128,3 +128,20 @@ async def generate_image(req: ImageGenerationRequest, background_tasks: Backgrou
         data=[img_data]
     )
 
+import subprocess
+
+@router.get("/logs")
+async def get_logs(lines: int = 100, api_key: str = Depends(get_api_key)):
+    try:
+        result = subprocess.run(
+            ["journalctl", "-u", "agy-wrapper.service", "-n", str(lines), "--no-pager"],
+            capture_output=True,
+            text=True
+        )
+        if result.returncode == 0:
+            return {"logs": result.stdout}
+        else:
+            return {"logs": f"Failed to read logs (code {result.returncode}): {result.stderr}"}
+    except Exception as e:
+        return {"logs": f"Error reading logs: {str(e)}"}
+
