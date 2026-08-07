@@ -11,18 +11,16 @@ from app.core.file_handler import TempFileManager
 router = APIRouter()
 
 class ImageGenerationRequest(BaseModel):
-    prompt: str = Field(..., description="A text description of the desired image(s)")
+    prompt: str = Field(..., description="A text description of the desired image(s). (Tips: You can include desired aspect ratios here like 9:16 or 16:9)")
     n: Optional[int] = Field(1, description="The number of images to generate")
-    size: Optional[str] = Field(None, description="The size of the generated images")
     response_format: Optional[str] = Field("url", description="The format in which the generated images are returned. Must be one of url or b64_json")
 
     model_config = {
         "json_schema_extra": {
             "examples": [
                 {
-                    "prompt": "A cute orange cat playing with a ball of yarn, cartoon style",
+                    "prompt": "A cute orange cat playing with a ball of yarn, cartoon style, tỉ lệ 9:16",
                     "n": 1,
-                    "size": "1024x1024",
                     "response_format": "url"
                 }
             ]

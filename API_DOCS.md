@@ -112,7 +112,6 @@ Tạo hình ảnh AI dựa trên prompt văn bản (Text-to-Image). Hệ thống
 {
   "prompt": "A cute orange cat playing with a ball of yarn, cartoon style",
   "n": 1,
-  "size": "1024x1024",
   "response_format": "url"
 }
 ```
