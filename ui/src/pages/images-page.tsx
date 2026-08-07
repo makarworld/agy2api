@@ -88,8 +88,8 @@ export function ImagesPage() {
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mt-8">
           {images.map((img, i) => (
-            <div key={i} className="border rounded-2xl overflow-hidden bg-card shadow-sm group relative aspect-square">
-              <img src={img} alt="Generated" className="w-full h-full object-cover" />
+            <div key={i} className="border rounded-2xl overflow-hidden bg-card shadow-sm group relative flex justify-center bg-black/5">
+              <img src={img} alt="Generated" className="w-full h-auto object-contain" />
             </div>
           ))}
           {images.length === 0 && !isLoading && !error && (
