@@ -32,7 +32,6 @@ export function ImagesPage() {
         body: JSON.stringify({
           prompt: prompt,
           n: 1,
-          size: "1024x1024",
           response_format: "url"
         })
       });

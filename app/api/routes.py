@@ -2,7 +2,7 @@ import time
 import uuid
 from typing import List, Optional
 from fastapi import APIRouter, Depends, Request, BackgroundTasks
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from app.api.models import ChatCompletionRequest, ChatCompletionResponse, Choice, ChoiceMessage, Usage, ModelList, Model
 from app.core.security import get_api_key
 from app.core.agy_runner import run_agy_prompt
@@ -11,10 +11,23 @@ from app.core.file_handler import TempFileManager
 router = APIRouter()
 
 class ImageGenerationRequest(BaseModel):
-    prompt: str
-    n: Optional[int] = 1
-    size: Optional[str] = "1024x1024"
-    response_format: Optional[str] = "url"
+    prompt: str = Field(..., description="A text description of the desired image(s)")
+    n: Optional[int] = Field(1, description="The number of images to generate")
+    size: Optional[str] = Field(None, description="The size of the generated images")
+    response_format: Optional[str] = Field("url", description="The format in which the generated images are returned. Must be one of url or b64_json")
+
+    model_config = {
+        "json_schema_extra": {
+            "examples": [
+                {
+                    "prompt": "A cute orange cat playing with a ball of yarn, cartoon style",
+                    "n": 1,
+                    "size": "1024x1024",
+                    "response_format": "url"
+                }
+            ]
+        }
+    }
 
 class ImageObject(BaseModel):
     url: Optional[str] = None
@@ -24,7 +37,7 @@ class ImageGenerationResponse(BaseModel):
     created: int
     data: List[ImageObject]
 
-@router.get("/models", response_model=ModelList)
+@router.get("/models", response_model=ModelList, summary="List Models", description="Returns a list of available AI models.")
 async def list_models(api_key: str = Depends(get_api_key)):
     models = [
         Model(id="Gemini 3.6 Flash (High)", created=int(time.time())),
@@ -32,7 +45,7 @@ async def list_models(api_key: str = Depends(get_api_key)):
     ]
     return ModelList(data=models)
 
-@router.post("/chat/completions", response_model=ChatCompletionResponse)
+@router.post("/chat/completions", response_model=ChatCompletionResponse, summary="Chat Completions", description="Creates a model response for the given chat conversation. Supports multimodal inputs via base64 data URIs.")
 async def chat_completions(req: ChatCompletionRequest, background_tasks: BackgroundTasks, api_key: str = Depends(get_api_key)):
     file_mgr = TempFileManager()
     background_tasks.add_task(file_mgr.cleanup)
@@ -87,7 +100,7 @@ async def chat_completions(req: ChatCompletionRequest, background_tasks: Backgro
     )
     return response
 
-@router.post("/images/generations", response_model=ImageGenerationResponse)
+@router.post("/images/generations", response_model=ImageGenerationResponse, summary="Image Generations", description="Creates an image given a prompt using the AGY artist skills.")
 async def generate_image(req: ImageGenerationRequest, background_tasks: BackgroundTasks, api_key: str = Depends(get_api_key)):
     # We instruct AGY to generate an image and return the path/base64 in JSON format
     prompt = f"Generate an image for the following prompt: '{req.prompt}'. Return ONLY the absolute local file path of the generated image in your response, do not include any other conversational text."
@@ -130,7 +143,7 @@ async def generate_image(req: ImageGenerationRequest, background_tasks: Backgrou
 
 import subprocess
 
-@router.get("/logs")
+@router.get("/logs", summary="Get System Logs", description="Read the latest system logs of the AGY Wrapper service.")
 async def get_logs(lines: int = 100, api_key: str = Depends(get_api_key)):
     try:
         result = subprocess.run(
