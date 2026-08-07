@@ -1,0 +1,17 @@
+[Unit]
+Description=AGY OpenAI API Wrapper Service
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/truong/agy2api
+ExecStart=/home/truong/agy2api/.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000
+Restart=on-failure
+RestartSec=5
+
+# Environment variables
+Environment="AGY_API_KEY=sk-dummy"
+Environment="PATH=/home/truong/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+[Install]
+WantedBy=default.target
