@@ -1,18 +1,19 @@
-# API Documentation
+# AGY2API - API Documentation
 
 This project provides an OpenAI-compatible REST API wrapper for the Google Antigravity (AGY) CLI.
 
-Base URL: `http://localhost:8000`
+Base URL: `http://localhost:8000` (hoặc domain của bạn)
 
 ## Authentication
-All endpoints require a Bearer token in the `Authorization` header.
+Tất cả các endpoint (ngoại trừ `/health`) đều yêu cầu token Bearer trong header `Authorization`.
 - **Header:** `Authorization: Bearer <AGY_API_KEY>`
-- **Example:** `Authorization: Bearer sk-dummy`
+- **Ví dụ:** `Authorization: Bearer sk-agy-secret-123`
+*(Bạn cấu hình key này trong file `.env`)*
 
 ---
 
 ## 1. List Models
-Returns a list of available models. Currently returns hardcoded Gemini models.
+Lấy danh sách các AI model đang được hỗ trợ. Hiện tại mặc định trả về Gemini 3.6 Flash và Gemini 3.1 Pro.
 
 **Endpoint:** `GET /v1/models`
 
@@ -26,12 +27,6 @@ Returns a list of available models. Currently returns hardcoded Gemini models.
       "object": "model",
       "created": 1786102824,
       "owned_by": "google"
-    },
-    {
-      "id": "Gemini 3.1 Pro (High)",
-      "object": "model",
-      "created": 1786102824,
-      "owned_by": "google"
     }
   ]
 }
@@ -39,23 +34,49 @@ Returns a list of available models. Currently returns hardcoded Gemini models.
 
 ---
 
-## 2. Chat Completions
-Creates a model response for the given chat conversation. Supports text and images (via base64 data URIs).
+## 2. Chat Completions (Hỗ trợ Đa phương thức - Multimodal)
+Gửi yêu cầu chat hoặc yêu cầu phân tích file/hình ảnh đến mô hình. Tương thích chuẩn OpenAI Chat API.
 
 **Endpoint:** `POST /v1/chat/completions`
 
-**Request Body Example:**
+### Trường hợp 1: Chat Text bình thường
+**Request Body:**
 ```json
 {
   "model": "Gemini 3.6 Flash (High)",
   "messages": [
     {
       "role": "user",
-      "content": "Hello! What is your name?"
+      "content": "Viết cho tôi một hàm Python tính Fibonacci"
     }
-  ],
-  "temperature": 1.0,
-  "stream": false
+  ]
+}
+```
+
+### Trường hợp 2: Gửi File/Hình ảnh (Test đa phương thức)
+Để cho model phân tích ảnh hoặc file, bạn có thể truyền nội dung file dưới dạng `Base64 Data URI` trong mảng `content`, tương tự cách OpenAI Vision API hoạt động.
+
+**Request Body:**
+```json
+{
+  "model": "Gemini 3.6 Flash (High)",
+  "messages": [
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "text",
+          "text": "Trong bức ảnh này có những gì?"
+        },
+        {
+          "type": "image_url",
+          "image_url": {
+            "url": "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEASABIAAD..."
+          }
+        }
+      ]
+    }
+  ]
 }
 ```
 
@@ -71,35 +92,31 @@ Creates a model response for the given chat conversation. Supports text and imag
       "index": 0,
       "message": {
         "role": "assistant",
-        "content": "Hello! How can I help you with your coding or project today?"
+        "content": "Đây là một bức ảnh về một chú mèo cam đang chơi cuộn len..."
       },
       "finish_reason": "stop"
     }
-  ],
-  "usage": {
-    "prompt_tokens": 0,
-    "completion_tokens": 0,
-    "total_tokens": 0
-  }
+  ]
 }
 ```
 
 ---
 
 ## 3. Image Generations
-Creates an image given a prompt. It runs the AGY artist skills in the background.
+Tạo hình ảnh AI dựa trên prompt văn bản (Text-to-Image). Hệ thống sẽ chạy lệnh gọi tính năng Artist của AGY ở background.
 
 **Endpoint:** `POST /v1/images/generations`
 
 **Request Body Example:**
 ```json
 {
-  "prompt": "A cute orange cat playing with a ball of yarn",
+  "prompt": "A cute orange cat playing with a ball of yarn, cartoon style",
   "n": 1,
   "size": "1024x1024",
   "response_format": "url"
 }
 ```
+*(Ghi chú: Nếu bạn để `response_format` là `b64_json`, API sẽ trả về dữ liệu hình ảnh dạng Base64 thuần túy. Nếu để `url`, API sẽ tự bọc nó dưới dạng Data URI `data:image/png;base64,...` để tương thích frontend).*
 
 **Response Example:**
 ```json
@@ -107,7 +124,7 @@ Creates an image given a prompt. It runs the AGY artist skills in the background
   "created": 1786102966,
   "data": [
     {
-      "url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+      "url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAA...",
       "b64_json": null
     }
   ]
@@ -116,10 +133,24 @@ Creates an image given a prompt. It runs the AGY artist skills in the background
 
 ---
 
-## 4. Health Check
-Endpoint to check if the server is running.
+## 4. Get System Logs
+Đọc nội dung log mới nhất của hệ thống AGY Wrapper (chỉ khả dụng nếu bạn chạy backend bằng systemd). Rất hữu ích để debug hoặc theo dõi frontend.
 
-**Endpoint:** `GET /health`
+**Endpoint:** `GET /v1/logs?lines=100`
+
+**Response Example:**
+```json
+{
+  "logs": "Aug 07 20:45:53 clawbot uvicorn[805378]: INFO: Application startup complete.\n..."
+}
+```
+
+---
+
+## 5. Health Check
+Endpoint dùng để kiểm tra uptime của backend.
+
+**Endpoint:** `GET /health` (Không yêu cầu API Key)
 
 **Response Example:**
 ```json
@@ -130,4 +161,4 @@ Endpoint to check if the server is running.
 ```
 
 ---
-*Note: Because this API is built using FastAPI, interactive Swagger UI documentation is automatically generated and accessible at `http://localhost:8000/docs`.*
+*Mẹo: API được xây dựng bằng FastAPI, nên bạn cũng có thể mở trực tiếp **`http://localhost:8000/docs`** trên trình duyệt để xem giao diện Swagger UI tương tác trực tiếp.*
