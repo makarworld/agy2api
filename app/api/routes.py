@@ -88,10 +88,8 @@ async def chat_completions(req: ChatCompletionRequest, background_tasks: Backgro
     return response
 
 @router.post("/images/generations", response_model=ImageGenerationResponse)
-async def generate_image(req: ImageGenerationRequest, api_key: str = Depends(get_api_key)):
+async def generate_image(req: ImageGenerationRequest, background_tasks: BackgroundTasks, api_key: str = Depends(get_api_key)):
     # We instruct AGY to generate an image and return the path/base64 in JSON format
-    # Usually this invokes a skill like `ak:ai-artist` or similar.
-    # We will formulate a strict prompt to agy.
     prompt = f"Generate an image for the following prompt: '{req.prompt}'. Return ONLY the absolute local file path of the generated image in your response, do not include any other conversational text."
     
     agy_response = await run_agy_prompt(prompt=prompt, output_format="json")
@@ -103,10 +101,8 @@ async def generate_image(req: ImageGenerationRequest, api_key: str = Depends(get
     else:
         image_path = str(agy_response)
         
-    # Since we can't easily return local paths if the client is remote, we can base64 encode it
-    # If the file exists locally, we read it
     image_path = image_path.strip()
-    img_data = ImageObject(url=image_path) # Default to just giving the path as URL
+    img_data = ImageObject(url=image_path)
     
     import os
     if os.path.exists(image_path) and os.path.isfile(image_path):
@@ -116,8 +112,16 @@ async def generate_image(req: ImageGenerationRequest, api_key: str = Depends(get
             if req.response_format == "b64_json":
                 img_data = ImageObject(b64_json=b64)
             else:
-                # We could host it, but for simplicity we can return data uri in url
                 img_data = ImageObject(url=f"data:image/png;base64,{b64}")
+                
+        # Schedule cleanup of the generated image file after returning the response
+        def remove_file(path):
+            try:
+                os.remove(path)
+            except Exception:
+                pass
+        
+        background_tasks.add_task(remove_file, image_path)
 
     return ImageGenerationResponse(
         created=int(time.time()),
