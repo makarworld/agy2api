@@ -80,8 +80,20 @@ class ModelList(BaseModel):
     data: List[Model]
 
 class SpeechRequest(BaseModel):
-    model: str = Field(..., description="ID of the model to use, e.g. 'tts-1'")
-    input: str = Field(..., description="The text to generate audio for")
-    voice: str = Field("alloy", description="The voice to use for audio generation")
-    response_format: Optional[str] = Field("mp3", description="The format to return the audio in")
-    speed: Optional[float] = Field(1.0, description="The speed of the generated audio")
+    model: str = Field(..., description="ID của model (vd: 'tts-1', 'tts-1-hd')")
+    input: str = Field(..., description="Đoạn văn bản cần chuyển thành giọng nói.")
+    voice: str = Field("alloy", description="Giọng đọc cần sử dụng. (vd: 'alloy', 'BV074_streaming')")
+    response_format: Optional[str] = Field("mp3", description="Định dạng trả về. Mặc định là mp3.")
+    speed: Optional[float] = Field(1.0, description="Tốc độ đọc (0.25 đến 4.0). Mặc định là 1.0.")
+
+    model_config = {
+        "json_schema_extra": {
+            "example": {
+                "model": "tts-1",
+                "input": "Xin chào thế giới!",
+                "voice": "alloy",
+                "response_format": "mp3",
+                "speed": 1.0
+            }
+        }
+    }

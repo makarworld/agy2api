@@ -160,7 +160,18 @@ async def get_logs(lines: int = 100, api_key: str = Depends(get_api_key)):
     except Exception as e:
         return {"logs": f"Error reading logs: {str(e)}"}
 
-@router.post("/audio/speech", summary="Text to Speech", description="Generates audio from the input text.")
+@router.post(
+    "/audio/speech", 
+    summary="Text to Speech (Audio Generations)", 
+    description="Tạo tệp âm thanh từ văn bản dựa trên chuẩn OpenAI Audio API (engine CapCut).",
+    response_class=StreamingResponse,
+    responses={
+        200: {
+            "description": "Binary stream của file MP3 (audio/mpeg)",
+            "content": {"audio/mpeg": {}}
+        }
+    }
+)
 async def audio_speech(req: SpeechRequest, api_key: str = Depends(get_api_key)):
     try:
         audio_bytes = await capcut_wrapper.generate_speech(
@@ -172,7 +183,11 @@ async def audio_speech(req: SpeechRequest, api_key: str = Depends(get_api_key)):
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
 
-@router.get("/audio/voices", summary="List Voices", description="Returns a list of all available CapCut voices.")
+@router.get(
+    "/audio/voices", 
+    summary="List Voices", 
+    description="Lấy danh sách tất cả các giọng đọc (voices) khả dụng từ engine CapCut."
+)
 async def audio_voices(api_key: str = Depends(get_api_key)):
     try:
         voices = capcut_wrapper.get_voices()
@@ -180,13 +195,17 @@ async def audio_voices(api_key: str = Depends(get_api_key)):
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
 
-@router.post("/audio/transcriptions", summary="Speech to Text", description="Transcribes audio into the input language.")
+@router.post(
+    "/audio/transcriptions", 
+    summary="Speech to Text (Audio Transcriptions)", 
+    description="Chuyển đổi file âm thanh thành văn bản hoặc phụ đề thời gian chuẩn."
+)
 async def audio_transcriptions(
     background_tasks: BackgroundTasks,
-    file: UploadFile = File(...),
-    model: str = Form("whisper-1"),
-    language: str = Form("en-US"),
-    response_format: str = Form("json"),
+    file: UploadFile = File(..., description="Tệp âm thanh cần upload (mp3, mp4, wav, v.v...)"),
+    model: str = Form("whisper-1", description="ID của mô hình (vd: whisper-1)"),
+    language: str = Form(None, description="Mã ngôn ngữ (vd: en-US, vi-VN). Bỏ trống để tự nhận diện."),
+    response_format: str = Form("json", description="Định dạng trả về (json, text, srt, vtt)"),
     api_key: str = Depends(get_api_key)
 ):
     try:
