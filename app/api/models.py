@@ -78,3 +78,10 @@ class Model(BaseModel):
 class ModelList(BaseModel):
     object: str = "list"
     data: List[Model]
+
+class SpeechRequest(BaseModel):
+    model: str = Field(..., description="ID of the model to use, e.g. 'tts-1'")
+    input: str = Field(..., description="The text to generate audio for")
+    voice: str = Field("alloy", description="The voice to use for audio generation")
+    response_format: Optional[str] = Field("mp3", description="The format to return the audio in")
+    speed: Optional[float] = Field(1.0, description="The speed of the generated audio")

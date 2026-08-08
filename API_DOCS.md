@@ -132,7 +132,69 @@ Tạo hình ảnh AI dựa trên prompt văn bản (Text-to-Image). Hệ thống
 
 ---
 
-## 4. Get System Logs
+## 4. Text-to-Speech (Audio Generations)
+Tạo tệp âm thanh từ văn bản sử dụng chuẩn OpenAI (hiện tại hỗ trợ qua engine CapCut).
+
+**Endpoint:** `POST /v1/audio/speech`
+
+**Request Body Example:**
+```json
+{
+  "model": "tts-1",
+  "input": "Xin chào thế giới!",
+  "voice": "alloy",
+  "response_format": "mp3",
+  "speed": 1.0
+}
+```
+
+**Response:**
+Trả về một luồng (streaming) nội dung âm thanh nhị phân (`audio/mpeg`).
+
+---
+
+## 5. Speech-to-Text (Audio Transcriptions)
+Chuyển đổi file âm thanh thành văn bản / phụ đề.
+
+**Endpoint:** `POST /v1/audio/transcriptions` (Sử dụng `multipart/form-data`)
+
+**Request Parameters:**
+- `file`: Tệp âm thanh cần upload.
+- `model`: (Tuỳ chọn) Ví dụ: `whisper-1`.
+- `language`: (Tuỳ chọn) Ví dụ: `en-US`, `zh-CN`.
+- `response_format`: Định dạng trả về (`json`, `text`, `srt`, `vtt`).
+
+**Response Example (nếu response_format="json"):**
+```json
+{
+  "text": "Xin chào thế giới!"
+}
+```
+
+---
+
+## 6. List Voices
+Lấy danh sách tất cả các giọng đọc (voices) khả dụng từ CapCut để dùng cho `/v1/audio/speech`.
+
+**Endpoint:** `GET /v1/audio/voices`
+
+**Response Example:**
+```json
+{
+  "voices": [
+    {
+      "voice_type": "BV074_streaming",
+      "display_name": "Tiếng Anh (Mỹ)",
+      "resource_id": "...",
+      "lang": "en"
+    }
+  ]
+}
+```
+
+---
+
+## 7. Get System Logs
 Đọc nội dung log mới nhất của hệ thống AGY Wrapper (chỉ khả dụng nếu bạn chạy backend bằng systemd). Rất hữu ích để debug hoặc theo dõi frontend.
 
 **Endpoint:** `GET /v1/logs?lines=100`

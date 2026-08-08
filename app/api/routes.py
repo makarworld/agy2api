@@ -1,14 +1,18 @@
 import time
 import uuid
+import io
 from typing import List, Optional
-from fastapi import APIRouter, Depends, Request, BackgroundTasks
+from fastapi import APIRouter, Depends, Request, BackgroundTasks, UploadFile, File, Form
+from fastapi.responses import StreamingResponse, Response, JSONResponse
 from pydantic import BaseModel, Field
-from app.api.models import ChatCompletionRequest, ChatCompletionResponse, Choice, ChoiceMessage, Usage, ModelList, Model
+from app.api.models import ChatCompletionRequest, ChatCompletionResponse, Choice, ChoiceMessage, Usage, ModelList, Model, SpeechRequest
 from app.core.security import get_api_key
 from app.core.agy_runner import run_agy_prompt
 from app.core.file_handler import TempFileManager
+from app.core.capcut_api import AsyncCapCutWrapper
 
 router = APIRouter()
+capcut_wrapper = AsyncCapCutWrapper()
 
 class ImageGenerationRequest(BaseModel):
     prompt: str = Field(..., description="A text description of the desired image(s). (Tips: You can include desired aspect ratios here like 9:16 or 16:9)")
@@ -156,3 +160,55 @@ async def get_logs(lines: int = 100, api_key: str = Depends(get_api_key)):
     except Exception as e:
         return {"logs": f"Error reading logs: {str(e)}"}
 
+@router.post("/audio/speech", summary="Text to Speech", description="Generates audio from the input text.")
+async def audio_speech(req: SpeechRequest, api_key: str = Depends(get_api_key)):
+    try:
+        audio_bytes = await capcut_wrapper.generate_speech(
+            text=req.input,
+            voice=req.voice,
+            speed=req.speed
+        )
+        return StreamingResponse(io.BytesIO(audio_bytes), media_type="audio/mpeg")
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+@router.get("/audio/voices", summary="List Voices", description="Returns a list of all available CapCut voices.")
+async def audio_voices(api_key: str = Depends(get_api_key)):
+    try:
+        voices = capcut_wrapper.get_voices()
+        return JSONResponse(content={"voices": voices})
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+@router.post("/audio/transcriptions", summary="Speech to Text", description="Transcribes audio into the input language.")
+async def audio_transcriptions(
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+    model: str = Form("whisper-1"),
+    language: str = Form("en-US"),
+    response_format: str = Form("json"),
+    api_key: str = Depends(get_api_key)
+):
+    try:
+        file_mgr = TempFileManager()
+        background_tasks.add_task(file_mgr.cleanup)
+        
+        import os
+        ext = os.path.splitext(file.filename)[1] if file.filename else ".mp3"
+        temp_path = os.path.join(file_mgr.temp_dir.name, f"upload{ext}")
+        with open(temp_path, "wb") as f:
+            f.write(await file.read())
+            
+        transcription = await capcut_wrapper.transcribe_audio(
+            file_path=temp_path,
+            response_format=response_format,
+            language=language
+        )
+        
+        if response_format in ["json", "verbose_json"]:
+            import json
+            return JSONResponse(content=json.loads(transcription))
+        else:
+            return Response(content=transcription, media_type="text/plain")
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
