@@ -133,11 +133,22 @@ Tạo hình ảnh AI dựa trên prompt văn bản (Text-to-Image). Hệ thống
 ---
 
 ## 4. Text-to-Speech (Audio Generations)
-Tạo tệp âm thanh từ văn bản sử dụng chuẩn OpenAI (hiện tại hỗ trợ qua engine CapCut).
+Tạo tệp âm thanh từ văn bản dựa trên chuẩn OpenAI Audio API (sử dụng engine CapCut ở backend).
 
 **Endpoint:** `POST /v1/audio/speech`
+**Method:** `POST`
+**Content-Type:** `application/json`
 
-**Request Body Example:**
+**Request Parameters (JSON):**
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `model` | string | **Yes** | ID của model (vd: `tts-1`, `tts-1-hd`). |
+| `input` | string | **Yes** | Đoạn văn bản cần chuyển thành giọng nói. |
+| `voice` | string | **Yes** | Giọng đọc cần sử dụng. Hỗ trợ các giọng chuẩn của OpenAI (`alloy`, `echo`, `fable`, `onyx`, `nova`, `shimmer`) và các mã `voice_type` nội bộ của CapCut. Gọi `GET /v1/audio/voices` để lấy danh sách mã chính xác. |
+| `response_format` | string | No | Định dạng tệp âm thanh trả về. Mặc định là `mp3` (hệ thống hiện tại luôn trả về `mp3`). |
+| `speed` | float | No | Tốc độ đọc (0.25 đến 4.0). Mặc định là `1.0`. |
+
+**Request Example:**
 ```json
 {
   "model": "tts-1",
@@ -148,45 +159,63 @@ Tạo tệp âm thanh từ văn bản sử dụng chuẩn OpenAI (hiện tại h
 }
 ```
 
-**Response:**
-Trả về một luồng (streaming) nội dung âm thanh nhị phân (`audio/mpeg`).
+**Response (200 OK):**
+- **Content-Type:** `audio/mpeg`
+- **Body:** Binary stream của file MP3. API trả về dưới dạng luồng (`StreamingResponse`), có thể phát (play) ngay lập tức hoặc ghi ra tệp `.mp3`.
 
 ---
 
 ## 5. Speech-to-Text (Audio Transcriptions)
-Chuyển đổi file âm thanh thành văn bản / phụ đề.
+Chuyển đổi file âm thanh thành văn bản hoặc phụ đề thời gian chuẩn. Tương thích với OpenAI Transcriptions API.
 
-**Endpoint:** `POST /v1/audio/transcriptions` (Sử dụng `multipart/form-data`)
+**Endpoint:** `POST /v1/audio/transcriptions`
+**Method:** `POST`
+**Content-Type:** `multipart/form-data`
 
-**Request Parameters:**
-- `file`: Tệp âm thanh cần upload.
-- `model`: (Tuỳ chọn) Ví dụ: `whisper-1`.
-- `language`: (Tuỳ chọn) Ví dụ: `en-US`, `zh-CN`.
-- `response_format`: Định dạng trả về (`json`, `text`, `srt`, `vtt`).
+**Request Parameters (Form Data):**
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `file` | file | **Yes** | Tệp âm thanh cần upload (mp3, mp4, mpeg, mpga, m4a, wav, webm). |
+| `model` | string | **Yes** | ID của mô hình (vd: `whisper-1`). |
+| `language` | string | No | Mã ngôn ngữ theo chuẩn ISO-639-1 (vd: `en-US`, `vi-VN`). Nếu không truyền, hệ thống sẽ cố gắng tự động nhận diện. |
+| `response_format` | string | No | Định dạng đầu ra. Hỗ trợ: `json` (mặc định), `text`, `srt`, `vtt`, `verbose_json`. |
 
-**Response Example (nếu response_format="json"):**
+**Response Example (với `response_format="json"`):**
+- **Content-Type:** `application/json`
 ```json
 {
   "text": "Xin chào thế giới!"
 }
 ```
 
+**Response Example (với `response_format="srt"`):**
+- **Content-Type:** `text/plain`
+```text
+1
+00:00:00,000 --> 00:00:02,500
+Xin chào thế giới!
+```
+
 ---
 
-## 6. List Voices
-Lấy danh sách tất cả các giọng đọc (voices) khả dụng từ CapCut để dùng cho `/v1/audio/speech`.
+## 6. List Voices (Mở rộng ngoài chuẩn OpenAI)
+Lấy danh sách tất cả các giọng đọc (voices) khả dụng từ engine CapCut. Bạn có thể dùng trường `voice_type` trong danh sách này để điền vào thông số `voice` của API `/v1/audio/speech`.
 
 **Endpoint:** `GET /v1/audio/voices`
+**Method:** `GET`
 
-**Response Example:**
+**Response Example (200 OK):**
+- **Content-Type:** `application/json`
 ```json
 {
   "voices": [
     {
       "voice_type": "BV074_streaming",
-      "display_name": "Tiếng Anh (Mỹ)",
-      "resource_id": "...",
-      "lang": "en"
+      "display_name": "Tiếng Anh (Mỹ) - Nữ",
+      "resource_id": "7133744955761330951",
+      "lang": "en",
+      "lan": "en-US",
+      "captured_at": "2024-03-01T12:00:00Z"
     }
   ]
 }
