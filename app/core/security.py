@@ -4,6 +4,9 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
 security = HTTPBearer()
 
+from dotenv import load_dotenv
+load_dotenv()
+
 # Default to "sk-dummy" if not set, for local testing without strict enforcement
 API_KEY = os.environ.get("AGY_API_KEY", "sk-dummy")
 

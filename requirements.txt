@@ -4,3 +4,4 @@ pydantic>=2.4.2
 httpx
 python-multipart
 requests
+python-dotenv
