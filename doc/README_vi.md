@@ -26,9 +26,11 @@
 
 ## 🚀 Hướng dẫn Nhanh
 
+> [!IMPORTANT]
+> **BẠN BẮT BUỘC PHẢI cài đặt và cấu hình [Google Antigravity (`agy`) CLI](https://antigravity.google/product/antigravity-cli) trước khi chạy API này.**
+
 ### Yêu cầu
 - Python 3.8+ hoặc Docker & Docker Compose
-- [Google Antigravity (`agy`) CLI](https://antigravity.google/product/antigravity-cli) đã được cài đặt.
 
 ### Cách 1: Triển khai với Docker (Khuyên dùng)
 

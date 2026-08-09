@@ -26,9 +26,11 @@
 
 ## 🚀 Quick Start
 
+> [!IMPORTANT]
+> **You MUST install and configure the [Google Antigravity (`agy`) CLI](https://antigravity.google/product/antigravity-cli) before running this API.**
+
 ### Prerequisites
 - Python 3.8+ or Docker & Docker Compose
-- [Google Antigravity (`agy`) CLI](https://antigravity.google/product/antigravity-cli) installed and configured.
 
 ### Method 1: Docker Deployment (Recommended)
 
