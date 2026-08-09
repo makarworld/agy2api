@@ -8,8 +8,11 @@ from pydantic import BaseModel, Field
 from app.api.models import ChatCompletionRequest, ChatCompletionResponse, Choice, ChoiceMessage, Usage, ModelList, Model, SpeechRequest
 from app.core.security import get_api_key
 from app.core.agy_runner import run_agy_prompt
+import logging
 from app.core.file_handler import TempFileManager
 from app.core.capcut_api import AsyncCapCutWrapper
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 capcut_wrapper = AsyncCapCutWrapper()
@@ -18,6 +21,7 @@ class ImageGenerationRequest(BaseModel):
     prompt: str = Field(..., description="A text description of the desired image(s). (Tips: You can include desired aspect ratios here like 9:16 or 16:9)")
     n: Optional[int] = Field(1, description="The number of images to generate")
     response_format: Optional[str] = Field("url", description="The format in which the generated images are returned. Must be one of url or b64_json")
+    reference_images: Optional[List[str]] = Field(None, description="Optional list of base64 data URIs to use as reference images.")
 
     model_config = {
         "json_schema_extra": {
@@ -49,6 +53,7 @@ async def list_models(api_key: str = Depends(get_api_key)):
 
 @router.post("/chat/completions", response_model=ChatCompletionResponse, summary="Chat Completions", description="Creates a model response for the given chat conversation. Supports multimodal inputs via base64 data URIs.")
 async def chat_completions(req: ChatCompletionRequest, background_tasks: BackgroundTasks, api_key: str = Depends(get_api_key)):
+    logger.info(f"Processing chat completions for model: {req.model}")
     file_mgr = TempFileManager()
     background_tasks.add_task(file_mgr.cleanup)
     
@@ -104,8 +109,28 @@ async def chat_completions(req: ChatCompletionRequest, background_tasks: Backgro
 
 @router.post("/images/generations", response_model=ImageGenerationResponse, summary="Image Generations", description="Creates an image given a prompt using the AGY artist skills.")
 async def generate_image(req: ImageGenerationRequest, background_tasks: BackgroundTasks, api_key: str = Depends(get_api_key)):
+    logger.info(f"Generating image. Prompt: {req.prompt[:50]}...")
+    file_mgr = TempFileManager()
+    background_tasks.add_task(file_mgr.cleanup)
+    
+    ref_paths = []
+    if req.reference_images:
+        for url in req.reference_images:
+            if url.startswith("data:"):
+                ext = ".png"
+                if "jpeg" in url or "jpg" in url: ext = ".jpg"
+                try:
+                    fpath = file_mgr.add_base64_file(url, ext=ext)
+                    ref_paths.append(fpath)
+                except Exception:
+                    pass
+
     # We instruct AGY to generate an image and return the path/base64 in JSON format
     prompt = f"Generate an image for the following prompt: '{req.prompt}'. Return ONLY the absolute local file path of the generated image in your response, do not include any other conversational text."
+    
+    if ref_paths:
+        paths_str = ", ".join([f"'{p}'" for p in ref_paths])
+        prompt = f"Use the reference images at {paths_str} to generate an image for the following prompt: '{req.prompt}'. Return ONLY the absolute local file path of the generated image in your response, do not include any other conversational text."
     
     agy_response = await run_agy_prompt(prompt=prompt, output_format="json")
     
@@ -149,7 +174,7 @@ import subprocess
 async def get_logs(lines: int = 100, api_key: str = Depends(get_api_key)):
     try:
         result = subprocess.run(
-            ["journalctl", "-u", "agy-wrapper.service", "-n", str(lines), "--no-pager"],
+            ["journalctl", "--user", "-u", "agy-wrapper.service", "-n", str(lines), "--no-pager"],
             capture_output=True,
             text=True
         )
@@ -173,6 +198,7 @@ async def get_logs(lines: int = 100, api_key: str = Depends(get_api_key)):
     }
 )
 async def audio_speech(req: SpeechRequest, api_key: str = Depends(get_api_key)):
+    logger.info(f"Generating speech (voice={req.voice}, speed={req.speed}). Text: {req.input[:50]}...")
     try:
         audio_bytes = await capcut_wrapper.generate_speech(
             text=req.input,
@@ -208,6 +234,7 @@ async def audio_transcriptions(
     response_format: str = Form("json", description="Định dạng trả về (json, text, srt, vtt)"),
     api_key: str = Depends(get_api_key)
 ):
+    logger.info(f"Transcribing audio file: {file.filename}, language: {language}, format: {response_format}")
     try:
         file_mgr = TempFileManager()
         background_tasks.add_task(file_mgr.cleanup)

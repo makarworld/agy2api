@@ -4,10 +4,17 @@ import shutil
 import asyncio
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from app.api.routes import router as api_router
+
+import uuid
+import logging
+from app.core.logging_setup import setup_logging, trace_id_var
+
+setup_logging()
+logger = logging.getLogger(__name__)
 
 async def agy_garbage_collector():
     brain_dir = os.path.expanduser("~/.gemini/antigravity-cli/brain")
@@ -42,6 +49,25 @@ app = FastAPI(
 )
 
 app.include_router(api_router, prefix="/v1")
+
+@app.middleware("http")
+async def trace_log_middleware(request: Request, call_next):
+    trace_id = uuid.uuid4().hex[:8]
+    trace_id_var.set(trace_id)
+    
+    logger.info(f"Incoming request: {request.method} {request.url.path}")
+    start_time = time.time()
+    
+    try:
+        response = await call_next(request)
+        process_time = time.time() - start_time
+        logger.info(f"Completed request: {response.status_code} in {process_time:.3f}s")
+        response.headers["X-Trace-ID"] = trace_id
+        return response
+    except Exception as e:
+        process_time = time.time() - start_time
+        logger.error(f"Request failed: {str(e)} in {process_time:.3f}s", exc_info=True)
+        raise
 
 @app.get("/health")
 async def health_check():

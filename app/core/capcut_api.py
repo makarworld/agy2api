@@ -2,7 +2,10 @@ import asyncio
 import json
 import base64
 import httpx
+import logging
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 # Use the extracted capcut_tts_api module
 from app.capcut_tts_api.client import CapCutClient
@@ -35,6 +38,7 @@ class AsyncCapCutWrapper:
 
     async def generate_speech(self, text: str, voice: str, speed: float = 1.0) -> bytes:
         voice_target = self.resolve_voice(voice)
+        logger.info(f"Calling CapCut TTS with voice target: {voice_target}, speed: {speed}")
         
         # Run synchronous generate_speech in a background thread to avoid blocking FastAPI
         res = await asyncio.to_thread(
@@ -95,6 +99,7 @@ class AsyncCapCutWrapper:
         return "\n".join(lines)
 
     async def transcribe_audio(self, file_path: str, response_format: str = "json", language: str = "en-US") -> str:
+        logger.info(f"Calling CapCut STT for file: {file_path}, language: {language}")
         # Run synchronous transcribe_file in a background thread
         res = await asyncio.to_thread(
             self.client.transcribe_file,

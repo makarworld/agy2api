@@ -38,6 +38,8 @@ async def run_agy_prompt(prompt: str, model: str = None, output_format: str = "j
     
     if process.returncode != 0:
         error_msg = stderr.decode().strip()
+        if not error_msg:
+            error_msg = stdout.decode().strip()
         logger.error(f"AGY Error: {error_msg}")
         raise RuntimeError(f"AGY CLI execution failed: {error_msg}")
         

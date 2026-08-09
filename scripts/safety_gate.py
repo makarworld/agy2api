@@ -1,60 +1,77 @@
 #!/usr/bin/env python3
 import sys
 import json
-import re
+import os
 
 def main():
+    import os
+    # NẾU KHÔNG PHẢI LÀ API GỌI THÌ CHO PHÉP TẤT CẢ
+    if os.environ.get("AGY_IS_API_CALL") != "1":
+        print(json.dumps({"decision": "allow"}))
+        return
+
     try:
-        # Read payload from stdin
         input_data = sys.stdin.read()
         if not input_data:
             print(json.dumps({"decision": "allow"}))
             return
             
         payload = json.loads(input_data)
-        
-        # Extract the command line arguments
         tool_call = payload.get("toolCall", {})
-        if tool_call.get("name") != "run_command":
-            print(json.dumps({"decision": "allow"}))
+        tool_name = tool_call.get("name")
+        args = tool_call.get("args", {})
+        
+        # 1. Chặn TẤT CẢ các lệnh shell
+        if tool_name == "run_command":
+            print(json.dumps({
+                "decision": "deny",
+                "reason": "Security Policy: Executing shell commands (run_command) is strictly prohibited via API."
+            }))
             return
             
-        args = tool_call.get("args", {})
-        cmd_line = args.get("CommandLine", "")
-        
-        # Comprehensive denylist for dangerous commands
-        dangerous_patterns = [
-            # Block rm with both r and f flags, regardless of order or separation
-            r"\brm\s+-(?:[a-zA-Z]*r[a-zA-Z]*f[a-zA-Z]*|[a-zA-Z]*f[a-zA-Z]*r[a-zA-Z]*)\b",
-            r"\brm\s+-[a-zA-Z]*r[a-zA-Z]*\s+-[a-zA-Z]*f[a-zA-Z]*\b",
-            r"\brm\s+-[a-zA-Z]*f[a-zA-Z]*\s+-[a-zA-Z]*r[a-zA-Z]*\b",
-            # Block all variations of formatting file systems
-            r"\bmkfs(?:\.[\w]+)?\b",
-            r"\bfdisk\b",
-            # Block recursive overly permissive chmod
-            r"\bchmod\s+-R\s+(?:777|ugo\+rwx)\b",
-            # Block dd writes to disk devices
-            r"\bdd\s+(?:.*?\s+)?of=/dev/[a-zA-Z]+",
-            # Block direct shell redirects to raw disk devices
-            r">\s*/dev/(?:sda|sdb|nvme)\w*",
-            # Block destructive moving to null
-            r"\bmv\s+(?:.*?\s+)?/dev/null\b"
-        ]
-        
-        for pattern in dangerous_patterns:
-            if re.search(pattern, cmd_line, re.IGNORECASE):
-                print(json.dumps({
-                    "decision": "deny",
-                    "reason": f"Blocked by AGY Wrapper Safety Gate: Matched dangerous pattern '{pattern}'"
-                }))
-                return
+        # 2. Kiểm soát chặt chẽ việc ghi/sửa file
+        elif tool_name in ["write_to_file", "replace_file_content", "multi_replace_file_content"]:
+            target_file = args.get("TargetFile", "")
+            
+            # Allowlist: Chỉ cho phép ghi file vào đúng các thư mục này
+            # (Phòng ngừa Path Traversal như /tmp/../../etc/passwd)
+            allowed_dirs = [
+                os.path.abspath("/tmp/"),
+                os.path.abspath("/home/truong/agy2api/scripts/") # Thư mục viết kịch bản
+            ]
+            
+            try:
+                abs_target = os.path.abspath(target_file)
                 
-        # If no dangerous patterns found, allow
+                is_allowed = False
+                for d in allowed_dirs:
+                    if abs_target.startswith(d):
+                        is_allowed = True
+                        break
+                        
+                if is_allowed:
+                    # Đặc biệt cấm ghi đè lên chính file hook này
+                    if abs_target == os.path.abspath("/home/truong/agy2api/scripts/safety_gate.py"):
+                        print(json.dumps({
+                            "decision": "deny",
+                            "reason": "Security Policy: Cannot overwrite the safety gate script itself."
+                        }))
+                        return
+                        
+                    print(json.dumps({"decision": "allow"}))
+                else:
+                    print(json.dumps({
+                        "decision": "deny",
+                        "reason": f"Security Policy: File modification is ONLY allowed in {allowed_dirs}. Target '{abs_target}' is blocked."
+                    }))
+            except Exception as e:
+                print(json.dumps({"decision": "deny", "reason": "Security Policy: Invalid file path format."}))
+            return
+
+        # Các tool khác (nếu lọt vào) thì cho phép
         print(json.dumps({"decision": "allow"}))
         
     except Exception as e:
-        # On error parsing or reading, default to allow so we don't break the agent
-        # Ideally, we log this somewhere
         print(json.dumps({"decision": "allow", "reason": f"Hook error: {str(e)}"}))
 
 if __name__ == "__main__":

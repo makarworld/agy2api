@@ -103,11 +103,11 @@ Gửi yêu cầu chat hoặc yêu cầu phân tích file/hình ảnh đến mô 
 ---
 
 ## 3. Image Generations
-Tạo hình ảnh AI dựa trên prompt văn bản (Text-to-Image). Hệ thống sẽ chạy lệnh gọi tính năng Artist của AGY ở background.
+Tạo hình ảnh AI dựa trên prompt văn bản (Text-to-Image) hoặc tạo ảnh dựa trên 1-3 ảnh tham chiếu (Image-to-Image / Image Variations). Hệ thống sẽ chạy lệnh gọi tính năng Artist của AGY ở background.
 
 **Endpoint:** `POST /v1/images/generations`
 
-**Request Body Example:**
+**Request Body Example (Text-to-Image):**
 ```json
 {
   "prompt": "A cute orange cat playing with a ball of yarn, cartoon style",
@@ -115,7 +115,19 @@ Tạo hình ảnh AI dựa trên prompt văn bản (Text-to-Image). Hệ thống
   "response_format": "url"
 }
 ```
-*(Ghi chú: Nếu bạn để `response_format` là `b64_json`, API sẽ trả về dữ liệu hình ảnh dạng Base64 thuần túy. Nếu để `url`, API sẽ tự bọc nó dưới dạng Data URI `data:image/png;base64,...` để tương thích frontend).*
+
+**Request Body Example (Image-to-Image với ảnh tham chiếu):**
+```json
+{
+  "prompt": "Chuyển bức ảnh này sang phong cách Cyberpunk",
+  "n": 1,
+  "response_format": "url",
+  "reference_images": [
+    "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEASABIAAD..."
+  ]
+}
+```
+*(Ghi chú: Nếu bạn để `response_format` là `b64_json`, API sẽ trả về dữ liệu hình ảnh dạng Base64 thuần túy. Nếu để `url`, API sẽ tự bọc nó dưới dạng Data URI `data:image/png;base64,...` để tương thích frontend. Tham số `reference_images` là tùy chọn, hỗ trợ gửi tối đa 3 ảnh dưới dạng mảng các chuỗi Base64 Data URI).*
 
 **Response Example:**
 ```json
