@@ -146,3 +146,14 @@ Trong phần **Cursor Settings > Models**:
 1. Ghi đè (Override) trường OpenAI API Base URL thành `http://localhost:8000/v1`
 2. Nhập `AGY_API_KEY` của bạn.
 3. Thêm tên model tuỳ chỉnh (Ví dụ: `Gemini 3.6 Flash (High)`).
+
+## 🎨 Phát triển Giao diện UI (Tuỳ chọn)
+
+Nếu bạn chọn **Cách 2 (Triển khai Local)** và muốn sử dụng giao diện Web, bạn cần tự biên dịch (build) UI vì thư mục `dist` không được lưu trên GitHub.
+
+```bash
+cd ui
+npm install
+npm run build
+```
+Sau khi chạy xong, hãy khởi động lại server Python, giao diện sẽ xuất hiện tại `http://localhost:8000/`. Ngoài ra, bạn cũng có thể chạy lệnh `npm run dev` để bật môi trường phát triển Vite với tính năng cập nhật theo thời gian thực (hot-reload).
