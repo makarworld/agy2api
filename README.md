@@ -2,32 +2,75 @@
 
 # AGY2API
 
-[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Python](https://img.shields.io/badge/python-3.8%2B-blue.svg)](https://www.python.org/)
-[![FastAPI](https://img.shields.io/badge/fastapi-0.100%2B-green.svg)](https://fastapi.tiangolo.com/)
-[![Docker](https://img.shields.io/badge/docker-supported-blue.svg)](https://www.docker.com/)
-[![Google Antigravity](https://img.shields.io/badge/Google-Antigravity_CLI-4285F4?logo=google&logoColor=white)](https://antigravity.google/product/antigravity-cli)
-
 **A fully featured OpenAI-compatible API Wrapper for the Google Antigravity (AGY) CLI**
 
-[Vietnamese (Tiếng Việt)](doc/README_vi.md)
+English | [Tiếng Việt (Vietnamese)](doc/README_vi.md)
+
+[![Python](https://img.shields.io/badge/Python-3.8%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.100%2B-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
+[![Docker](https://img.shields.io/badge/Docker-Supported-2496ED?logo=docker&logoColor=white)](https://www.docker.com/)
+[![Google Antigravity](https://img.shields.io/badge/Google_Antigravity_CLI-4285F4?logo=google&logoColor=white)](https://antigravity.google/product/antigravity-cli)
+[![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 </div>
 
-## ✨ Core Features
-
-- 🔄 **OpenAI Compatible** - Seamlessly integrates with AI clients like Cursor, Chatbox, Cline, and SillyTavern.
-- 🖼️ **Multimodal Support** - Automatically extracts base64 files and images from the OpenAI payload, writes them to a managed temp directory, and passes them to the `agy` context.
-- 🎨 **Image Generation** - Built-in support for `/v1/images/generations`.
-- 🎙️ **Audio Generation** - Text-to-speech generation via `/v1/audio/speech` (Powered by [capcut-tts-api](https://github.com/K07VN/capcut-tts-api)).
-- 🛡️ **Secure Execution** - Implements an AGY PreToolUse hook (`safety_gate.py`) to intercept and block dangerous shell commands.
-- 🚀 **Daemon Mode** - Run in the background using systemd or Docker.
-- 📱 **UI Layer** - Integrated web UI for managing API keys and viewing logs.
-
-## 🚀 Quick Start
+> [!TIP]
+> AGY2API acts as a seamless bridge between modern AI clients (Cursor, Cline, Chatbox) and your local Google Antigravity instance.
 
 > [!IMPORTANT]
 > **You MUST install and configure the [Google Antigravity (`agy`) CLI](https://antigravity.google/product/antigravity-cli) before running this API.**
+
+## Overview
+
+AGY2API is a Python-based Gateway built with FastAPI. It translates OpenAI-compatible REST API requests into Google Antigravity (`agy`) commands, allowing you to use AGY's powerful agentic capabilities in any tool that supports OpenAI endpoints.
+
+### Architecture
+
+```mermaid
+flowchart LR
+    classDef client fill:#e1f5fe,stroke:#01579b
+    classDef core fill:#fff3e0,stroke:#e65100
+    classDef cli fill:#e8f5e9,stroke:#1b5e20
+
+    subgraph Clients["Access Domain"]
+        direction LR
+        IDE["IDEs<br/>Cursor · Cline"]
+        WebUI["Web Clients<br/>Chatbox · SillyTavern"]
+    end
+
+    subgraph Gateway["AGY2API Gateway"]
+        direction LR
+        API["FastAPI Routes<br/>/v1/chat/completions"]
+        Security["Safety Gate<br/>Command interception"]
+        Files["File Handler<br/>Base64 Extraction"]
+        
+        API --> Security
+        API --> Files
+    end
+
+    AGY["Google Antigravity CLI"]
+
+    Clients --> API
+    Security --> AGY
+    Files --> AGY
+
+    class IDE,WebUI client
+    class API,Security,Files core
+    class AGY cli
+```
+
+### Core capabilities
+
+| Area | Capabilities |
+| :-- | :-- |
+| **APIs** | Fully compatible with OpenAI Chat Completions, Image Generation, and Audio Speech |
+| **Clients** | Works flawlessly with Cursor, Cline, Chatbox, and SillyTavern |
+| **Multimodal** | Automatically extracts base64 files and images, writes them to a managed temp directory, and passes them to AGY |
+| **Security** | Implements an AGY PreToolUse hook (`safety_gate.py`) to intercept and block dangerous shell commands |
+| **Audio** | Text-to-speech generation via `/v1/audio/speech` (Powered by [capcut-tts-api](https://github.com/K07VN/capcut-tts-api)) |
+| **Operations** | Integrated web UI for managing API keys and viewing logs, Daemon Mode (Docker & Systemd) |
+
+## 🚀 Quick Start
 
 ### Prerequisites
 - Python 3.8+ or Docker & Docker Compose
@@ -70,12 +113,6 @@ export AGY_API_KEY="your-secret-key"
 # Start the service
 uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
-
-### Systemd (User Service)
-1. Copy `agy-wrapper.service` to `~/.config/systemd/user/`.
-2. Edit paths inside the service file.
-3. Run `systemctl --user daemon-reload`
-4. Run `systemctl --user enable --now agy-wrapper`
 
 ## 🛡️ Safety Hooks
 

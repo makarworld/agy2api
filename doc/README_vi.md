@@ -2,32 +2,75 @@
 
 # AGY2API
 
-[![License](https://img.shields.io/badge/license-MIT-blue.svg)](../LICENSE)
-[![Python](https://img.shields.io/badge/python-3.8%2B-blue.svg)](https://www.python.org/)
-[![FastAPI](https://img.shields.io/badge/fastapi-0.100%2B-green.svg)](https://fastapi.tiangolo.com/)
-[![Docker](https://img.shields.io/badge/docker-supported-blue.svg)](https://www.docker.com/)
-[![Google Antigravity](https://img.shields.io/badge/Google-Antigravity_CLI-4285F4?logo=google&logoColor=white)](https://antigravity.google/product/antigravity-cli)
-
 **Một dịch vụ API tương thích hoàn toàn với OpenAI, đóng vai trò là Wrapper cho Google Antigravity (AGY) CLI**
 
-[English (Tiếng Anh)](../README.md)
+[English](../README.md) | Tiếng Việt
+
+[![Python](https://img.shields.io/badge/Python-3.8%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.100%2B-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
+[![Docker](https://img.shields.io/badge/Docker-Supported-2496ED?logo=docker&logoColor=white)](https://www.docker.com/)
+[![Google Antigravity](https://img.shields.io/badge/Google_Antigravity_CLI-4285F4?logo=google&logoColor=white)](https://antigravity.google/product/antigravity-cli)
+[![License](https://img.shields.io/badge/License-MIT-blue.svg)](../LICENSE)
 
 </div>
 
-## ✨ Tính năng Cốt lõi
-
-- 🔄 **Tương thích OpenAI API** - Tích hợp mượt mà với các công cụ như Cursor, Chatbox, Cline, và SillyTavern.
-- 🖼️ **Hỗ trợ Đa phương thức (Multimodal)** - Tự động trích xuất file và hình ảnh base64 từ payload của OpenAI, ghi vào thư mục tạm và truyền cho ngữ cảnh của `agy`.
-- 🎨 **Tạo Hình ảnh** - Hỗ trợ API tạo ảnh `/v1/images/generations`.
-- 🎙️ **Tạo Âm thanh** - Hỗ trợ Text-to-Speech (TTS) thông qua `/v1/audio/speech` (Dựa trên mã nguồn [capcut-tts-api](https://github.com/K07VN/capcut-tts-api)).
-- 🛡️ **Thực thi An toàn** - Triển khai hook AGY PreToolUse (`safety_gate.py`) để chặn các lệnh shell nguy hiểm.
-- 🚀 **Hỗ trợ Daemon** - Chạy ẩn mượt mà thông qua systemd hoặc Docker.
-- 📱 **Giao diện Quản lý (UI)** - Tích hợp Web UI để xem log và quản lý API key.
-
-## 🚀 Hướng dẫn Nhanh
+> [!TIP]
+> AGY2API hoạt động như một cầu nối mượt mà giữa các AI client hiện đại (Cursor, Cline, Chatbox) và Google Antigravity CLI nội bộ của bạn.
 
 > [!IMPORTANT]
 > **BẠN BẮT BUỘC PHẢI cài đặt và cấu hình [Google Antigravity (`agy`) CLI](https://antigravity.google/product/antigravity-cli) trước khi chạy API này.**
+
+## Tổng quan
+
+AGY2API là một API Gateway viết bằng Python kết hợp với FastAPI. Nhiệm vụ của nó là biên dịch các yêu cầu REST API chuẩn OpenAI thành các lệnh gọi Google Antigravity (`agy`), giúp bạn mang sức mạnh tự động hóa của AGY vào bất kỳ công cụ nào có hỗ trợ kết nối qua OpenAI API.
+
+### Kiến trúc (Architecture)
+
+```mermaid
+flowchart LR
+    classDef client fill:#e1f5fe,stroke:#01579b
+    classDef core fill:#fff3e0,stroke:#e65100
+    classDef cli fill:#e8f5e9,stroke:#1b5e20
+
+    subgraph Clients["Tầng Client"]
+        direction LR
+        IDE["Các IDE<br/>Cursor · Cline"]
+        WebUI["Web Clients<br/>Chatbox · SillyTavern"]
+    end
+
+    subgraph Gateway["AGY2API Gateway"]
+        direction LR
+        API["FastAPI Routes<br/>/v1/chat/completions"]
+        Security["Safety Gate<br/>Chặn lệnh nguy hiểm"]
+        Files["File Handler<br/>Trích xuất Base64"]
+        
+        API --> Security
+        API --> Files
+    end
+
+    AGY["Google Antigravity CLI"]
+
+    Clients --> API
+    Security --> AGY
+    Files --> AGY
+
+    class IDE,WebUI client
+    class API,Security,Files core
+    class AGY cli
+```
+
+### Các tính năng cốt lõi
+
+| Hạng mục | Tính năng |
+| :-- | :-- |
+| **APIs** | Tương thích hoàn toàn với OpenAI Chat Completions, Image Generation, và Audio Speech |
+| **Clients** | Hoạt động trơn tru với Cursor, Cline, Chatbox, và SillyTavern |
+| **Đa phương thức (Multimodal)** | Tự động trích xuất file và hình ảnh base64, lưu vào thư mục tạm và truyền sang AGY |
+| **Bảo mật** | Tích hợp hook AGY PreToolUse (`safety_gate.py`) giúp phân tích và chặn các lệnh shell nguy hiểm |
+| **Âm thanh** | Hỗ trợ Text-to-Speech (TTS) thông qua `/v1/audio/speech` (Dựa trên mã nguồn [capcut-tts-api](https://github.com/K07VN/capcut-tts-api)) |
+| **Vận hành** | Có sẵn giao diện Web UI để quản lý API keys, xem logs, hỗ trợ chạy nền qua Docker hoặc Systemd |
+
+## 🚀 Hướng dẫn Nhanh
 
 ### Yêu cầu
 - Python 3.8+ hoặc Docker & Docker Compose
@@ -75,7 +118,7 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000
 1. Copy file `agy-wrapper.service` vào thư mục `~/.config/systemd/user/`.
 2. Chỉnh sửa đường dẫn trong file service cho phù hợp.
 3. Chạy lệnh `systemctl --user daemon-reload`
-4. Chạy lệnh `systemctl --user enable --now margin`
+4. Chạy lệnh `systemctl --user enable --now agy-wrapper`
 
 ## 🛡️ Hook An toàn (Safety Hooks)
 
