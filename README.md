@@ -20,10 +20,6 @@ English | [Tiếng Việt (Vietnamese)](doc/README_vi.md)
 > [!IMPORTANT]
 > **You MUST install and configure the [Google Antigravity (`agy`) CLI](https://antigravity.google/product/antigravity-cli) before running this API.**
 
-<p align="center">
-  <img alt="AGY2API Dashboard" src="doc/screenshot.png" width="800" style="border-radius: 8px; box-shadow: 0 4px 8px rgba(0,0,0,0.1);" />
-</p>
-
 ## Overview
 
 AGY2API is a Python-based Gateway built with FastAPI. It translates OpenAI-compatible REST API requests into Google Antigravity (`agy`) commands, allowing you to use AGY's powerful agentic capabilities in any tool that supports OpenAI endpoints.
@@ -142,6 +138,10 @@ In **Cursor Settings > Models**:
 3. Add custom model names (e.g., `Gemini 3.6 Flash (High)`).
 
 ## 🎨 Developing the UI (Optional)
+
+<p align="center">
+  <img alt="AGY2API Dashboard" src="doc/screenshot.png" width="800" style="border-radius: 8px; box-shadow: 0 4px 8px rgba(0,0,0,0.1);" />
+</p>
 
 If you chose **Method 2 (Local Deployment)** and want to access the Web UI, you must build it manually since the compiled `dist` folder is not included in the repository.
 
