@@ -6,6 +6,7 @@
 [![Python](https://img.shields.io/badge/python-3.8%2B-blue.svg)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/fastapi-0.100%2B-green.svg)](https://fastapi.tiangolo.com/)
 [![Docker](https://img.shields.io/badge/docker-supported-blue.svg)](https://www.docker.com/)
+[![Google Antigravity](https://img.shields.io/badge/Google-Antigravity_CLI-4285F4?logo=google&logoColor=white)](https://antigravity.google/product/antigravity-cli)
 
 **A fully featured OpenAI-compatible API Wrapper for the Google Antigravity (AGY) CLI**
 
@@ -18,7 +19,7 @@
 - 🔄 **OpenAI Compatible** - Seamlessly integrates with AI clients like Cursor, Chatbox, Cline, and SillyTavern.
 - 🖼️ **Multimodal Support** - Automatically extracts base64 files and images from the OpenAI payload, writes them to a managed temp directory, and passes them to the `agy` context.
 - 🎨 **Image Generation** - Built-in support for `/v1/images/generations`.
-- 🎙️ **Audio Generation** - Text-to-speech generation via `/v1/audio/speech`.
+- 🎙️ **Audio Generation** - Text-to-speech generation via `/v1/audio/speech` (Powered by [capcut-tts-api](https://github.com/K07VN/capcut-tts-api)).
 - 🛡️ **Secure Execution** - Implements an AGY PreToolUse hook (`safety_gate.py`) to intercept and block dangerous shell commands.
 - 🚀 **Daemon Mode** - Run in the background using systemd or Docker.
 - 📱 **UI Layer** - Integrated web UI for managing API keys and viewing logs.
@@ -27,7 +28,7 @@
 
 ### Prerequisites
 - Python 3.8+ or Docker & Docker Compose
-- Google Antigravity (`agy`) CLI installed and configured.
+- [Google Antigravity (`agy`) CLI](https://antigravity.google/product/antigravity-cli) installed and configured.
 
 ### Method 1: Docker Deployment (Recommended)
 

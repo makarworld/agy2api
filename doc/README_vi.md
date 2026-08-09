@@ -6,6 +6,7 @@
 [![Python](https://img.shields.io/badge/python-3.8%2B-blue.svg)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/fastapi-0.100%2B-green.svg)](https://fastapi.tiangolo.com/)
 [![Docker](https://img.shields.io/badge/docker-supported-blue.svg)](https://www.docker.com/)
+[![Google Antigravity](https://img.shields.io/badge/Google-Antigravity_CLI-4285F4?logo=google&logoColor=white)](https://antigravity.google/product/antigravity-cli)
 
 **Một dịch vụ API tương thích hoàn toàn với OpenAI, đóng vai trò là Wrapper cho Google Antigravity (AGY) CLI**
 
@@ -18,7 +19,7 @@
 - 🔄 **Tương thích OpenAI API** - Tích hợp mượt mà với các công cụ như Cursor, Chatbox, Cline, và SillyTavern.
 - 🖼️ **Hỗ trợ Đa phương thức (Multimodal)** - Tự động trích xuất file và hình ảnh base64 từ payload của OpenAI, ghi vào thư mục tạm và truyền cho ngữ cảnh của `agy`.
 - 🎨 **Tạo Hình ảnh** - Hỗ trợ API tạo ảnh `/v1/images/generations`.
-- 🎙️ **Tạo Âm thanh** - Hỗ trợ Text-to-Speech (TTS) thông qua `/v1/audio/speech`.
+- 🎙️ **Tạo Âm thanh** - Hỗ trợ Text-to-Speech (TTS) thông qua `/v1/audio/speech` (Dựa trên mã nguồn [capcut-tts-api](https://github.com/K07VN/capcut-tts-api)).
 - 🛡️ **Thực thi An toàn** - Triển khai hook AGY PreToolUse (`safety_gate.py`) để chặn các lệnh shell nguy hiểm.
 - 🚀 **Hỗ trợ Daemon** - Chạy ẩn mượt mà thông qua systemd hoặc Docker.
 - 📱 **Giao diện Quản lý (UI)** - Tích hợp Web UI để xem log và quản lý API key.
@@ -27,7 +28,7 @@
 
 ### Yêu cầu
 - Python 3.8+ hoặc Docker & Docker Compose
-- Google Antigravity (`agy`) CLI đã được cài đặt.
+- [Google Antigravity (`agy`) CLI](https://antigravity.google/product/antigravity-cli) đã được cài đặt.
 
 ### Cách 1: Triển khai với Docker (Khuyên dùng)
 
