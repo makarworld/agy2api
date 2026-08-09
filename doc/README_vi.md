@@ -20,6 +20,10 @@
 > [!IMPORTANT]
 > **BẠN BẮT BUỘC PHẢI cài đặt và cấu hình [Google Antigravity (`agy`) CLI](https://antigravity.google/product/antigravity-cli) trước khi chạy API này.**
 
+<p align="center">
+  <img alt="AGY2API Dashboard" src="screenshot.png" width="800" style="border-radius: 8px; box-shadow: 0 4px 8px rgba(0,0,0,0.1);" />
+</p>
+
 ## Tổng quan
 
 AGY2API là một API Gateway viết bằng Python kết hợp với FastAPI. Nhiệm vụ của nó là biên dịch các yêu cầu REST API chuẩn OpenAI thành các lệnh gọi Google Antigravity (`agy`), giúp bạn mang sức mạnh tự động hóa của AGY vào bất kỳ công cụ nào có hỗ trợ kết nối qua OpenAI API.
