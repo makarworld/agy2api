@@ -37,11 +37,14 @@
 git clone https://github.com/truongqv12/agy2api.git
 cd agy2api
 
-# Khởi chạy dịch vụ
-docker-compose up -d
+# Copy file biến môi trường mẫu (sau đó bạn cần sửa lại key)
+cp .env.example .env
+
+# Khởi chạy dịch vụ (sử dụng 'docker compose' cho Docker bản mới trên Mac/Linux)
+docker compose up -d
 
 # Xem log
-docker-compose logs -f
+docker compose logs -f
 ```
 
 ### Cách 2: Triển khai Local (Môi trường ảo)
@@ -51,14 +54,15 @@ docker-compose logs -f
 git clone https://github.com/truongqv12/agy2api.git
 cd agy2api
 
-# Tạo và kích hoạt môi trường ảo (venv)
-python -m venv .venv
+# Tạo và kích hoạt môi trường ảo (venv) (Trên Mac/Linux khuyên dùng python3)
+python3 -m venv .venv
 source .venv/bin/activate  # Trên Windows dùng `.venv\Scripts\activate`
 
 # Cài đặt thư viện
 pip install -r requirements.txt
 
-# Cấu hình API Key
+# Copy và cấu hình API Key
+cp .env.example .env
 export AGY_API_KEY="your-secret-key"
 
 # Khởi chạy dịch vụ

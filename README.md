@@ -37,11 +37,14 @@
 git clone https://github.com/truongqv12/agy2api.git
 cd agy2api
 
-# Start the service
-docker-compose up -d
+# Copy example environment file (and then edit it with your secret key)
+cp .env.example .env
+
+# Start the service (use 'docker-compose' for older Docker versions)
+docker compose up -d
 
 # View logs
-docker-compose logs -f
+docker compose logs -f
 ```
 
 ### Method 2: Local Deployment
@@ -51,14 +54,15 @@ docker-compose logs -f
 git clone https://github.com/truongqv12/agy2api.git
 cd agy2api
 
-# Create and activate virtual environment
-python -m venv .venv
+# Create and activate virtual environment (On Mac/Linux use python3)
+python3 -m venv .venv
 source .venv/bin/activate  # On Windows use `.venv\Scripts\activate`
 
 # Install dependencies
 pip install -r requirements.txt
 
-# Configure your API key
+# Copy and configure your API key
+cp .env.example .env
 export AGY_API_KEY="your-secret-key"
 
 # Start the service
