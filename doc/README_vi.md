@@ -176,12 +176,3 @@ npm run build
 ```
 Sau khi chạy xong, hãy khởi động lại server Python, giao diện sẽ xuất hiện tại `http://localhost:8000/`. Ngoài ra, bạn cũng có thể chạy lệnh `npm run dev` để bật môi trường phát triển Vite với tính năng cập nhật theo thời gian thực (hot-reload).
 
-## 🌟 Lịch sử Star (Star History)
-
-<a href="https://star-history.com/#truongqv12/agy2api&Date">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=truongqv12/agy2api&type=Date&theme=dark" />
-    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=truongqv12/agy2api&type=Date" />
-    <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=truongqv12/agy2api&type=Date" />
-  </picture>
-</a>

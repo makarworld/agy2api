@@ -176,12 +176,3 @@ npm run build
 ```
 Once built, restart your Python server and the UI will be available at `http://localhost:8000/`. Alternatively, you can run `npm run dev` to start a Vite development server with hot-reloading.
 
-## 🌟 Star History
-
-<a href="https://star-history.com/#truongqv12/agy2api&Date">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=truongqv12/agy2api&type=Date&theme=dark" />
-    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=truongqv12/agy2api&type=Date" />
-    <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=truongqv12/agy2api&type=Date" />
-  </picture>
-</a>
