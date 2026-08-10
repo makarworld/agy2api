@@ -118,11 +118,25 @@ export AGY_API_KEY="your-secret-key"
 uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
-### Triển khai bằng Systemd
-1. Copy file `agy-wrapper.service` vào thư mục `~/.config/systemd/user/`.
-2. Chỉnh sửa đường dẫn trong file service cho phù hợp.
-3. Chạy lệnh `systemctl --user daemon-reload`
-4. Chạy lệnh `systemctl --user enable --now agy-wrapper`
+### Cách 3: Chạy nền bằng Systemd (chỉ dành cho Linux)
+
+Để chạy API nền ổn định trên Linux, bạn có thể dùng `systemd`. Dự án đã cung cấp sẵn file `agy-wrapper.service`.
+
+1. Mở file `agy-wrapper.service` và sửa lại các đường dẫn ở `WorkingDirectory`, `ExecStart`, và `EnvironmentFile` nếu dự án của bạn không nằm ở `/home/truong/agy2api`.
+2. Copy file cấu hình vào thư mục systemd của user:
+   ```bash
+   mkdir -p ~/.config/systemd/user
+   cp agy-wrapper.service ~/.config/systemd/user/
+   ```
+3. Cập nhật systemd và khởi động dịch vụ:
+   ```bash
+   systemctl --user daemon-reload
+   systemctl --user enable --now agy-wrapper
+   ```
+4. Xem log của dịch vụ:
+   ```bash
+   journalctl --user -u agy-wrapper -f
+   ```
 
 ## 🛡️ Hook An toàn (Safety Hooks)
 
@@ -161,3 +175,13 @@ npm install
 npm run build
 ```
 Sau khi chạy xong, hãy khởi động lại server Python, giao diện sẽ xuất hiện tại `http://localhost:8000/`. Ngoài ra, bạn cũng có thể chạy lệnh `npm run dev` để bật môi trường phát triển Vite với tính năng cập nhật theo thời gian thực (hot-reload).
+
+## 🌟 Lịch sử Star (Star History)
+
+<a href="https://star-history.com/#truongqv12/agy2api&Date">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=truongqv12/agy2api&type=Date&theme=dark" />
+    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=truongqv12/agy2api&type=Date" />
+    <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=truongqv12/agy2api&type=Date" />
+  </picture>
+</a>

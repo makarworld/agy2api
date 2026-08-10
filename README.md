@@ -118,6 +118,26 @@ export AGY_API_KEY="your-secret-key"
 uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
+### Method 3: Systemd Service (Linux only)
+
+For a robust background service on Linux, you can use `systemd`. We have provided an `agy-wrapper.service` file for this purpose.
+
+1. Open `agy-wrapper.service` and update the `WorkingDirectory`, `ExecStart`, and `EnvironmentFile` paths if your project is not located at `/home/truong/agy2api`.
+2. Copy the service file to your systemd user directory:
+   ```bash
+   mkdir -p ~/.config/systemd/user
+   cp agy-wrapper.service ~/.config/systemd/user/
+   ```
+3. Reload systemd and enable the service:
+   ```bash
+   systemctl --user daemon-reload
+   systemctl --user enable --now agy-wrapper
+   ```
+4. View logs:
+   ```bash
+   journalctl --user -u agy-wrapper -f
+   ```
+
 ## 🛡️ Safety Hooks
 
 To enable the safety gate in your local `agy` environment, link or copy `hooks.json` to your `~/.gemini/config/hooks.json` or `.agents/hooks.json`.
@@ -155,3 +175,13 @@ npm install
 npm run build
 ```
 Once built, restart your Python server and the UI will be available at `http://localhost:8000/`. Alternatively, you can run `npm run dev` to start a Vite development server with hot-reloading.
+
+## 🌟 Star History
+
+<a href="https://star-history.com/#truongqv12/agy2api&Date">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=truongqv12/agy2api&type=Date&theme=dark" />
+    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=truongqv12/agy2api&type=Date" />
+    <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=truongqv12/agy2api&type=Date" />
+  </picture>
+</a>
