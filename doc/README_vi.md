@@ -20,6 +20,9 @@
 > [!IMPORTANT]
 > **BẠN BẮT BUỘC PHẢI cài đặt và cấu hình [Google Antigravity (`agy`) CLI](https://antigravity.google/product/antigravity-cli) trước khi chạy API này.**
 
+> [!CAUTION]
+> **CẢNH BÁO BẢO MẬT:** KHÔNG NÊN mở (public) API này trực tiếp ra Internet. Mặc dù có `hooks.json` chặn sơ bộ các lệnh nguy hiểm, nhưng bản chất dự án này là bọc (wrapper) lại một công cụ dòng lệnh (CLI) cực mạnh. Nó không thể đảm bảo 100% an toàn trước các kiểu tấn công chèn lệnh (command injection) tinh vi có thể chiếm quyền điều khiển server của bạn.
+
 ## Tổng quan
 
 AGY2API là một API Gateway viết bằng Python kết hợp với FastAPI. Nhiệm vụ của nó là biên dịch các yêu cầu REST API chuẩn OpenAI thành các lệnh gọi Google Antigravity (`agy`), giúp bạn mang sức mạnh tự động hóa của AGY vào bất kỳ công cụ nào có hỗ trợ kết nối qua OpenAI API.
@@ -65,7 +68,8 @@ flowchart LR
 | :-- | :-- |
 | **APIs** | Tương thích hoàn toàn với OpenAI Chat Completions, Image Generation, và Audio Speech |
 | **Clients** | Hoạt động trơn tru với Cursor, Cline, Chatbox, và SillyTavern |
-| **Đa phương thức (Multimodal)** | Tự động trích xuất file và hình ảnh base64, lưu vào thư mục tạm và truyền sang AGY |
+| **Đa phương thức (Vision & Docs)** | Hỗ trợ đọc hiểu ảnh, phân tích và nhận diện chữ (OCR) trên giấy tờ/PDF, tạo ảnh từ ảnh tham chiếu (image-to-image) |
+| **Xử lý Tệp tin** | Tự động trích xuất file và hình ảnh base64 từ request, lưu vào thư mục tạm và truyền an toàn sang AGY |
 | **Bảo mật** | Tích hợp hook AGY PreToolUse (`safety_gate.py`) giúp phân tích và chặn các lệnh shell nguy hiểm |
 | **Âm thanh** | Hỗ trợ Text-to-Speech (TTS) thông qua `/v1/audio/speech` (Dựa trên mã nguồn [capcut-tts-api](https://github.com/K07VN/capcut-tts-api)) |
 | **Vận hành** | Có sẵn giao diện Web UI để quản lý API keys, xem logs, hỗ trợ chạy nền qua Docker hoặc Systemd |

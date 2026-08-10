@@ -20,6 +20,9 @@ English | [Tiếng Việt (Vietnamese)](doc/README_vi.md)
 > [!IMPORTANT]
 > **You MUST install and configure the [Google Antigravity (`agy`) CLI](https://antigravity.google/product/antigravity-cli) before running this API.**
 
+> [!CAUTION]
+> **SECURITY WARNING:** Do NOT expose this API to the public internet. While `hooks.json` provides a basic safety gate, this project essentially acts as a wrapper around a powerful command-line interface. It cannot guarantee 100% protection against sophisticated command injection attacks that might compromise your server.
+
 ## Overview
 
 AGY2API is a Python-based Gateway built with FastAPI. It translates OpenAI-compatible REST API requests into Google Antigravity (`agy`) commands, allowing you to use AGY's powerful agentic capabilities in any tool that supports OpenAI endpoints.
@@ -65,7 +68,8 @@ flowchart LR
 | :-- | :-- |
 | **APIs** | Fully compatible with OpenAI Chat Completions, Image Generation, and Audio Speech |
 | **Clients** | Works flawlessly with Cursor, Cline, Chatbox, and SillyTavern |
-| **Multimodal** | Automatically extracts base64 files and images, writes them to a managed temp directory, and passes them to AGY |
+| **Multimodal & Vision** | Read and analyze images, perform OCR on documents/PDFs, and support image-to-image generation |
+| **File Handling** | Automatically extracts base64 files from requests, writes them to a managed temp directory, and passes them to AGY |
 | **Security** | Implements an AGY PreToolUse hook (`safety_gate.py`) to intercept and block dangerous shell commands |
 | **Audio** | Text-to-speech generation via `/v1/audio/speech` (Powered by [capcut-tts-api](https://github.com/K07VN/capcut-tts-api)) |
 | **Operations** | Integrated web UI for managing API keys and viewing logs, Daemon Mode (Docker & Systemd) |
