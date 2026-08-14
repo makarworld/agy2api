@@ -12,7 +12,8 @@ async def run_agy_prompt(prompt: str, model: str = None, output_format: str = "j
         "agy",
         "--print", prompt,
         "--output-format", output_format,
-        "--dangerously-skip-permissions"
+        "--dangerously-skip-permissions",
+        "--print-timeout", "10m"
     ]
     
     if model:
@@ -25,7 +26,8 @@ async def run_agy_prompt(prompt: str, model: str = None, output_format: str = "j
             # Assuming we inject them in the prompt for context:
             pass # We will handle file prompt formatting at the caller level
 
-    logger.info(f"Executing AGY command: {' '.join(cmd)}")
+    safe_cmd_log = ' '.join(cmd).replace('\n', ' ')
+    logger.info(f"Executing AGY command: {safe_cmd_log}")
     
     # Run the subprocess
     process = await asyncio.create_subprocess_exec(

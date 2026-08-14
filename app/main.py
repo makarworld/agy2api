@@ -8,6 +8,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from app.api.routes import router as api_router
+from app.core.model_manager import get_available_models
 
 import uuid
 import logging
@@ -38,8 +39,10 @@ async def agy_garbage_collector():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     task = asyncio.create_task(agy_garbage_collector())
+    model_warmup = asyncio.create_task(get_available_models())
     yield
     task.cancel()
+    model_warmup.cancel()
 
 app = FastAPI(
     title="AGY OpenAI API Wrapper",

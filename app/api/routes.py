@@ -11,6 +11,7 @@ from app.core.agy_runner import run_agy_prompt
 import logging
 from app.core.file_handler import TempFileManager
 from app.core.capcut_api import AsyncCapCutWrapper
+from app.core.model_manager import get_available_models
 
 logger = logging.getLogger(__name__)
 
@@ -45,10 +46,7 @@ class ImageGenerationResponse(BaseModel):
 
 @router.get("/models", response_model=ModelList, summary="List Models", description="Returns a list of available AI models.")
 async def list_models(api_key: str = Depends(get_api_key)):
-    models = [
-        Model(id="Gemini 3.6 Flash (High)", created=int(time.time())),
-        Model(id="Gemini 3.1 Pro (High)", created=int(time.time()))
-    ]
+    models = await get_available_models()
     return ModelList(data=models)
 
 @router.post("/chat/completions", response_model=ChatCompletionResponse, summary="Chat Completions", description="Creates a model response for the given chat conversation. Supports multimodal inputs via base64 data URIs.")

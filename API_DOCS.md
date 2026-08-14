@@ -13,7 +13,7 @@ Tất cả các endpoint (ngoại trừ `/health`) đều yêu cầu token Beare
 ---
 
 ## 1. List Models
-Lấy danh sách các AI model đang được hỗ trợ. Hiện tại mặc định trả về Gemini 3.6 Flash và Gemini 3.1 Pro.
+Lấy danh sách các AI model đang được hỗ trợ. Hệ thống tự động kết nối và đồng bộ danh sách model mới nhất từ Antigravity CLI (`agy models`) theo thời gian thực (kèm in-memory cache). Hỗ trợ cả model ID dạng slug (vd: `gemini-3.7-flash-high`) lẫn dạng display name (vd: `Gemini 3.7 Flash (High)`).
 
 **Endpoint:** `GET /v1/models`
 
