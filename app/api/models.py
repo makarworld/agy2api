@@ -13,6 +13,7 @@ class ChatCompletionRequest(BaseModel):
 
     model_config = {
         "json_schema_extra": {
+            "description": "Để đính kèm file (hình ảnh, tài liệu pdf, docx, txt...), hãy sử dụng mảng content và truyền chuỗi base64 dạng data URI (vd: data:image/jpeg;base64,... hoặc data:application/pdf;base64,...) vào trường image_url. Mặc dù chuẩn gốc là image_url, hệ thống hỗ trợ phân giải tự động các loại file khác dựa vào mime type trong data URI.",
             "examples": [
                 {
                     "model": "Gemini 3.6 Flash (High)",
@@ -31,12 +32,18 @@ class ChatCompletionRequest(BaseModel):
                             "content": [
                                 {
                                     "type": "text",
-                                    "text": "Trong bức ảnh này có những gì?"
+                                    "text": "Tóm tắt nội dung tài liệu này và mô tả bức ảnh."
                                 },
                                 {
                                     "type": "image_url",
                                     "image_url": {
                                         "url": "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEASABIAAD..."
+                                    }
+                                },
+                                {
+                                    "type": "image_url",
+                                    "image_url": {
+                                        "url": "data:application/pdf;base64,JVBERi0xLjQKJcOkw7zDtsOfCjI..."
                                     }
                                 }
                             ]

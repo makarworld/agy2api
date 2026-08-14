@@ -70,9 +70,19 @@ async def chat_completions(req: ChatCompletionRequest, background_tasks: Backgro
                 elif p.get("type") == "image_url":
                     url = p.get("image_url", {}).get("url", "")
                     if url.startswith("data:"):
-                        # Extract extension roughly
+                        import re
                         ext = ".png"
-                        if "jpeg" in url or "jpg" in url: ext = ".jpg"
+                        match = re.match(r'^data:([^/]+)/([^;,]+)', url)
+                        if match:
+                            mime_sub = match.group(2).lower()
+                            if mime_sub in ['jpeg', 'jpg']: ext = ".jpg"
+                            elif mime_sub == 'pdf': ext = ".pdf"
+                            elif mime_sub == 'msword': ext = ".doc"
+                            elif 'wordprocessingml' in mime_sub: ext = ".docx"
+                            elif mime_sub == 'plain': ext = ".txt"
+                            elif mime_sub == 'csv': ext = ".csv"
+                            elif mime_sub in ['png', 'gif', 'webp']: ext = f".{mime_sub}"
+                            else: ext = f".{mime_sub}"
                         try:
                             fpath = file_mgr.add_base64_file(url, ext=ext)
                             files_to_attach.append(fpath)
