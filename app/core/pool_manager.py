@@ -11,6 +11,7 @@ import time
 import uuid
 from typing import List, Optional, Set, Tuple
 
+from app.core import oauth_refresh
 from app.core import stats_store
 
 logger = logging.getLogger(__name__)
@@ -22,6 +23,7 @@ logger = logging.getLogger(__name__)
 # gracefully (not every agy install may populate all three installation_id
 # locations).
 CREDENTIAL_FILES: List[Tuple[str, str]] = [
+    ("antigravity-oauth-token", "antigravity-cli/antigravity-oauth-token"),
     ("oauth_creds.json", "oauth_creds.json"),
     ("google_accounts.json", "google_accounts.json"),
     ("installation_id", "installation_id"),
@@ -54,6 +56,33 @@ def _pool_dir() -> str:
 
 def _gemini_home() -> str:
     return os.path.expanduser("~/.gemini")
+
+
+def _read_live_access_token(gemini_home: str) -> Optional[str]:
+    try:
+        return oauth_refresh.read_access_token(gemini_home)
+    except RuntimeError:
+        return None
+
+
+def _read_snapshot_access_token(account_dir: str) -> Optional[str]:
+    for src_name in ("antigravity-oauth-token", "oauth_creds.json"):
+        token = oauth_refresh.access_token_from_path(os.path.join(account_dir, src_name))
+        if token:
+            return token
+    return None
+
+
+async def ensure_oauth_fresh_live() -> None:
+    await _ensure_oauth_fresh(proxy=get_active_account_proxy())
+
+
+async def run_agy_subprocess_without_pool(
+    cmd: List[str], timeout: Optional[float] = None, input_data: Optional[bytes] = None
+) -> Tuple[int, bytes, bytes]:
+    """Run agy CLI against live ~/.gemini without pool account rotation."""
+    await _ensure_oauth_fresh(proxy=get_active_account_proxy())
+    return await _run_subprocess(cmd, timeout, input_data=input_data)
 
 
 def _manifest_path() -> str:
@@ -203,6 +232,31 @@ def get_active_account_id() -> Optional[str]:
     return _active_account_id
 
 
+def get_active_account_proxy() -> Optional[str]:
+    account_id = get_active_account_id()
+    if not account_id:
+        return None
+    account = _find_account(account_id)
+    return account.get("proxy") if account else None
+
+
+async def _ensure_oauth_fresh(proxy: Optional[str] = None) -> None:
+    try:
+        refreshed = await oauth_refresh.ensure_fresh_antigravity_token(
+            _gemini_home(),
+            proxy=proxy,
+            pool_account_id=get_active_account_id(),
+        )
+        if refreshed and pool_enabled() and get_active_account_id():
+            await sync_back_credentials(get_active_account_id())
+    except Exception as e:
+        logger.warning(
+            "[oauth] ensure_fresh_credentials failed (pool_account=%s): %s",
+            get_active_account_id() or "none",
+            e,
+        )
+
+
 async def init_pool_state() -> None:
     """Best-effort restore of the in-memory active-account pointer from the DB after a restart.
 
@@ -226,27 +280,40 @@ async def activate_account(account_id: str) -> None:
 
     account_dir = os.path.join(_pool_dir(), "accounts", account_id)
     gemini_home = _gemini_home()
+    proxy = account.get("proxy")
 
-    for src_name, dest_rel in CREDENTIAL_FILES:
-        src = os.path.join(account_dir, src_name)
-        if not os.path.exists(src):
-            continue
-        dest = os.path.join(gemini_home, dest_rel)
-        os.makedirs(os.path.dirname(dest), exist_ok=True)
-        tmp = dest + ".tmp"
-        shutil.copyfile(src, tmp)
-        os.replace(tmp, dest)
+    live_token = _read_live_access_token(gemini_home)
+    snapshot_token = _read_snapshot_access_token(account_dir)
+    live_valid = bool(live_token and await oauth_refresh.verify_access_token(live_token, proxy=proxy))
+    snapshot_valid = bool(snapshot_token and await oauth_refresh.verify_access_token(snapshot_token, proxy=proxy))
+
+    if live_valid and not snapshot_valid:
+        logger.warning(
+            "[pool] Skipping credential swap for %s — live ~/.gemini token verifies via quota, snapshot stale",
+            account_id,
+        )
+    else:
+        for src_name, dest_rel in CREDENTIAL_FILES:
+            src = os.path.join(account_dir, src_name)
+            if not os.path.exists(src):
+                continue
+            dest = os.path.join(gemini_home, dest_rel)
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            tmp = dest + ".tmp"
+            shutil.copyfile(src, tmp)
+            os.replace(tmp, dest)
 
     global _active_account_id
     _active_account_id = account_id
     await stats_store.set_active_account_id_db(account_id)
     await stats_store.upsert_pool_account_state(account_id, last_used_ts=time.time())
+    await _ensure_oauth_fresh(proxy=proxy)
     logger.info(f"[pool] Activated account {account_id}")
 
 
 async def sync_back_credentials(account_id: str) -> None:
     """Best-effort: copy the live ~/.gemini credential files back into the pool
-    snapshot, in case agy refreshed the OAuth token in place during the call.
+    snapshot after our own OAuth refresh or agy credential updates.
     Never raises -- a failure here must not break the actual API response.
     """
     try:
@@ -388,13 +455,13 @@ async def execute_agy(
     Disabled (default): runs cmd directly, unlocked -- identical to pre-pool behavior.
 
     Enabled: holds the pool lock for the ENTIRE call including any rotation retries.
-    agy CLI can rewrite oauth_creds.json in place on token refresh mid-call; releasing
-    the lock earlier (e.g. only around the credential swap) would let a concurrent
-    request swap files out from under an in-flight process and corrupt both accounts'
-    credentials. Since agy is a single global logged-in session on disk regardless,
+    OAuth tokens are refreshed by oauth_refresh before each call; releasing the lock
+    earlier would let a concurrent request swap credential files out from under an
+    in-flight process. Since agy is a single global logged-in session on disk regardless,
     full serialization costs nothing that wasn't already implicit.
     """
     if not pool_enabled():
+        await _ensure_oauth_fresh(proxy=get_active_account_proxy())
         return await _run_subprocess(cmd, timeout, input_data=input_data)
 
     async with _LOCK:
@@ -409,6 +476,8 @@ async def execute_agy(
 
             if get_active_account_id() != account["id"]:
                 await activate_account(account["id"])
+            else:
+                await _ensure_oauth_fresh(proxy=account.get("proxy"))
 
             env = _proxy_env(account.get("proxy"))
             returncode, stdout, stderr = await _run_subprocess(cmd, timeout, env=env, input_data=input_data)

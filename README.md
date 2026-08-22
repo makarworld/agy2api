@@ -2,7 +2,7 @@
 
 # AGY2API
 
-**A fully featured OpenAI-compatible API Wrapper for the Google Antigravity (AGY) CLI**
+**OpenAI- and Anthropic-compatible API gateway for Google Antigravity (`agy`)**
 
 English | [Tiếng Việt (Vietnamese)](doc/README_vi.md)
 
@@ -15,17 +15,19 @@ English | [Tiếng Việt (Vietnamese)](doc/README_vi.md)
 </div>
 
 > [!TIP]
-> AGY2API acts as a seamless bridge between modern AI clients (Cursor, Cline, Chatbox) and your local Google Antigravity instance.
+> AGY2API bridges modern AI clients (Cursor, Claude Code, Cline, Chatbox) to your local Google Antigravity session.
 
 > [!IMPORTANT]
-> **You MUST install and configure the [Google Antigravity (`agy`) CLI](https://antigravity.google/product/antigravity-cli) before running this API.**
+> **Install and sign in to the [Google Antigravity (`agy`) CLI](https://antigravity.google/product/antigravity-cli) before running this API.**
 
 > [!CAUTION]
-> **SECURITY WARNING:** Do NOT expose this API to the public internet. While `hooks.json` provides a basic safety gate, this project essentially acts as a wrapper around a powerful command-line interface. It cannot guarantee 100% protection against sophisticated command injection attacks that might compromise your server.
+> **Do not expose this API to the public internet.** It wraps a powerful local CLI. The included safety hook reduces risk but cannot guarantee protection against command injection.
+
+Fork of [truongqv12/agy2api](https://github.com/truongqv12/agy2api) with account pool, Anthropic Messages API, warm/http transports, and OAuth refresh.
 
 ## Overview
 
-AGY2API is a Python-based Gateway built with FastAPI. It translates OpenAI-compatible REST API requests into Google Antigravity (`agy`) commands, allowing you to use AGY's powerful agentic capabilities in any tool that supports OpenAI endpoints.
+Python FastAPI gateway that turns OpenAI- or Anthropic-shaped HTTP requests into Antigravity traffic — either via the `agy` CLI or direct Cloud Code Assist HTTP.
 
 ### Architecture
 
@@ -33,157 +35,179 @@ AGY2API is a Python-based Gateway built with FastAPI. It translates OpenAI-compa
 flowchart LR
     classDef client fill:#e1f5fe,stroke:#01579b
     classDef core fill:#fff3e0,stroke:#e65100
-    classDef cli fill:#e8f5e9,stroke:#1b5e20
+    classDef backend fill:#e8f5e9,stroke:#1b5e20
 
-    subgraph Clients["Access Domain"]
+    subgraph Clients["Clients"]
         direction LR
-        IDE["IDEs<br/>Cursor · Cline"]
-        WebUI["Web Clients<br/>Chatbox · SillyTavern"]
+        IDE["Cursor · Claude Code · Cline"]
+        WebUI["Chatbox · SillyTavern · Dashboard"]
     end
 
-    subgraph Gateway["AGY2API Gateway"]
+    subgraph Gateway["AGY2API"]
         direction LR
-        API["FastAPI Routes<br/>/v1/chat/completions"]
-        Security["Safety Gate<br/>Command interception"]
-        Files["File Handler<br/>Base64 Extraction"]
-        
-        API --> Security
-        API --> Files
+        API["OpenAI / Anthropic routes"]
+        Transport["cli · warm · http"]
+        Pool["Account pool · OAuth refresh"]
+        API --> Transport
+        Transport --> Pool
     end
 
-    AGY["Google Antigravity CLI"]
+    AGY["agy CLI / Cloud Code Assist"]
 
     Clients --> API
-    Security --> AGY
-    Files --> AGY
+    Pool --> AGY
 
     class IDE,WebUI client
-    class API,Security,Files core
-    class AGY cli
+    class API,Transport,Pool core
+    class AGY backend
 ```
 
-### Transport modes
+### Transport modes (`AGY_TRANSPORT`)
 
-Set via `AGY_TRANSPORT` in `.env` (default `cli`):
+| Mode | Behavior |
+| :--- | :--- |
+| **`cli`** (default) | Fresh `agy` subprocess per request. Simple and correct; pays full process/auth startup each time. |
+| **`warm`** | Session-sticky pool of live `agy` processes with token-level streaming. Continuing the same conversation reuses an authenticated process (~0.2s to first token vs ~10–15s cold). See `AGY_WARM_*` in `.env.example`. |
+| **`http`** | Direct Cloud Code Assist HTTP (no `agy` agent tools / system prompt). Best when the **client** owns tools (e.g. Claude Code). Needs OAuth client env vars. Falls back to `warm` on errors. |
 
-- **`cli`** (default) — spawns a fresh `agy` subprocess per request. Simple, always correct, but every request pays full process/auth startup cost.
-- **`warm`** — session-sticky pool of live `agy` processes with real token-level streaming. Continuing an existing conversation (same history plus one new message) reuses an already-authenticated live process (~0.2s to first token instead of ~10-15s). A brand-new/unrelated conversation still cold-starts, same speed as `cli`. See `AGY_WARM_IDLE_TIMEOUT_SECONDS` / `AGY_WARM_MAX_SESSIONS` in `.env.example`.
+OAuth access tokens are refreshed via `oauth2.googleapis.com` before CLI calls and for `http` transport. Creds are read from `~/.gemini/oauth_creds.json` or `~/.gemini/antigravity-cli/antigravity-oauth-token`. Put `ANTIGRAVITY_CLIENT_ID` / `ANTIGRAVITY_CLIENT_SECRET` in **local** `.env` only — never commit them.
+
+### Model aliases and force routing
+
+- Alias `max-gem` → `gemini-3.7-flash-high` (`MODEL_ALIASES` in `app/core/model_manager.py`).
+- `AGY_FORCE_MODEL=max-gem` sends **all** backend calls through one model (including Claude Code classifier traffic). Responses still echo the client’s original `model` name.
 
 ### Core capabilities
 
 | Area | Capabilities |
 | :-- | :-- |
-| **APIs** | Fully compatible with OpenAI Chat Completions, Image Generation, and Audio Speech |
-| **Clients** | Works flawlessly with Cursor, Cline, Chatbox, and SillyTavern |
-| **Multimodal & Vision** | Read and analyze images, perform OCR on documents/PDFs, and support image-to-image generation |
-| **File Handling** | Automatically extracts base64 files from requests, writes them to a managed temp directory, and passes them to AGY |
-| **Security** | Implements an AGY PreToolUse hook (`safety_gate.py`) to intercept and block dangerous shell commands |
-| **Audio** | Text-to-speech generation via `/v1/audio/speech` (Powered by [capcut-tts-api](https://github.com/K07VN/capcut-tts-api)) |
-| **Operations** | Integrated web UI for managing API keys and viewing logs, Daemon Mode (Docker & Systemd) |
+| **APIs** | OpenAI Chat Completions, Images, Audio; Anthropic Messages (`/v1/messages`) |
+| **Clients** | Cursor, Claude Code, Cline, Chatbox, SillyTavern |
+| **Multimodal** | Images, OCR, PDFs, image-to-image via base64 data URIs |
+| **Account pool** | Multi-account rotation, cooldown, optional private git sync, proxies |
+| **Security** | PreToolUse hook (`scripts/safety_gate.py`) blocks dangerous shell commands |
+| **Audio** | TTS via `/v1/audio/speech` ([capcut-tts-api](https://github.com/K07VN/capcut-tts-api)) |
+| **Ops** | Web UI (keys, logs, stats, pool, requests), Docker, systemd |
 
-## 🚀 Quick Start
+## Quick start
 
 ### Prerequisites
-- Python 3.8+ or Docker & Docker Compose
 
-### Method 1: Docker Deployment (Recommended)
+- Python 3.8+ **or** Docker & Compose
+- Working `agy` login on the host (or in the container’s user home)
+
+### Method 1: Docker (recommended)
 
 ```bash
-# Clone the repository
-git clone https://github.com/truongqv12/agy2api.git
+git clone https://github.com/makarworld/agy2api.git
 cd agy2api
-
-# Copy example environment file (and then edit it with your secret key)
 cp .env.example .env
-
-# Start the service (use 'docker-compose' for older Docker versions)
+# edit .env: set AGY_API_KEY and any OAuth / pool settings
 docker compose up -d
-
-# View logs
 docker compose logs -f
 ```
 
-### Method 2: Local Deployment
+### Method 2: Local
 
 ```bash
-# Clone the repository
-git clone https://github.com/truongqv12/agy2api.git
+git clone https://github.com/makarworld/agy2api.git
 cd agy2api
-
-# Create and activate virtual environment (On Mac/Linux use python3)
 python3 -m venv .venv
-source .venv/bin/activate  # On Windows use `.venv\Scripts\activate`
-
-# Install dependencies
+source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
-
-# Copy and configure your API key
 cp .env.example .env
-export AGY_API_KEY="your-secret-key"
-
-# Start the service
+# set AGY_API_KEY (and ANTIGRAVITY_CLIENT_* if using http transport)
 uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
-### Method 3: Systemd Service (Linux only)
+### Method 3: systemd (Linux)
 
-For a robust background service on Linux, you can use `systemd`. We have provided an `agy-wrapper.service` file for this purpose.
+1. Edit `agy-wrapper.service` (`WorkingDirectory`, `ExecStart`, `EnvironmentFile`).
+2. Install and start:
 
-1. Open `agy-wrapper.service` and update the `WorkingDirectory`, `ExecStart`, and `EnvironmentFile` paths if your project is not located at `/home/truong/agy2api`.
-2. Copy the service file to your systemd user directory:
-   ```bash
-   mkdir -p ~/.config/systemd/user
-   cp agy-wrapper.service ~/.config/systemd/user/
-   ```
-3. Reload systemd and enable the service:
-   ```bash
-   systemctl --user daemon-reload
-   systemctl --user enable --now agy-wrapper
-   ```
-4. View logs:
-   ```bash
-   journalctl --user -u agy-wrapper -f
-   ```
+```bash
+mkdir -p ~/.config/systemd/user
+cp agy-wrapper.service ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now agy-wrapper
+journalctl --user -u agy-wrapper -f
+```
 
-## 🛡️ Safety Hooks
+## Configuration (secrets stay local)
 
-To enable the safety gate in your local `agy` environment, link or copy `hooks.json` to your `~/.gemini/config/hooks.json` or `.agents/hooks.json`.
+Copy `.env.example` → `.env`. Important variables:
 
-## 🔌 API Endpoints
+| Variable | Purpose |
+| :--- | :--- |
+| `AGY_API_KEY` | Bearer key for OpenAI-compatible routes |
+| `ANTHROPIC_COMPAT_API_KEY` | Optional key for Anthropic routes (falls back to `AGY_API_KEY`) |
+| `AGY_TRANSPORT` | `cli` \| `warm` \| `http` |
+| `ANTIGRAVITY_CLIENT_ID` / `ANTIGRAVITY_CLIENT_SECRET` | OAuth refresh (required for `http`) |
+| `AGY_FORCE_MODEL` | Optional forced backend model / alias |
+| `AGY_POOL_ENABLED` | Multi-account pool (default `false`) |
+
+`.env`, OAuth token files under `~/.gemini/`, HAR captures, and pool credential stores must **never** be committed. Pool data defaults to `~/.agy2api-pool` (outside the repo).
+
+## Safety hooks
+
+Link or copy `.agents/hooks.json` to `~/.gemini/config/hooks.json` (or keep `.agents/hooks.json`) so `scripts/safety_gate.py` can block dangerous shell commands.
+
+## API surface
+
+**OpenAI-compatible**
+
 - `GET /health`
 - `GET /v1/models`
 - `POST /v1/chat/completions`
 - `POST /v1/images/generations`
-- `POST /v1/audio/speech`
-- `GET /v1/audio/voices`
-- `GET /api/keys` / `POST /api/keys`
+- `POST /v1/audio/speech` · `GET /v1/audio/voices`
+- `GET /api/keys` · `POST /api/keys`
 - `GET /api/logs`
 
-For a complete guide, please refer to the [API Documentation](API_DOCS.md).
+**Anthropic-compatible**
 
-## ⚙️ Usage with Cursor
+- `POST /v1/messages`
+- `POST /v1/messages/count_tokens`
 
-In **Cursor Settings > Models**:
-1. Override OpenAI API Base URL with `http://localhost:8000/v1`
-2. Enter your `AGY_API_KEY`.
-3. Add custom model names (e.g., `Gemini 3.6 Flash (High)`).
+**Ops / pool / stats**
 
-## 🎨 Developing the UI (Optional)
+- `GET /v1/accounts` and related pool routes
+- `GET /v1/stats/summary` · `timeseries` · `overview` · `chats` · `requests`
+
+Full request/response shapes: [API_DOCS.md](API_DOCS.md).
+
+## Cursor / Claude Code
+
+**Cursor → Models**
+
+1. Override OpenAI Base URL: `http://localhost:8000/v1`
+2. API key = your `AGY_API_KEY`
+3. Add custom model IDs (e.g. `gemini-3.7-flash-high` or alias `max-gem`)
+
+**Claude Code**
+
+Point Anthropic base URL at this server’s `/v1` and use `ANTHROPIC_COMPAT_API_KEY` (or `AGY_API_KEY`). Prefer `AGY_TRANSPORT=http` when Claude Code should own tool execution.
+
+## Web UI
 
 <p align="center">
-  <img alt="AGY2API Dashboard" src="doc/screenshot.png" width="800" style="border-radius: 8px; box-shadow: 0 4px 8px rgba(0,0,0,0.1);" />
+  <img alt="AGY2API Dashboard" src="doc/screenshot.png" width="800" />
 </p>
 
-If you chose **Method 2 (Local Deployment)** and want to access the Web UI, you must build it manually since the compiled `dist` folder is not included in the repository.
+`dist/` is not in git. Build once:
 
 ```bash
 cd ui
 npm install
 npm run build
 ```
-Once built, restart your Python server and the UI will be available at `http://localhost:8000/`. Alternatively, you can run `npm run dev` to start a Vite development server with hot-reloading.
 
-## TODO / Known Limitations
+Restart the Python app — UI at `http://localhost:8000/`. For hot reload: `npm run dev`.
 
-- **Warm transport + account pool isolation**: spawn each warm `agy` process with its own `HOME`/`.gemini` directory per pool account instead of file-swapping a shared `~/.gemini` before spawn. Would let concurrent warm sessions on different accounts coexist without any activation-swap race, and remove the pool's global lock requirement for the warm transport entirely. Not done yet.
+## Known limitations
 
+- **Warm + account pool**: concurrent warm sessions on different accounts still share activation of `~/.gemini`; ideal fix is per-account `HOME` isolation (not implemented yet).
+
+## License
+
+MIT — see [LICENSE](LICENSE).

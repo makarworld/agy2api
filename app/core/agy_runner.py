@@ -2,11 +2,12 @@ import asyncio
 import json
 import logging
 import os
-from typing import AsyncIterator, List, Optional
+from typing import AsyncIterator, List, Optional, Union, Any
 
 from app.core import pool_manager
 from app.core import stats_store
 from app.core import agy_session_pool
+from app.core import agy_http_client
 
 logger = logging.getLogger(__name__)
 
@@ -16,16 +17,19 @@ def transport() -> str:
 
 
 def flatten_messages(system: Optional[str], messages: List[dict]) -> str:
-    """messages: normalized [{"role": str, "content": str}]. Same "Role: content" shape
-    routes.py/anthropic_routes.py already build inline -- centralized here so both the CLI
-    path and the warm-transport cold-start path (which needs the whole history in one turn
-    on a cache miss) share one implementation."""
+    """messages: normalized role/content or structured tool fields."""
     lines = []
     if system:
         lines.append(f"System: {system}")
     for m in messages:
         role = m.get("role", "user")
-        lines.append(f"{role.capitalize()}: {m.get('content', '')}")
+        content = m.get("content", "")
+        if isinstance(content, str) and content:
+            lines.append(f"{role.capitalize()}: {content}")
+        for tc in m.get("tool_calls") or []:
+            lines.append(f"{role.capitalize()} [tool_use {tc.get('name')}: {json.dumps(tc.get('input', {}))}]")
+        for tr in m.get("tool_results") or []:
+            lines.append(f"{role.capitalize()} [tool_result {tr.get('tool_use_id')}: {tr.get('content')}]")
     lines.append("Assistant: ")
     return "\n".join(lines)
 
@@ -36,6 +40,108 @@ async def fake_chunk_text(text: str, chunk_size: int = 24, delay: float = 0.005)
     for i in range(0, len(text), chunk_size):
         yield text[i:i + chunk_size]
         await asyncio.sleep(delay)
+
+
+async def with_heartbeat(
+    async_iter: AsyncIterator[dict],
+    interval: float = 10.0,
+) -> AsyncIterator[Union[dict, None]]:
+    """Wrap an async generator; yields None when a SSE keepalive ping should be sent."""
+    pending: Optional[asyncio.Task] = None
+    iterator = async_iter.__aiter__()
+
+    async def _next_chunk():
+        return await iterator.__anext__()
+
+    try:
+        while True:
+            if pending is None:
+                pending = asyncio.create_task(_next_chunk())
+            done, _ = await asyncio.wait({pending}, timeout=interval)
+            if not done:
+                yield None
+                continue
+            try:
+                yield pending.result()
+            except StopAsyncIteration:
+                break
+            finally:
+                pending = None
+    finally:
+        if pending is not None and not pending.done():
+            pending.cancel()
+            try:
+                await pending
+            except (asyncio.CancelledError, StopAsyncIteration):
+                pass
+
+
+async def _stream_warm(
+    messages: List[dict], system: Optional[str], model: Optional[str]
+) -> AsyncIterator[dict]:
+    async for chunk in agy_session_pool.send_turn(
+        model, messages, flatten_messages(system, messages), _pick_pool_account
+    ):
+        yield chunk
+
+
+async def _stream_cli(
+    messages: List[dict], system: Optional[str], model: Optional[str]
+) -> AsyncIterator[dict]:
+    result = await run_agy_prompt(prompt=flatten_messages(system, messages), model=model)
+    text = ""
+    if isinstance(result, dict):
+        text = result.get("text") or result.get("content") or result.get("response") or ""
+    async for piece in fake_chunk_text(text):
+        yield {"delta": piece}
+    yield {"usage": result.get("usage", {}) if isinstance(result, dict) else {}, "text": text}
+
+
+async def _stream_http(
+    messages: List[dict],
+    system: Optional[str],
+    model: Optional[str],
+    tools: Optional[List[dict]] = None,
+    tool_choice: Optional[Any] = None,
+) -> AsyncIterator[dict]:
+    async for chunk in agy_http_client.stream_completion(
+        messages=messages,
+        system=system,
+        model=model,
+        tools=tools,
+        tool_choice=tool_choice,
+    ):
+        yield chunk
+
+
+async def _run_http_completion(
+    messages: List[dict],
+    system: Optional[str],
+    model: Optional[str],
+    tools: Optional[List[dict]] = None,
+    tool_choice: Optional[Any] = None,
+) -> dict:
+    final: dict = {"text": "", "usage": {}, "tool_calls": [], "stop_reason": "end_turn"}
+    async for chunk in agy_http_client.stream_completion(
+        messages=messages,
+        system=system,
+        model=model,
+        tools=tools,
+        tool_choice=tool_choice,
+    ):
+        if "delta" in chunk:
+            final["text"] += chunk["delta"]
+        if "tool_calls" in chunk:
+            final["tool_calls"] = chunk["tool_calls"]
+        if "usage" in chunk:
+            final["usage"] = chunk.get("usage", {})
+            if chunk.get("text"):
+                final["text"] = chunk["text"]
+            if chunk.get("tool_calls"):
+                final["tool_calls"] = chunk["tool_calls"]
+            if chunk.get("stop_reason"):
+                final["stop_reason"] = chunk["stop_reason"]
+    return final
 
 
 async def _pick_pool_account() -> Optional[str]:
@@ -148,38 +254,48 @@ async def run_agy_prompt(prompt: str, model: str = None, files: list[str] = None
     return _parse_stream_json_result(output_str)
 
 
-async def run_completion(messages: List[dict], system: Optional[str] = None, model: str = None) -> dict:
+async def run_completion(
+    messages: List[dict],
+    system: Optional[str] = None,
+    model: str = None,
+    tools: Optional[List[dict]] = None,
+    tool_choice: Optional[Any] = None,
+) -> dict:
     """Structured-message entrypoint shared by /v1/chat/completions and /anthropic/v1/messages
-    for non-streaming requests. messages: normalized [{"role","content":str}], last entry is
-    the new turn. Returns the same {"text"/"usage"} shape run_agy_prompt() returns."""
-    if transport() != "warm":
-        return await run_agy_prompt(prompt=flatten_messages(system, messages), model=model)
+    for non-streaming requests."""
+    mode = transport()
+    if mode == "http":
+        return await _run_http_completion(messages, system, model, tools=tools, tool_choice=tool_choice)
 
-    cold_prompt = flatten_messages(system, messages)
-    final = {"text": "", "usage": {}}
-    async for chunk in agy_session_pool.send_turn(model, messages, cold_prompt, _pick_pool_account):
-        if "usage" in chunk:
-            final = {"text": chunk.get("text", ""), "usage": chunk.get("usage", {})}
-    return final
+    if mode == "warm":
+        cold_prompt = flatten_messages(system, messages)
+        final = {"text": "", "usage": {}}
+        async for chunk in agy_session_pool.send_turn(model, messages, cold_prompt, _pick_pool_account):
+            if "usage" in chunk:
+                final = {"text": chunk.get("text", ""), "usage": chunk.get("usage", {})}
+        return final
+
+    return await run_agy_prompt(prompt=flatten_messages(system, messages), model=model)
 
 
 async def stream_agy_completion(
-    messages: List[dict], system: Optional[str] = None, model: str = None
+    messages: List[dict],
+    system: Optional[str] = None,
+    model: str = None,
+    tools: Optional[List[dict]] = None,
+    tool_choice: Optional[Any] = None,
 ) -> AsyncIterator[dict]:
-    """Real streaming for warm transport (native NDJSON deltas from agy_session_pool);
-    simulated streaming for cli transport (aggregate then fake_chunk_text). Yields
-    {"delta": str} chunks, then a final {"usage": dict, "text": str}."""
-    if transport() == "warm":
-        async for chunk in agy_session_pool.send_turn(
-            model, messages, flatten_messages(system, messages), _pick_pool_account
-        ):
+    """Real streaming for warm/http transport; simulated streaming for cli."""
+    mode = transport()
+    if mode == "http":
+        async for chunk in _stream_http(messages, system, model, tools=tools, tool_choice=tool_choice):
             yield chunk
         return
 
-    result = await run_agy_prompt(prompt=flatten_messages(system, messages), model=model)
-    text = ""
-    if isinstance(result, dict):
-        text = result.get("text") or result.get("content") or result.get("response") or ""
-    async for piece in fake_chunk_text(text):
-        yield {"delta": piece}
-    yield {"usage": result.get("usage", {}) if isinstance(result, dict) else {}, "text": text}
+    if mode == "warm":
+        async for chunk in _stream_warm(messages, system, model):
+            yield chunk
+        return
+
+    async for chunk in _stream_cli(messages, system, model):
+        yield chunk

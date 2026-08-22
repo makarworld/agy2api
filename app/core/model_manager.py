@@ -1,7 +1,8 @@
 import asyncio
 import logging
+import os
 import time
-from typing import List
+from typing import List, Optional, Tuple
 from app.api.models import Model
 from app.core import pool_manager
 
@@ -18,6 +19,70 @@ MODEL_ALIASES = {
 
 def resolve_model_alias(name: str) -> str:
     return MODEL_ALIASES.get(name, name)
+
+
+def get_force_model() -> Optional[str]:
+    """When set (e.g. max-gem), all requests use this model on the backend."""
+    value = os.environ.get("AGY_FORCE_MODEL", "").strip()
+    return value or None
+
+
+async def _resolve_requested_model(requested: str) -> str:
+    """Maps a client model name to whatever agy CLI actually exposes."""
+    if requested in MODEL_ALIASES:
+        return MODEL_ALIASES[requested]
+
+    models = await get_available_models()
+    ids = [m.id for m in models]
+
+    if requested in ids:
+        return requested
+
+    lower = requested.lower()
+    for m in ids:
+        if m.lower() == lower:
+            return m
+
+    if "opus" in lower:
+        for m in ids:
+            if "opus" in m.lower():
+                return m
+        return "claude-opus-4-6-thinking"
+
+    if "haiku" in lower:
+        for m in ids:
+            if "flash" in m.lower() and "low" in m.lower():
+                return m
+        return "gemini-3.5-flash-low"
+
+    for m in ids:
+        if "sonnet" in m.lower():
+            return m
+    return "claude-sonnet-4-6"
+
+
+async def resolve_backend_model(requested: str) -> str:
+    """Resolve backend model, honoring AGY_FORCE_MODEL when set."""
+    force = get_force_model()
+    if force:
+        return await _resolve_requested_model(force)
+    return await _resolve_requested_model(requested)
+
+
+# Cloud Code Assist HTTP API uses different backend IDs than agy CLI slugs for some models.
+_HTTP_MODEL_MAP: dict[str, Tuple[str, Optional[str]]] = {
+    "gemini-3.1-pro-high": ("gemini-3.1-pro-low", "high"),
+    "gemini-3.1-pro": ("gemini-3.1-pro-low", "low"),
+}
+
+
+def resolve_http_model(name: str) -> Tuple[str, Optional[str]]:
+    """Map agy/alias model name to (backend_model, thinking_level) for HTTP transport."""
+    resolved = resolve_model_alias(name)
+    entry = _HTTP_MODEL_MAP.get(resolved)
+    if entry:
+        return entry
+    return resolved, None
 
 
 # In-memory cache
@@ -52,7 +117,10 @@ async def fetch_models_from_cli() -> List[Model]:
     logger.info("Fetching available models from Antigravity CLI...")
 
     try:
-        returncode, stdout, stderr = await pool_manager.execute_agy(cmd, timeout=10.0)
+        if pool_manager.pool_enabled():
+            returncode, stdout, stderr = await pool_manager.run_agy_subprocess_without_pool(cmd, timeout=10.0)
+        else:
+            returncode, stdout, stderr = await pool_manager.execute_agy(cmd, timeout=10.0)
     except asyncio.TimeoutError:
         logger.error("Timeout fetching models from `agy models` CLI")
         return []

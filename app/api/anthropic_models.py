@@ -16,6 +16,8 @@ class AnthropicMessagesRequest(BaseModel):
     temperature: Optional[float] = None
     stop_sequences: Optional[List[str]] = None
     metadata: Optional[Dict[str, Any]] = None
+    tools: Optional[List[Dict[str, Any]]] = None
+    tool_choice: Optional[Union[str, Dict[str, Any]]] = None
 
     model_config = {
         "json_schema_extra": {

@@ -9,11 +9,11 @@ from fastapi.responses import StreamingResponse, Response, JSONResponse
 from pydantic import BaseModel, Field
 from app.api.models import ChatCompletionRequest, ChatCompletionResponse, Choice, ChoiceMessage, Usage, ModelList, Model, SpeechRequest
 from app.core.security import get_api_key
-from app.core.agy_runner import run_agy_prompt, run_completion, stream_agy_completion
+from app.core.agy_runner import run_agy_prompt, run_completion, stream_agy_completion, with_heartbeat
 import logging
 from app.core.file_handler import TempFileManager
 from app.core.capcut_api import AsyncCapCutWrapper
-from app.core.model_manager import get_available_models, resolve_model_alias
+from app.core.model_manager import get_available_models, resolve_backend_model, get_force_model
 from app.core import stats_store
 from app.core import pool_manager
 
@@ -105,13 +105,21 @@ def _usage_from_agy(agy_usage: Optional[dict], fallback_prompt_len: int, fallbac
                  total_tokens=total_tokens, cache_tokens=cache_tokens)
 
 
-async def _openai_stream(messages: List[dict], agy_model: str, client_model: str, start_time: float):
-    chat_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
+async def _openai_stream(
+    messages: List[dict],
+    agy_model: str,
+    client_model: str,
+    start_time: float,
+    chat_id: str,
+    chat_title: str,
+    prompt_preview: str,
+):
+    response_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
     created = int(time.time())
 
     def _chunk(delta: dict, finish_reason=None):
         return {
-            "id": chat_id, "object": "chat.completion.chunk", "created": created,
+            "id": response_id, "object": "chat.completion.chunk", "created": created,
             "model": client_model,
             "choices": [{"index": 0, "delta": delta, "finish_reason": finish_reason}],
         }
@@ -119,9 +127,14 @@ async def _openai_stream(messages: List[dict], agy_model: str, client_model: str
     yield f"data: {json.dumps(_chunk({'role': 'assistant'}))}\n\n"
 
     final_usage = {}
+    assistant_chunks: List[str] = []
     try:
-        async for piece in stream_agy_completion(messages=messages, model=agy_model):
+        async for piece in with_heartbeat(stream_agy_completion(messages=messages, model=agy_model)):
+            if piece is None:
+                yield ": ping\n\n"
+                continue
             if "delta" in piece:
+                assistant_chunks.append(piece["delta"])
                 yield f"data: {json.dumps(_chunk({'content': piece['delta']}))}\n\n"
             if "usage" in piece:
                 final_usage = piece.get("usage", {})
@@ -130,23 +143,29 @@ async def _openai_stream(messages: List[dict], agy_model: str, client_model: str
             endpoint="openai-chat", model=client_model, pool_account=pool_manager.get_active_account_id(),
             prompt_tokens=0, completion_tokens=0, cache_tokens=0, success=False,
             latency_ms=int((time.time() - start_time) * 1000), error_type=type(e).__name__,
+            chat_id=chat_id, chat_title=chat_title, prompt_preview=prompt_preview,
+            response_preview=f"Error: {str(e)}",
         )
         yield f"data: {json.dumps(_chunk({}, finish_reason='error'))}\n\n"
         yield "data: [DONE]\n\n"
         return
 
-    usage = _usage_from_agy(final_usage, 0, 0)
+    assistant_text = "".join(assistant_chunks)
+    final_prompt_len = sum(len(m["content"]) for m in messages)
+    usage = _usage_from_agy(final_usage, final_prompt_len, len(assistant_text))
     await stats_store.record_request(
         endpoint="openai-chat", model=client_model, pool_account=pool_manager.get_active_account_id(),
         prompt_tokens=usage.prompt_tokens, completion_tokens=usage.completion_tokens, cache_tokens=usage.cache_tokens,
         success=True, latency_ms=int((time.time() - start_time) * 1000), error_type=None,
+        chat_id=chat_id, chat_title=chat_title, prompt_preview=prompt_preview,
+        response_preview=assistant_text[:1500],
     )
     yield f"data: {json.dumps(_chunk({}, finish_reason='stop'))}\n\n"
     yield "data: [DONE]\n\n"
 
 
 @router.post("/chat/completions", response_model=None, summary="Chat Completions", description="Creates a model response for the given chat conversation. Supports multimodal inputs via base64 data URIs.")
-async def chat_completions(req: ChatCompletionRequest, background_tasks: BackgroundTasks, api_key: str = Depends(get_api_key)):
+async def chat_completions(req: ChatCompletionRequest, background_tasks: BackgroundTasks, request: Request, api_key: str = Depends(get_api_key)):
     logger.info(f"Processing chat completions for model: {req.model}")
     start_time = time.time()
     file_mgr = TempFileManager()
@@ -158,11 +177,18 @@ async def chat_completions(req: ChatCompletionRequest, background_tasks: Backgro
         for msg in req.messages
     ]
 
-    agy_model = resolve_model_alias(req.model)
+    chat_id, chat_title, prompt_preview = stats_store.extract_chat_metadata(
+        headers=dict(request.headers),
+        messages=messages,
+    )
+
+    agy_model = await resolve_backend_model(req.model)
+    if get_force_model():
+        logger.info(f"Force model: requested={req.model} backend={agy_model}")
 
     if req.stream:
         return StreamingResponse(
-            _openai_stream(messages, agy_model, req.model, start_time),
+            _openai_stream(messages, agy_model, req.model, start_time, chat_id, chat_title, prompt_preview),
             media_type="text/event-stream",
         )
 
@@ -173,6 +199,8 @@ async def chat_completions(req: ChatCompletionRequest, background_tasks: Backgro
             endpoint="openai-chat", model=req.model, pool_account=pool_manager.get_active_account_id(),
             prompt_tokens=0, completion_tokens=0, cache_tokens=0, success=False,
             latency_ms=int((time.time() - start_time) * 1000), error_type=type(e).__name__,
+            chat_id=chat_id, chat_title=chat_title, prompt_preview=prompt_preview,
+            response_preview=f"Error: {str(e)}",
         )
         raise
 
@@ -190,6 +218,8 @@ async def chat_completions(req: ChatCompletionRequest, background_tasks: Backgro
         endpoint="openai-chat", model=req.model, pool_account=pool_manager.get_active_account_id(),
         prompt_tokens=usage.prompt_tokens, completion_tokens=usage.completion_tokens, cache_tokens=usage.cache_tokens,
         success=True, latency_ms=int((time.time() - start_time) * 1000), error_type=None,
+        chat_id=chat_id, chat_title=chat_title, prompt_preview=prompt_preview,
+        response_preview=assistant_text[:1500],
     )
 
     response = ChatCompletionResponse(
@@ -202,8 +232,9 @@ async def chat_completions(req: ChatCompletionRequest, background_tasks: Backgro
     return response
 
 @router.post("/images/generations", response_model=ImageGenerationResponse, summary="Image Generations", description="Creates an image given a prompt using the AGY artist skills.")
-async def generate_image(req: ImageGenerationRequest, background_tasks: BackgroundTasks, api_key: str = Depends(get_api_key)):
+async def generate_image(req: ImageGenerationRequest, background_tasks: BackgroundTasks, request: Request, api_key: str = Depends(get_api_key)):
     logger.info(f"Generating image. Prompt: {req.prompt[:50]}...")
+    start_time = time.time()
     file_mgr = TempFileManager()
     background_tasks.add_task(file_mgr.cleanup)
     
@@ -219,16 +250,28 @@ async def generate_image(req: ImageGenerationRequest, background_tasks: Backgrou
                 except Exception:
                     pass
 
-    # We instruct AGY to generate an image and return the path/base64 in JSON format
     prompt = f"Generate an image for the following prompt: '{req.prompt}'. Return ONLY the absolute local file path of the generated image in your response, do not include any other conversational text."
     
     if ref_paths:
         paths_str = ", ".join([f"'{p}'" for p in ref_paths])
         prompt = f"Use the reference images at {paths_str} to generate an image for the following prompt: '{req.prompt}'. Return ONLY the absolute local file path of the generated image in your response, do not include any other conversational text."
     
-    agy_response = await run_agy_prompt(prompt=prompt)
+    import hashlib
+    img_chat_id = "img_" + hashlib.sha256(req.prompt.encode("utf-8", errors="replace")).hexdigest()[:12]
+    img_title = f"Image: {req.prompt.strip().replace(chr(10), ' ')[:80]}"
     
-    # Extract path
+    try:
+        agy_response = await run_agy_prompt(prompt=prompt)
+    except Exception as e:
+        await stats_store.record_request(
+            endpoint="image-generation", model="artist", pool_account=pool_manager.get_active_account_id(),
+            prompt_tokens=max(1, len(req.prompt) // 4), completion_tokens=0, cache_tokens=0, success=False,
+            latency_ms=int((time.time() - start_time) * 1000), error_type=type(e).__name__,
+            chat_id=img_chat_id, chat_title=img_title, prompt_preview=req.prompt[:1000],
+            response_preview=f"Error: {str(e)}",
+        )
+        raise
+    
     image_path = ""
     if isinstance(agy_response, dict):
         image_path = agy_response.get("text") or agy_response.get("content") or agy_response.get("response") or str(agy_response)
@@ -248,7 +291,6 @@ async def generate_image(req: ImageGenerationRequest, background_tasks: Backgrou
             else:
                 img_data = ImageObject(url=f"data:image/png;base64,{b64}")
                 
-        # Schedule cleanup of the generated image file after returning the response
         def remove_file(path):
             try:
                 os.remove(path)
@@ -256,6 +298,14 @@ async def generate_image(req: ImageGenerationRequest, background_tasks: Backgrou
                 pass
         
         background_tasks.add_task(remove_file, image_path)
+
+    await stats_store.record_request(
+        endpoint="image-generation", model="artist", pool_account=pool_manager.get_active_account_id(),
+        prompt_tokens=max(1, len(req.prompt) // 4), completion_tokens=100, cache_tokens=0, success=True,
+        latency_ms=int((time.time() - start_time) * 1000), error_type=None,
+        chat_id=img_chat_id, chat_title=img_title, prompt_preview=req.prompt[:1000],
+        response_preview=f"Generated image: {image_path[:200]}",
+    )
 
     return ImageGenerationResponse(
         created=int(time.time()),
@@ -306,16 +356,34 @@ async def get_logs(lines: int = 100, api_key: str = Depends(get_api_key)):
         }
     }
 )
-async def audio_speech(req: SpeechRequest, api_key: str = Depends(get_api_key)):
+async def audio_speech(req: SpeechRequest, request: Request, api_key: str = Depends(get_api_key)):
     logger.info(f"Generating speech (voice={req.voice}, speed={req.speed}). Text: {req.input[:50]}...")
+    start_time = time.time()
+    import hashlib
+    tts_chat_id = "tts_" + hashlib.sha256(req.input.encode("utf-8", errors="replace")).hexdigest()[:12]
+    tts_title = f"TTS: {req.input.strip().replace(chr(10), ' ')[:80]}"
     try:
         audio_bytes = await capcut_wrapper.generate_speech(
             text=req.input,
             voice=req.voice,
             speed=req.speed
         )
+        await stats_store.record_request(
+            endpoint="audio-speech", model=req.model, pool_account=pool_manager.get_active_account_id(),
+            prompt_tokens=max(1, len(req.input) // 4), completion_tokens=len(audio_bytes) // 100, cache_tokens=0,
+            success=True, latency_ms=int((time.time() - start_time) * 1000), error_type=None,
+            chat_id=tts_chat_id, chat_title=tts_title, prompt_preview=req.input[:1000],
+            response_preview=f"Audio generated ({req.voice}, {req.speed}x, {len(audio_bytes)} bytes)",
+        )
         return StreamingResponse(io.BytesIO(audio_bytes), media_type="audio/mpeg")
     except Exception as e:
+        await stats_store.record_request(
+            endpoint="audio-speech", model=req.model, pool_account=pool_manager.get_active_account_id(),
+            prompt_tokens=max(1, len(req.input) // 4), completion_tokens=0, cache_tokens=0,
+            success=False, latency_ms=int((time.time() - start_time) * 1000), error_type=type(e).__name__,
+            chat_id=tts_chat_id, chat_title=tts_title, prompt_preview=req.input[:1000],
+            response_preview=f"Error: {str(e)}",
+        )
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 @router.get(
@@ -337,6 +405,7 @@ async def audio_voices(api_key: str = Depends(get_api_key)):
 )
 async def audio_transcriptions(
     background_tasks: BackgroundTasks,
+    request: Request,
     file: UploadFile = File(..., description="Tệp âm thanh cần upload (mp3, mp4, wav, v.v...)"),
     model: str = Form("whisper-1", description="ID của mô hình (vd: whisper-1)"),
     language: str = Form(None, description="Mã ngôn ngữ (vd: en-US, vi-VN). Bỏ trống để tự nhận diện."),
@@ -344,6 +413,9 @@ async def audio_transcriptions(
     api_key: str = Depends(get_api_key)
 ):
     logger.info(f"Transcribing audio file: {file.filename}, language: {language}, format: {response_format}")
+    start_time = time.time()
+    stt_chat_id = "stt_" + uuid.uuid4().hex[:12]
+    stt_title = f"STT: {file.filename or 'Audio transcription'}"
     try:
         file_mgr = TempFileManager()
         background_tasks.add_task(file_mgr.cleanup)
@@ -360,10 +432,25 @@ async def audio_transcriptions(
             language=language
         )
         
+        await stats_store.record_request(
+            endpoint="audio-transcription", model=model, pool_account=pool_manager.get_active_account_id(),
+            prompt_tokens=50, completion_tokens=max(1, len(transcription) // 4), cache_tokens=0,
+            success=True, latency_ms=int((time.time() - start_time) * 1000), error_type=None,
+            chat_id=stt_chat_id, chat_title=stt_title, prompt_preview=f"Transcribe: {file.filename}",
+            response_preview=transcription[:1500],
+        )
+
         if response_format in ["json", "verbose_json"]:
             import json
             return JSONResponse(content=json.loads(transcription))
         else:
             return Response(content=transcription, media_type="text/plain")
     except Exception as e:
+        await stats_store.record_request(
+            endpoint="audio-transcription", model=model, pool_account=pool_manager.get_active_account_id(),
+            prompt_tokens=50, completion_tokens=0, cache_tokens=0,
+            success=False, latency_ms=int((time.time() - start_time) * 1000), error_type=type(e).__name__,
+            chat_id=stt_chat_id, chat_title=stt_title, prompt_preview=f"Transcribe: {file.filename}",
+            response_preview=f"Error: {str(e)}",
+        )
         return JSONResponse(status_code=500, content={"error": str(e)})

@@ -36,3 +36,14 @@ app/data/
 # the working tree (~/.agy2api-pool), this entry just guards against
 # accidentally placing it here too.
 .agy2api-pool/
+
+# Local captures / dumps (often contain auth headers or prompts)
+*.har
+example.har
+default.txt
+default_prompt_full.txt
+sse_example.txt
+
+# Local agent / IDE scratch (not part of the published fork)
+.claude/
+.cursor/

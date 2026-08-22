@@ -8,6 +8,7 @@ import { ImagesPage } from './pages/images-page';
 import { AudioPage } from './pages/audio-page';
 import { StatsPage } from './pages/stats-page';
 import { PoolPage } from './pages/pool-page';
+import { RequestsPage } from './pages/requests-page';
 
 function App() {
   // Apply dark mode based on preference or default
@@ -22,9 +23,10 @@ function App() {
           <Route index element={<ChatPage />} />
           <Route path="images" element={<ImagesPage />} />
           <Route path="audio" element={<AudioPage />} />
-          <Route path="logs" element={<LogsPage />} />
+          <Route path="requests" element={<RequestsPage />} />
           <Route path="stats" element={<StatsPage />} />
           <Route path="pool" element={<PoolPage />} />
+          <Route path="logs" element={<LogsPage />} />
           <Route path="keys" element={<ApiKeysPage />} />
         </Route>
       </Routes>
