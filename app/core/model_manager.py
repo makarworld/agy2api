@@ -3,8 +3,22 @@ import logging
 import time
 from typing import List
 from app.api.models import Model
+from app.core import pool_manager
 
 logger = logging.getLogger(__name__)
+
+# Custom names that deliberately don't collide with any client's built-in/native
+# model IDs (e.g. Cursor silently routes recognized model names through its own
+# subscription instead of hitting the configured custom base URL). Add more
+# pairs here as needed.
+MODEL_ALIASES = {
+    "max-gem": "gemini-3.7-flash-high",
+}
+
+
+def resolve_model_alias(name: str) -> str:
+    return MODEL_ALIASES.get(name, name)
+
 
 # In-memory cache
 _CACHED_MODELS: List[Model] = []
@@ -36,26 +50,19 @@ async def fetch_models_from_cli() -> List[Model]:
     """
     cmd = ["agy", "models"]
     logger.info("Fetching available models from Antigravity CLI...")
-    
-    proc = await asyncio.create_subprocess_exec(
-        *cmd,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE
-    )
-    
+
     try:
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=10.0)
+        returncode, stdout, stderr = await pool_manager.execute_agy(cmd, timeout=10.0)
     except asyncio.TimeoutError:
-        try:
-            proc.kill()
-        except Exception:
-            pass
         logger.error("Timeout fetching models from `agy models` CLI")
         return []
+    except RuntimeError as e:
+        logger.error(f"`agy models` failed: {e}")
+        return []
 
-    if proc.returncode != 0:
+    if returncode != 0:
         err = stderr.decode().strip()
-        logger.error(f"`agy models` failed with return code {proc.returncode}: {err}")
+        logger.error(f"`agy models` failed with return code {returncode}: {err}")
         return []
 
     lines = stdout.decode().strip().splitlines()
@@ -86,9 +93,17 @@ async def fetch_models_from_cli() -> List[Model]:
 
 async def get_available_models(force_refresh: bool = False) -> List[Model]:
     """
-    Returns available AI models with in-memory caching.
+    Returns available AI models (including custom aliases) with in-memory caching.
     Refreshes automatically when TTL expires.
     """
+    models = await _get_available_models_cached(force_refresh)
+    existing_ids = {m.id for m in models}
+    created_ts = int(time.time())
+    alias_models = [Model(id=alias, created=created_ts) for alias in MODEL_ALIASES if alias not in existing_ids]
+    return models + alias_models
+
+
+async def _get_available_models_cached(force_refresh: bool = False) -> List[Model]:
     global _CACHED_MODELS, _LAST_FETCH_TIME
 
     now = time.time()

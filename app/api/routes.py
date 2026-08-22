@@ -1,17 +1,21 @@
+import os
 import time
 import uuid
 import io
+import json
 from typing import List, Optional
 from fastapi import APIRouter, Depends, Request, BackgroundTasks, UploadFile, File, Form
 from fastapi.responses import StreamingResponse, Response, JSONResponse
 from pydantic import BaseModel, Field
 from app.api.models import ChatCompletionRequest, ChatCompletionResponse, Choice, ChoiceMessage, Usage, ModelList, Model, SpeechRequest
 from app.core.security import get_api_key
-from app.core.agy_runner import run_agy_prompt
+from app.core.agy_runner import run_agy_prompt, run_completion, stream_agy_completion
 import logging
 from app.core.file_handler import TempFileManager
 from app.core.capcut_api import AsyncCapCutWrapper
-from app.core.model_manager import get_available_models
+from app.core.model_manager import get_available_models, resolve_model_alias
+from app.core import stats_store
+from app.core import pool_manager
 
 logger = logging.getLogger(__name__)
 
@@ -49,69 +53,151 @@ async def list_models(api_key: str = Depends(get_api_key)):
     models = await get_available_models()
     return ModelList(data=models)
 
-@router.post("/chat/completions", response_model=ChatCompletionResponse, summary="Chat Completions", description="Creates a model response for the given chat conversation. Supports multimodal inputs via base64 data URIs.")
+def _extract_message_text(msg, file_mgr: TempFileManager, files_to_attach: list) -> str:
+    if isinstance(msg.content, str):
+        return msg.content
+    text_parts = []
+    for p in msg.content:
+        if p.get("type") == "text":
+            text_parts.append(p.get("text", ""))
+        elif p.get("type") == "image_url":
+            url = p.get("image_url", {}).get("url", "")
+            if url.startswith("data:"):
+                import re
+                ext = ".png"
+                match = re.match(r'^data:([^/]+)/([^;,]+)', url)
+                if match:
+                    mime_sub = match.group(2).lower()
+                    if mime_sub in ['jpeg', 'jpg']: ext = ".jpg"
+                    elif mime_sub == 'pdf': ext = ".pdf"
+                    elif mime_sub == 'msword': ext = ".doc"
+                    elif 'wordprocessingml' in mime_sub: ext = ".docx"
+                    elif mime_sub == 'plain': ext = ".txt"
+                    elif mime_sub == 'csv': ext = ".csv"
+                    elif mime_sub in ['png', 'gif', 'webp']: ext = f".{mime_sub}"
+                    else: ext = f".{mime_sub}"
+                try:
+                    fpath = file_mgr.add_base64_file(url, ext=ext)
+                    files_to_attach.append(fpath)
+                    text_parts.append(f"[Attached Image: {fpath}]")
+                except Exception as e:
+                    text_parts.append(f"[Failed to attach image: {e}]")
+            else:
+                text_parts.append(f"[Image URL: {url}]")
+    return " ".join(text_parts)
+
+
+def _usage_from_agy(agy_usage: Optional[dict], fallback_prompt_len: int, fallback_completion_len: int) -> Usage:
+    # agy's own JSON payload carries real token usage (confirmed live: input_tokens,
+    # output_tokens, thinking_tokens, cache_read_tokens, total_tokens). Fall back to a
+    # character-count heuristic only if that field is ever missing.
+    if isinstance(agy_usage, dict) and agy_usage:
+        prompt_tokens = agy_usage.get("input_tokens", 0)
+        completion_tokens = agy_usage.get("output_tokens", 0) + agy_usage.get("thinking_tokens", 0)
+        cache_tokens = agy_usage.get("cache_read_tokens", 0)
+        total_tokens = agy_usage.get("total_tokens", prompt_tokens + completion_tokens)
+    else:
+        prompt_tokens = max(1, fallback_prompt_len // 4)
+        completion_tokens = max(1, fallback_completion_len // 4)
+        cache_tokens = 0
+        total_tokens = prompt_tokens + completion_tokens
+    return Usage(prompt_tokens=prompt_tokens, completion_tokens=completion_tokens,
+                 total_tokens=total_tokens, cache_tokens=cache_tokens)
+
+
+async def _openai_stream(messages: List[dict], agy_model: str, client_model: str, start_time: float):
+    chat_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
+    created = int(time.time())
+
+    def _chunk(delta: dict, finish_reason=None):
+        return {
+            "id": chat_id, "object": "chat.completion.chunk", "created": created,
+            "model": client_model,
+            "choices": [{"index": 0, "delta": delta, "finish_reason": finish_reason}],
+        }
+
+    yield f"data: {json.dumps(_chunk({'role': 'assistant'}))}\n\n"
+
+    final_usage = {}
+    try:
+        async for piece in stream_agy_completion(messages=messages, model=agy_model):
+            if "delta" in piece:
+                yield f"data: {json.dumps(_chunk({'content': piece['delta']}))}\n\n"
+            if "usage" in piece:
+                final_usage = piece.get("usage", {})
+    except Exception as e:
+        await stats_store.record_request(
+            endpoint="openai-chat", model=client_model, pool_account=pool_manager.get_active_account_id(),
+            prompt_tokens=0, completion_tokens=0, cache_tokens=0, success=False,
+            latency_ms=int((time.time() - start_time) * 1000), error_type=type(e).__name__,
+        )
+        yield f"data: {json.dumps(_chunk({}, finish_reason='error'))}\n\n"
+        yield "data: [DONE]\n\n"
+        return
+
+    usage = _usage_from_agy(final_usage, 0, 0)
+    await stats_store.record_request(
+        endpoint="openai-chat", model=client_model, pool_account=pool_manager.get_active_account_id(),
+        prompt_tokens=usage.prompt_tokens, completion_tokens=usage.completion_tokens, cache_tokens=usage.cache_tokens,
+        success=True, latency_ms=int((time.time() - start_time) * 1000), error_type=None,
+    )
+    yield f"data: {json.dumps(_chunk({}, finish_reason='stop'))}\n\n"
+    yield "data: [DONE]\n\n"
+
+
+@router.post("/chat/completions", response_model=None, summary="Chat Completions", description="Creates a model response for the given chat conversation. Supports multimodal inputs via base64 data URIs.")
 async def chat_completions(req: ChatCompletionRequest, background_tasks: BackgroundTasks, api_key: str = Depends(get_api_key)):
     logger.info(f"Processing chat completions for model: {req.model}")
+    start_time = time.time()
     file_mgr = TempFileManager()
     background_tasks.add_task(file_mgr.cleanup)
-    
-    prompt_lines = []
+
     files_to_attach = []
-    
-    for msg in req.messages:
-        if isinstance(msg.content, str):
-            prompt_lines.append(f"{msg.role.capitalize()}: {msg.content}")
-        elif isinstance(msg.content, list):
-            # Parse mixed content (text + image_url)
-            text_parts = []
-            for p in msg.content:
-                if p.get("type") == "text":
-                    text_parts.append(p.get("text", ""))
-                elif p.get("type") == "image_url":
-                    url = p.get("image_url", {}).get("url", "")
-                    if url.startswith("data:"):
-                        import re
-                        ext = ".png"
-                        match = re.match(r'^data:([^/]+)/([^;,]+)', url)
-                        if match:
-                            mime_sub = match.group(2).lower()
-                            if mime_sub in ['jpeg', 'jpg']: ext = ".jpg"
-                            elif mime_sub == 'pdf': ext = ".pdf"
-                            elif mime_sub == 'msword': ext = ".doc"
-                            elif 'wordprocessingml' in mime_sub: ext = ".docx"
-                            elif mime_sub == 'plain': ext = ".txt"
-                            elif mime_sub == 'csv': ext = ".csv"
-                            elif mime_sub in ['png', 'gif', 'webp']: ext = f".{mime_sub}"
-                            else: ext = f".{mime_sub}"
-                        try:
-                            fpath = file_mgr.add_base64_file(url, ext=ext)
-                            files_to_attach.append(fpath)
-                            text_parts.append(f"[Attached Image: {fpath}]")
-                        except Exception as e:
-                            text_parts.append(f"[Failed to attach image: {e}]")
-                    else:
-                        text_parts.append(f"[Image URL: {url}]")
-            prompt_lines.append(f"{msg.role.capitalize()}: {' '.join(text_parts)}")
-            
-    prompt_lines.append("Assistant: ")
-    final_prompt = "\n".join(prompt_lines)
-    
-    # We pass the files list to agy_runner if we want to use --add-dir or something similar,
-    # but since we already injected paths into the prompt, agy's vision might pick it up automatically if it can read local files.
-    agy_response = await run_agy_prompt(prompt=final_prompt, model=req.model, files=files_to_attach)
-    
+    messages = [
+        {"role": msg.role, "content": _extract_message_text(msg, file_mgr, files_to_attach)}
+        for msg in req.messages
+    ]
+
+    agy_model = resolve_model_alias(req.model)
+
+    if req.stream:
+        return StreamingResponse(
+            _openai_stream(messages, agy_model, req.model, start_time),
+            media_type="text/event-stream",
+        )
+
+    try:
+        agy_response = await run_completion(messages=messages, model=agy_model)
+    except Exception as e:
+        await stats_store.record_request(
+            endpoint="openai-chat", model=req.model, pool_account=pool_manager.get_active_account_id(),
+            prompt_tokens=0, completion_tokens=0, cache_tokens=0, success=False,
+            latency_ms=int((time.time() - start_time) * 1000), error_type=type(e).__name__,
+        )
+        raise
+
     assistant_text = ""
     if isinstance(agy_response, dict):
         assistant_text = agy_response.get("text") or agy_response.get("content") or agy_response.get("response") or str(agy_response)
     else:
         assistant_text = str(agy_response)
-        
+
+    agy_usage = agy_response.get("usage") if isinstance(agy_response, dict) else None
+    final_prompt_len = sum(len(m["content"]) for m in messages)
+    usage = _usage_from_agy(agy_usage, final_prompt_len, len(assistant_text))
+
+    await stats_store.record_request(
+        endpoint="openai-chat", model=req.model, pool_account=pool_manager.get_active_account_id(),
+        prompt_tokens=usage.prompt_tokens, completion_tokens=usage.completion_tokens, cache_tokens=usage.cache_tokens,
+        success=True, latency_ms=int((time.time() - start_time) * 1000), error_type=None,
+    )
+
     response = ChatCompletionResponse(
         id=f"chatcmpl-{uuid.uuid4().hex[:12]}",
         created=int(time.time()),
         model=req.model,
         choices=[Choice(message=ChoiceMessage(content=assistant_text))],
-        usage=Usage()
+        usage=usage
     )
     return response
 
@@ -140,7 +226,7 @@ async def generate_image(req: ImageGenerationRequest, background_tasks: Backgrou
         paths_str = ", ".join([f"'{p}'" for p in ref_paths])
         prompt = f"Use the reference images at {paths_str} to generate an image for the following prompt: '{req.prompt}'. Return ONLY the absolute local file path of the generated image in your response, do not include any other conversational text."
     
-    agy_response = await run_agy_prompt(prompt=prompt, output_format="json")
+    agy_response = await run_agy_prompt(prompt=prompt)
     
     # Extract path
     image_path = ""
@@ -178,6 +264,18 @@ async def generate_image(req: ImageGenerationRequest, background_tasks: Backgrou
 
 import subprocess
 
+def _read_local_log_tail(lines: int) -> str:
+    log_path = os.environ.get("AGY_LOG_FILE_PATH", "app/data/agy2api.log")
+    try:
+        with open(log_path, encoding="utf-8", errors="replace") as f:
+            all_lines = f.readlines()
+        if not all_lines:
+            return "Log file is empty."
+        return "".join(all_lines[-lines:])
+    except FileNotFoundError:
+        return "No log file found yet."
+
+
 @router.get("/logs", summary="Get System Logs", description="Read the latest system logs of the AGY Wrapper service.")
 async def get_logs(lines: int = 100, api_key: str = Depends(get_api_key)):
     try:
@@ -188,8 +286,11 @@ async def get_logs(lines: int = 100, api_key: str = Depends(get_api_key)):
         )
         if result.returncode == 0:
             return {"logs": result.stdout}
-        else:
-            return {"logs": f"Failed to read logs (code {result.returncode}): {result.stderr}"}
+        # journalctl exists but failed (e.g. not running under systemd) -- fall back to the local file
+        return {"logs": _read_local_log_tail(lines)}
+    except FileNotFoundError:
+        # journalctl isn't installed at all (e.g. local dev on Windows)
+        return {"logs": _read_local_log_tail(lines)}
     except Exception as e:
         return {"logs": f"Error reading logs: {str(e)}"}
 

@@ -1,5 +1,5 @@
 import { NavLink, Outlet } from 'react-router-dom';
-import { Key, Terminal, MessageSquare, Image as ImageIcon, Mic } from 'lucide-react';
+import { Key, Terminal, MessageSquare, Image as ImageIcon, Mic, BarChart3, Users } from 'lucide-react';
 
 export function Layout() {
   return (
@@ -15,6 +15,8 @@ export function Layout() {
           <NavItem to="/images" icon={<ImageIcon className="w-4 h-4" />} label="Images" />
           <NavItem to="/audio" icon={<Mic className="w-4 h-4" />} label="Audio" />
           <NavItem to="/logs" icon={<Terminal className="w-4 h-4" />} label="Logs" />
+          <NavItem to="/stats" icon={<BarChart3 className="w-4 h-4" />} label="Stats" />
+          <NavItem to="/pool" icon={<Users className="w-4 h-4" />} label="Pool" />
           <NavItem to="/keys" icon={<Key className="w-4 h-4" />} label="API Keys" />
         </nav>
       </div>

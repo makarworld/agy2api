@@ -27,3 +27,12 @@ __pycache__/
 # OS
 .DS_Store
 Thumbs.db
+
+# Runtime stats DB (local data, not source)
+app/data/
+
+# Account pool credential store must NEVER be inside this repo's history --
+# it lives in its own separate private git repo, default path is outside
+# the working tree (~/.agy2api-pool), this entry just guards against
+# accidentally placing it here too.
+.agy2api-pool/

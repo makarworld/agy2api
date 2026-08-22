@@ -62,6 +62,13 @@ flowchart LR
     class AGY cli
 ```
 
+### Transport modes
+
+Set via `AGY_TRANSPORT` in `.env` (default `cli`):
+
+- **`cli`** (default) — spawns a fresh `agy` subprocess per request. Simple, always correct, but every request pays full process/auth startup cost.
+- **`warm`** — session-sticky pool of live `agy` processes with real token-level streaming. Continuing an existing conversation (same history plus one new message) reuses an already-authenticated live process (~0.2s to first token instead of ~10-15s). A brand-new/unrelated conversation still cold-starts, same speed as `cli`. See `AGY_WARM_IDLE_TIMEOUT_SECONDS` / `AGY_WARM_MAX_SESSIONS` in `.env.example`.
+
 ### Core capabilities
 
 | Area | Capabilities |
@@ -175,4 +182,8 @@ npm install
 npm run build
 ```
 Once built, restart your Python server and the UI will be available at `http://localhost:8000/`. Alternatively, you can run `npm run dev` to start a Vite development server with hot-reloading.
+
+## TODO / Known Limitations
+
+- **Warm transport + account pool isolation**: spawn each warm `agy` process with its own `HOME`/`.gemini` directory per pool account instead of file-swapping a shared `~/.gemini` before spawn. Would let concurrent warm sessions on different accounts coexist without any activation-swap race, and remove the pool's global lock requirement for the warm transport entirely. Not done yet.
 
