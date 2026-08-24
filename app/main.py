@@ -1,4 +1,5 @@
 import os
+import sys
 import time
 import shutil
 import asyncio
@@ -118,7 +119,11 @@ async def health_check():
     return JSONResponse(content={"status": "ok", "message": "AGY wrapper is running"})
 
 # Serve UI if dist folder exists
-ui_dist = os.path.join(os.path.dirname(__file__), "..", "ui", "dist")
+base_dir = getattr(sys, "_MEIPASS", os.path.dirname(os.path.dirname(__file__)))
+ui_dist = os.path.join(base_dir, "ui", "dist")
+if not os.path.exists(ui_dist):
+    # fallback to local app sibling
+    ui_dist = os.path.join(os.path.dirname(__file__), "..", "ui", "dist")
 
 
 @app.exception_handler(404)
