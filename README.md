@@ -16,6 +16,42 @@
 
 ---
 
+## ⚙️ Конфигурация (.env)
+
+Пример дефолтного `.env` файла:
+
+```ini
+# дефолтный .env файл
+# 1. Секретные ключи для доступа ваших клиентов (Cursor, Claude Code, Cline) к этому серверу
+AGY_API_KEY=sk-my-super-secret-key-123
+ANTHROPIC_COMPAT_API_KEY=sk-my-super-secret-key-123
+
+# 2. Пароль для входа в веб-панель управления (http://localhost:8000)
+ADMIN_PASSWORD=my-admin-password
+
+# 3. Включение пула аккаунтов и ротации
+AGY_POOL_ENABLED=true
+AGY_POOL_DIR=~/.agy2api-pool
+
+# 4. Режим транспорта (http — самый быстрый, без запуска локального agy CLI)
+AGY_TRANSPORT=http
+
+# 5. Google OAuth параметры Antigravity (нужны для обновления токенов и добавления аккаунтов)
+AGY_OAUTH_REFRESH_ENABLED=true
+ANTIGRAVITY_CLIENT_ID=your-google-client-id-here.apps.googleusercontent.com
+ANTIGRAVITY_CLIENT_SECRET=your-google-client-secret-here
+
+# 6. Модель по умолчанию (Gemini 3.7 Flash Thinking)
+AGY_FORCE_MODEL=max-gem
+
+#  - Если Google заблокирован по региону (РФ и др.):
+#  AGY_GOOGLE_PROXY=http://user:pass@ip:port
+#  - Если прокси использует self-signed SSL-сертификат:
+#  AGY_SSL_VERIFY=false
+```
+
+---
+
 ## 🚀 Способы запуска и установки
 
 ### Вариант 1: Готовый EXE-релиз для Windows (Без установки Python и Node.js!)
@@ -65,20 +101,9 @@ cd ..
 ```
 
 #### Шаг 4. Настройка файла `.env`
-Скопируйте файл примера настроек:
+Скопируйте пример настроек и отредактируйте:
 ```bash
 copy .env.example .env
-```
-Откройте файл `.env` в блокноте и проверьте основные параметры (можно оставить как есть):
-```ini
-AGY_API_KEY=sk-my-super-secret-key-123
-ANTHROPIC_COMPAT_API_KEY=sk-my-super-secret-key-123
-ADMIN_PASSWORD=my-admin-password
-AGY_POOL_ENABLED=true
-AGY_TRANSPORT=http
-ANTIGRAVITY_CLIENT_ID=your-google-client-id-here.apps.googleusercontent.com
-ANTIGRAVITY_CLIENT_SECRET=your-google-client-secret-here
-AGY_FORCE_MODEL=max-gem
 ```
 
 #### Шаг 5. Запуск сервера
@@ -145,27 +170,39 @@ docker compose up -d --build
 
 ## 🔌 Подключение к AI клиентам
 
-### 1. Claude Code
-Задайте переменные окружения и запустите `claude`:
+### 1. Claude Code через лаунчер `gclaude`
 
-**В Linux / macOS / Git Bash:**
+В папке `scripts/` находятся скрипты для быстрого запуска Claude Code через этот шлюз:
+- `scripts/gclaude` — bash-скрипт запуска
+- `scripts/gclaude-sync.js` — автоматическая синхронизация настроек `~/.claude/settings.json`
+
+#### Установка лаунчера
+Поместите `gclaude` и `gclaude-sync.js` в каталог, входящий в системный `PATH` (например, `C:\Users\User\bin` или `~/bin`):
+
 ```bash
-export ANTHROPIC_BASE_URL="http://localhost:8000/anthropic/v1"
+# Скопировать скрипты в свой bin каталог
+cp scripts/gclaude scripts/gclaude-sync.js /c/Users/User/bin/
+chmod +x /c/Users/User/bin/gclaude
+```
+
+#### Запуск:
+1. Запустите сервер `agy2api` (например, на порту `26767` или `8000`).
+2. Запустите Claude Code командой:
+```bash
+# Обычный запуск в любом проекте
+gclaude
+
+# Запуск с разовым промптом
+gclaude "Сделай аудит кода"
+
+# Запуск без запроса подтверждений на операции
+gclaude --dangerously-skip-permissions
+```
+
+*(Если запускаете напрямую через стандартный CLI без скрипта-обертки `gclaude`)*:
+```bash
+export ANTHROPIC_BASE_URL="http://localhost:8000/anthropic"
 export ANTHROPIC_API_KEY="sk-my-super-secret-key-123"
-claude
-```
-
-**В Windows CMD:**
-```cmd
-set ANTHROPIC_BASE_URL=http://localhost:8000/anthropic/v1
-set ANTHROPIC_API_KEY=sk-my-super-secret-key-123
-claude
-```
-
-**В Windows PowerShell:**
-```powershell
-$env:ANTHROPIC_BASE_URL="http://localhost:8000/anthropic/v1"
-$env:ANTHROPIC_API_KEY="sk-my-super-secret-key-123"
 claude
 ```
 
@@ -186,7 +223,7 @@ claude
 ### 3. Cline (расширение для VS Code)
 1. Откройте настройки Cline (шестерёнка в панели расширения).
 2. **API Provider**: выберите `OpenAI Compatible` (или `Anthropic`).
-3. **Base URL**: `http://localhost:8000/v1` (для OpenAI) или `http://localhost:8000/anthropic/v1` (для Anthropic).
+3. **Base URL**: `http://localhost:8000/v1` (для OpenAI) или `http://localhost:8000/anthropic` (для Anthropic).
 4. **API Key**: `sk-my-super-secret-key-123`.
 5. **Model ID**: `max-gem`.
 
@@ -197,7 +234,7 @@ claude
 | Параметр | По умолчанию | Описание |
 | :--- | :--- | :--- |
 | `AGY_API_KEY` | `sk-...` | Секретный ключ для доступа к вашему OpenAI эндпоинту |
-| `ANTHROPIC_COMPAT_API_KEY` | `sk-...` | Секретный ключ для Anthropic эндпоинта (`/anthropic/v1`) |
+| `ANTHROPIC_COMPAT_API_KEY` | `sk-...` | Секретный ключ для Anthropic эндпоинта (`/anthropic`) |
 | `ADMIN_PASSWORD` | `...` | Пароль для входа в веб-панель `http://localhost:8000` |
 | `AGY_TRANSPORT` | `http` | Режим работы: `http` (прямой Cloud Code Assist), `warm` (фоновые сессии), `cli` (вызов процесса) |
 | `AGY_POOL_ENABLED` | `true` | Включение автоматической ротации пула аккаунтов |
