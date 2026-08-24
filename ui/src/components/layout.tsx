@@ -1,7 +1,10 @@
 import { NavLink, Outlet } from 'react-router-dom';
-import { Key, Terminal, MessageSquare, Image as ImageIcon, Mic, BarChart3, Users, Layers } from 'lucide-react';
+import { Key, Terminal, MessageSquare, Image as ImageIcon, Mic, BarChart3, Users, Layers, LogOut } from 'lucide-react';
+import { useApiKey } from '../hooks/use-api-key';
 
 export function Layout() {
+  const { clearApiKey } = useApiKey();
+
   return (
     <div className="flex h-screen bg-background text-foreground">
       {/* Sidebar */}
@@ -20,6 +23,15 @@ export function Layout() {
           <NavItem to="/logs" icon={<Terminal className="w-4 h-4" />} label="Logs" />
           <NavItem to="/keys" icon={<Key className="w-4 h-4" />} label="API Keys" />
         </nav>
+        <div className="p-4 border-t border-sidebar-border">
+          <button
+            onClick={clearApiKey}
+            className="flex items-center gap-3 w-full px-3 py-2 rounded-md text-sm font-medium text-destructive hover:bg-destructive/10 transition-colors"
+          >
+            <LogOut className="w-4 h-4" />
+            Выйти
+          </button>
+        </div>
       </div>
 
       {/* Main Content */}

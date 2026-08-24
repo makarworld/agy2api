@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { useApiKey } from '../hooks/use-api-key';
 import { RefreshCw, Terminal } from 'lucide-react';
 import { Button } from '../components/ui/button';
+import { apiUrl } from '../lib/api';
 
 export function LogsPage() {
   const { apiKey } = useApiKey();
@@ -11,7 +12,7 @@ export function LogsPage() {
   const fetchLogs = async () => {
     setLoading(true);
     try {
-      const response = await fetch('/v1/logs?lines=100', {
+      const response = await fetch(apiUrl('/v1/logs?lines=100'), {
         headers: {
           'Authorization': `Bearer ${apiKey}`
         }

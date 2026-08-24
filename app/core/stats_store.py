@@ -7,6 +7,8 @@ import hashlib
 import uuid
 from typing import Optional, List, Dict, Any, Tuple
 
+from app.core.token_stats import request_total_tokens
+
 logger = logging.getLogger(__name__)
 
 def extract_chat_metadata(
@@ -276,6 +278,10 @@ def _get_summary_sync(window_seconds: Optional[int]) -> dict:
                 "prompt_tokens": totals["prompt_tokens"] or 0,
                 "completion_tokens": totals["completion_tokens"] or 0,
                 "cache_tokens": totals["cache_tokens"] or 0,
+                "total_tokens": request_total_tokens(
+                    totals["prompt_tokens"] or 0,
+                    totals["completion_tokens"] or 0,
+                ),
             },
             "by_model": [dict(r) for r in by_model],
             "by_account": [dict(r) for r in by_account],
@@ -370,7 +376,7 @@ def _get_chats_grouped_sync(
                 COALESCE(SUM(prompt_tokens), 0) AS prompt_tokens,
                 COALESCE(SUM(completion_tokens), 0) AS completion_tokens,
                 COALESCE(SUM(cache_tokens), 0) AS cache_tokens,
-                COALESCE(SUM(prompt_tokens + completion_tokens + cache_tokens), 0) AS total_tokens,
+                COALESCE(SUM(prompt_tokens + completion_tokens), 0) AS total_tokens,
                 COALESCE(AVG(latency_ms), 0) AS avg_latency_ms,
                 MIN(ts) AS first_ts,
                 MAX(ts) AS last_ts,
@@ -557,6 +563,10 @@ def _get_requests_overview_sync(window_seconds: Optional[int] = None) -> dict:
             "total_prompt_tokens": totals["total_prompt_tokens"] or 0,
             "total_completion_tokens": totals["total_completion_tokens"] or 0,
             "total_cache_tokens": totals["total_cache_tokens"] or 0,
+            "total_tokens": request_total_tokens(
+                totals["total_prompt_tokens"] or 0,
+                totals["total_completion_tokens"] or 0,
+            ),
             "avg_latency_ms": int(totals["avg_latency_ms"] or 0),
             "models": [dict(m) for m in models],
             "endpoints": [dict(e) for e in endpoints],

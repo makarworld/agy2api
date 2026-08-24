@@ -312,6 +312,11 @@ async def generate_image(req: ImageGenerationRequest, background_tasks: Backgrou
         data=[img_data]
     )
 
+@router.post("/auth/verify", summary="Verify admin password / API key")
+async def verify_auth(api_key: str = Depends(get_api_key)):
+    return {"status": "ok", "authenticated": True}
+
+
 import subprocess
 
 def _read_local_log_tail(lines: int) -> str:

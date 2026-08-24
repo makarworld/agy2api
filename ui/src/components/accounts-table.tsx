@@ -1,6 +1,7 @@
 import { Pencil } from 'lucide-react';
 import { type PoolAccount } from '../hooks/use-stats';
 import { useApiKey } from '../hooks/use-api-key';
+import { apiUrl } from '../lib/api';
 
 export function AccountsTable({ accounts, poolEnabled, onChanged }: { accounts: PoolAccount[]; poolEnabled: boolean; onChanged: () => void }) {
   const { apiKey } = useApiKey();
@@ -11,7 +12,7 @@ export function AccountsTable({ accounts, poolEnabled, onChanged }: { accounts: 
       acc.proxy || ''
     );
     if (next === null) return; // cancelled
-    await fetch(`/v1/accounts/${acc.id}/proxy`, {
+    await fetch(apiUrl(`/v1/accounts/${acc.id}/proxy`), {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
       body: JSON.stringify({ proxy: next.trim() || null }),

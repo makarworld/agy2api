@@ -69,9 +69,10 @@ function UptimeStrip({ events }: { events: { ts: number; event_type: 'down' | 'u
 export function StatsPage() {
   const { summary, timeseries, accounts, poolEnabled, loading, refresh } = useStats();
 
-  const chartData: (TimeseriesBucket & { label: string })[] = timeseries.map((b) => ({
+  const chartData: (TimeseriesBucket & { label: string; uncached_prompt_tokens: number })[] = timeseries.map((b) => ({
     ...b,
     label: formatBucketTime(b.bucket_start),
+    uncached_prompt_tokens: Math.max(0, b.prompt_tokens - b.cache_tokens),
   }));
 
   return (
@@ -101,6 +102,10 @@ export function StatsPage() {
               label="Tokens IN / OUT / CACHE"
               value={`${summary.totals.prompt_tokens.toLocaleString()} / ${summary.totals.completion_tokens.toLocaleString()} / ${summary.totals.cache_tokens.toLocaleString()}`}
             />
+            <StatTile
+              label="Total processed"
+              value={(summary.totals.total_tokens ?? summary.totals.prompt_tokens + summary.totals.completion_tokens).toLocaleString()}
+            />
           </div>
 
           <UptimeStrip events={summary.recent_downtime_events} />
@@ -116,9 +121,9 @@ export function StatsPage() {
                 <YAxis fontSize={12} />
                 <Tooltip />
                 <Legend />
-                <Area type="monotone" dataKey="prompt_tokens" name="IN" stackId="1" stroke="#60a5fa" fill="#60a5fa" fillOpacity={0.5} />
+                <Area type="monotone" dataKey="uncached_prompt_tokens" name="IN (new)" stackId="1" stroke="#60a5fa" fill="#60a5fa" fillOpacity={0.5} />
+                <Area type="monotone" dataKey="cache_tokens" name="CACHE (subset of IN)" stackId="1" stroke="#fbbf24" fill="#fbbf24" fillOpacity={0.5} />
                 <Area type="monotone" dataKey="completion_tokens" name="OUT" stackId="1" stroke="#34d399" fill="#34d399" fillOpacity={0.5} />
-                <Area type="monotone" dataKey="cache_tokens" name="CACHE" stackId="1" stroke="#fbbf24" fill="#fbbf24" fillOpacity={0.5} />
               </AreaChart>
             </ResponsiveContainer>
           </div>

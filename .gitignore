@@ -43,7 +43,11 @@ example.har
 default.txt
 default_prompt_full.txt
 sse_example.txt
+scripts/
 
 # Local agent / IDE scratch (not part of the published fork)
 .claude/
 .cursor/
+graphify-out/
+ui/dist/
+

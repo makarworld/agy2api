@@ -2,212 +2,210 @@
 
 # AGY2API
 
-**OpenAI- and Anthropic-compatible API gateway for Google Antigravity (`agy`)**
+**Универсальный шлюз (Gateway) для работы с Google Antigravity & Cloud Code Assist (Gemini 3.7 / Flash Thinking) через форматы OpenAI и Anthropic API.**
 
-English | [Tiếng Việt (Vietnamese)](doc/README_vi.md)
-
-[![Python](https://img.shields.io/badge/Python-3.8%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.100%2B-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
 [![Docker](https://img.shields.io/badge/Docker-Supported-2496ED?logo=docker&logoColor=white)](https://www.docker.com/)
-[![Google Antigravity](https://img.shields.io/badge/Google_Antigravity_CLI-4285F4?logo=google&logoColor=white)](https://antigravity.google/product/antigravity-cli)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 </div>
 
 > [!TIP]
-> AGY2API bridges modern AI clients (Cursor, Claude Code, Cline, Chatbox) to your local Google Antigravity session.
+> **AGY2API** позволяет подключить **Claude Code**, **Cursor**, **Cline**, **Chatbox**, **SillyTavern** и любые другие клиенты к безлимитному пулу Google-аккаунтов с автоматической ротацией при превышении квот (Rate Limit 429), поддержкой прокси для каждого аккаунта и встроенным веб-дашбордом.
 
-> [!IMPORTANT]
-> **Install and sign in to the [Google Antigravity (`agy`) CLI](https://antigravity.google/product/antigravity-cli) before running this API.**
+---
 
-> [!CAUTION]
-> **Do not expose this API to the public internet.** It wraps a powerful local CLI. The included safety hook reduces risk but cannot guarantee protection against command injection.
+## 🚀 Пошаговая инструкция по установке (с нуля)
 
-Fork of [truongqv12/agy2api](https://github.com/truongqv12/agy2api) with account pool, Anthropic Messages API, warm/http transports, and OAuth refresh.
+### Вариант 1: Запуск на Windows (самый простой)
 
-## Overview
+#### Шаг 1. Установите программы (если еще не стоят)
+1. **Python 3.10+**: [Скачать с python.org](https://www.python.org/downloads/) *(Обязательно поставьте галочку "Add Python to PATH" при установке!)*
+2. **Node.js 18+**: [Скачать с nodejs.org](https://nodejs.org/) *(LTS версия)*
+3. **Git**: [Скачать с git-scm.com](https://git-scm.com/)
 
-Python FastAPI gateway that turns OpenAI- or Anthropic-shaped HTTP requests into Antigravity traffic — either via the `agy` CLI or direct Cloud Code Assist HTTP.
-
-### Architecture
-
-```mermaid
-flowchart LR
-    classDef client fill:#e1f5fe,stroke:#01579b
-    classDef core fill:#fff3e0,stroke:#e65100
-    classDef backend fill:#e8f5e9,stroke:#1b5e20
-
-    subgraph Clients["Clients"]
-        direction LR
-        IDE["Cursor · Claude Code · Cline"]
-        WebUI["Chatbox · SillyTavern · Dashboard"]
-    end
-
-    subgraph Gateway["AGY2API"]
-        direction LR
-        API["OpenAI / Anthropic routes"]
-        Transport["cli · warm · http"]
-        Pool["Account pool · OAuth refresh"]
-        API --> Transport
-        Transport --> Pool
-    end
-
-    AGY["agy CLI / Cloud Code Assist"]
-
-    Clients --> API
-    Pool --> AGY
-
-    class IDE,WebUI client
-    class API,Transport,Pool core
-    class AGY backend
-```
-
-### Transport modes (`AGY_TRANSPORT`)
-
-| Mode | Behavior |
-| :--- | :--- |
-| **`cli`** (default) | Fresh `agy` subprocess per request. Simple and correct; pays full process/auth startup each time. |
-| **`warm`** | Session-sticky pool of live `agy` processes with token-level streaming. Continuing the same conversation reuses an authenticated process (~0.2s to first token vs ~10–15s cold). See `AGY_WARM_*` in `.env.example`. |
-| **`http`** | Direct Cloud Code Assist HTTP (no `agy` agent tools / system prompt). Best when the **client** owns tools (e.g. Claude Code). Needs OAuth client env vars. Falls back to `warm` on errors. |
-
-OAuth access tokens are refreshed via `oauth2.googleapis.com` before CLI calls and for `http` transport. Creds are read from `~/.gemini/oauth_creds.json` or `~/.gemini/antigravity-cli/antigravity-oauth-token`. Put `ANTIGRAVITY_CLIENT_ID` / `ANTIGRAVITY_CLIENT_SECRET` in **local** `.env` only — never commit them.
-
-### Model aliases and force routing
-
-- Alias `max-gem` → `gemini-3.7-flash-high` (`MODEL_ALIASES` in `app/core/model_manager.py`).
-- `AGY_FORCE_MODEL=max-gem` sends **all** backend calls through one model (including Claude Code classifier traffic). Responses still echo the client’s original `model` name.
-
-### Core capabilities
-
-| Area | Capabilities |
-| :-- | :-- |
-| **APIs** | OpenAI Chat Completions, Images, Audio; Anthropic Messages (`/v1/messages`) |
-| **Clients** | Cursor, Claude Code, Cline, Chatbox, SillyTavern |
-| **Multimodal** | Images, OCR, PDFs, image-to-image via base64 data URIs |
-| **Account pool** | Multi-account rotation, cooldown, optional private git sync, proxies |
-| **Security** | PreToolUse hook (`scripts/safety_gate.py`) blocks dangerous shell commands |
-| **Audio** | TTS via `/v1/audio/speech` ([capcut-tts-api](https://github.com/K07VN/capcut-tts-api)) |
-| **Ops** | Web UI (keys, logs, stats, pool, requests), Docker, systemd |
-
-## Quick start
-
-### Prerequisites
-
-- Python 3.8+ **or** Docker & Compose
-- Working `agy` login on the host (or in the container’s user home)
-
-### Method 1: Docker (recommended)
-
+#### Шаг 2. Скачайте проект и откройте консоль
+Откройте терминал (Command Prompt / PowerShell / Git Bash) и выполните:
 ```bash
 git clone https://github.com/makarworld/agy2api.git
 cd agy2api
-cp .env.example .env
-# edit .env: set AGY_API_KEY and any OAuth / pool settings
-docker compose up -d
-docker compose logs -f
 ```
 
-### Method 2: Local
-
+#### Шаг 3. Установите зависимости и соберите веб-панель
 ```bash
-git clone https://github.com/makarworld/agy2api.git
-cd agy2api
-python3 -m venv .venv
-source .venv/bin/activate   # Windows: .venv\Scripts\activate
+# 1. Создание виртуального окружения Python
+python -m venv .venv
+
+# 2. Активация окружения (для Windows cmd/bash):
+call .venv\Scripts\activate
+# (если используете PowerShell: .venv\Scripts\Activate.ps1)
+
+# 3. Установка Python библиотек
 pip install -r requirements.txt
-cp .env.example .env
-# set AGY_API_KEY (and ANTIGRAVITY_CLIENT_* if using http transport)
-uvicorn app.main:app --host 0.0.0.0 --port 8000
-```
 
-### Method 3: systemd (Linux)
-
-1. Edit `agy-wrapper.service` (`WorkingDirectory`, `ExecStart`, `EnvironmentFile`).
-2. Install and start:
-
-```bash
-mkdir -p ~/.config/systemd/user
-cp agy-wrapper.service ~/.config/systemd/user/
-systemctl --user daemon-reload
-systemctl --user enable --now agy-wrapper
-journalctl --user -u agy-wrapper -f
-```
-
-## Configuration (secrets stay local)
-
-Copy `.env.example` → `.env`. Important variables:
-
-| Variable | Purpose |
-| :--- | :--- |
-| `AGY_API_KEY` | Bearer key for OpenAI-compatible routes |
-| `ANTHROPIC_COMPAT_API_KEY` | Optional key for Anthropic routes (falls back to `AGY_API_KEY`) |
-| `AGY_TRANSPORT` | `cli` \| `warm` \| `http` |
-| `ANTIGRAVITY_CLIENT_ID` / `ANTIGRAVITY_CLIENT_SECRET` | OAuth refresh (required for `http`) |
-| `AGY_FORCE_MODEL` | Optional forced backend model / alias |
-| `AGY_POOL_ENABLED` | Multi-account pool (default `false`) |
-
-`.env`, OAuth token files under `~/.gemini/`, HAR captures, and pool credential stores must **never** be committed. Pool data defaults to `~/.agy2api-pool` (outside the repo).
-
-## Safety hooks
-
-Link or copy `.agents/hooks.json` to `~/.gemini/config/hooks.json` (or keep `.agents/hooks.json`) so `scripts/safety_gate.py` can block dangerous shell commands.
-
-## API surface
-
-**OpenAI-compatible**
-
-- `GET /health`
-- `GET /v1/models`
-- `POST /v1/chat/completions`
-- `POST /v1/images/generations`
-- `POST /v1/audio/speech` · `GET /v1/audio/voices`
-- `GET /api/keys` · `POST /api/keys`
-- `GET /api/logs`
-
-**Anthropic-compatible**
-
-- `POST /v1/messages`
-- `POST /v1/messages/count_tokens`
-
-**Ops / pool / stats**
-
-- `GET /v1/accounts` and related pool routes
-- `GET /v1/stats/summary` · `timeseries` · `overview` · `chats` · `requests`
-
-Full request/response shapes: [API_DOCS.md](API_DOCS.md).
-
-## Cursor / Claude Code
-
-**Cursor → Models**
-
-1. Override OpenAI Base URL: `http://localhost:8000/v1`
-2. API key = your `AGY_API_KEY`
-3. Add custom model IDs (e.g. `gemini-3.7-flash-high` or alias `max-gem`)
-
-**Claude Code**
-
-Point Anthropic base URL at this server’s `/v1` and use `ANTHROPIC_COMPAT_API_KEY` (or `AGY_API_KEY`). Prefer `AGY_TRANSPORT=http` when Claude Code should own tool execution.
-
-## Web UI
-
-<p align="center">
-  <img alt="AGY2API Dashboard" src="doc/screenshot.png" width="800" />
-</p>
-
-`dist/` is not in git. Build once:
-
-```bash
+# 4. Сборка веб-интерфейса (UI)
 cd ui
 npm install
 npm run build
+cd ..
 ```
 
-Restart the Python app — UI at `http://localhost:8000/`. For hot reload: `npm run dev`.
+#### Шаг 4. Настройка файла `.env`
+Скопируйте файл примера настроек:
+```bash
+copy .env.example .env
+```
+Откройте файл `.env` в блокноте и проверьте основные параметры (можно оставить как есть):
+```ini
+AGY_API_KEY=sk-my-super-secret-key-123
+ANTHROPIC_COMPAT_API_KEY=sk-my-super-secret-key-123
+ADMIN_PASSWORD=my-admin-password
+AGY_POOL_ENABLED=true
+AGY_TRANSPORT=http
+ANTIGRAVITY_CLIENT_ID=your-google-client-id-here.apps.googleusercontent.com
+ANTIGRAVITY_CLIENT_SECRET=your-google-client-secret-here
+AGY_FORCE_MODEL=max-gem
+```
 
-## Known limitations
+#### Шаг 5. Запуск сервера
+Дважды кликните по файлу **`start.bat`** или выполните в консоли:
+```bash
+uvicorn app.main:app --host 0.0.0.0 --port 8000
+```
+После запуска откройте браузер: **http://localhost:8000** (Пароль для входа: значение `ADMIN_PASSWORD` из `.env`).
 
-- **Warm + account pool**: concurrent warm sessions on different accounts still share activation of `~/.gemini`; ideal fix is per-account `HOME` isolation (not implemented yet).
+---
 
-## License
+### Вариант 2: Запуск на Linux / macOS
 
-MIT — see [LICENSE](LICENSE).
+```bash
+# 1. Клонирование
+git clone https://github.com/makarworld/agy2api.git
+cd agy2api
+
+# 2. Python venv & pip
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+
+# 3. Сборка UI
+cd ui && npm install && npm run build && cd ..
+
+# 4. Конфиг
+cp .env.example .env
+
+# 5. Запуск
+uvicorn app.main:app --host 0.0.0.0 --port 8000
+```
+
+---
+
+### Вариант 3: Запуск через Docker
+
+```bash
+git clone https://github.com/makarworld/agy2api.git
+cd agy2api
+cp .env.example .env
+docker compose up -d --build
+```
+
+---
+
+## 🔑 Как добавить Google аккаунты в пул (в 1 клик)
+
+Для работы **НЕ требуется** локальный `agy CLI` или терминалы авторизации.
+
+1. Откройте в браузере веб-интерфейс: **`http://localhost:8000/`**
+2. В боковом меню перейдите в раздел **`Account Pool`**.
+3. В блоке **"Add Account via Google OAuth"**:
+   - (Опционально) Укажите имя аккаунта (например `main`, `work`, `acc2`).
+   - (Опционально) Укажите прокси для этого аккаунта (например `http://user:pass@ip:port` или `socks5://ip:port`).
+   - Нажмите кнопку **`Generate Login Link`**.
+4. Нажмите синюю кнопку **`Open Google Sign-In`** (или скопируйте ссылку и откройте в браузере, где выполнен вход в нужный Google-аккаунт).
+5. Войдите в Google аккаунт и разрешите доступ. В конце страница выдаст код (или покажет адрес вида `https://antigravity.google/oauth-callback?code=4/0ATsMZq...`).
+6. Скопируйте этот код (или всю строку URL) и вставьте в поле **`Paste Authorization Code or Redirect URL`**.
+7. Нажмите кнопку **`Connect Account`**.
+8. **Готово!** Аккаунт мгновенно добавлен в пул, проверен и готов к обработке запросов. Вы можете повторить это для 5, 10 или 20 аккаунтов.
+
+---
+
+## 🔌 Подключение к AI клиентам
+
+### 1. Claude Code
+Задайте переменные окружения и запустите `claude`:
+
+**В Linux / macOS / Git Bash:**
+```bash
+export ANTHROPIC_BASE_URL="http://localhost:8000/anthropic/v1"
+export ANTHROPIC_API_KEY="sk-my-super-secret-key-123"
+claude
+```
+
+**В Windows CMD:**
+```cmd
+set ANTHROPIC_BASE_URL=http://localhost:8000/anthropic/v1
+set ANTHROPIC_API_KEY=sk-my-super-secret-key-123
+claude
+```
+
+**В Windows PowerShell:**
+```powershell
+$env:ANTHROPIC_BASE_URL="http://localhost:8000/anthropic/v1"
+$env:ANTHROPIC_API_KEY="sk-my-super-secret-key-123"
+claude
+```
+
+---
+
+### 2. Cursor IDE
+1. Откройте **Settings** → **Cursor Settings** → вкладка **Models**.
+2. Включите переключатель **OpenAI API Key** и укажите ключ: `sk-my-super-secret-key-123`.
+3. Нажмите **Override OpenAI Base URL** и введите:
+   ```
+   http://localhost:8000/v1
+   ```
+4. В списке моделей добавьте кастомную модель: `max-gem` (или `gemini-3.7-flash-high`).
+5. Отключите другие модели и выберите `max-gem` в чате / автокомплите.
+
+---
+
+### 3. Cline (расширение для VS Code)
+1. Откройте настройки Cline (шестерёнка в панели расширения).
+2. **API Provider**: выберите `OpenAI Compatible` (или `Anthropic`).
+3. **Base URL**: `http://localhost:8000/v1` (для OpenAI) или `http://localhost:8000/anthropic/v1` (для Anthropic).
+4. **API Key**: `sk-my-super-secret-key-123`.
+5. **Model ID**: `max-gem`.
+
+---
+
+## ⚙️ Настройки `.env` (Справочник)
+
+| Параметр | По умолчанию | Описание |
+| :--- | :--- | :--- |
+| `AGY_API_KEY` | `sk-...` | Секретный ключ для доступа к вашему OpenAI эндпоинту |
+| `ANTHROPIC_COMPAT_API_KEY` | `sk-...` | Секретный ключ для Anthropic эндпоинта (`/anthropic/v1`) |
+| `ADMIN_PASSWORD` | `...` | Пароль для входа в веб-панель `http://localhost:8000` |
+| `AGY_TRANSPORT` | `http` | Режим работы: `http` (прямой Cloud Code Assist), `warm` (фоновые сессии), `cli` (вызов процесса) |
+| `AGY_POOL_ENABLED` | `true` | Включение автоматической ротации пула аккаунтов |
+| `AGY_FORCE_MODEL` | `max-gem` | Принудительно направлять все запросы в Gemini 3.7 Flash Thinking |
+| `AGY_GOOGLE_PROXY` | ` ` | Глобальный прокси для запросов к Google (если страна под санкциями) |
+
+---
+
+## ❓ Частые вопросы и ошибки (Troubleshooting)
+
+**В: Ошибка `Rate Limit / Quota Exceeded (429)` в клиенте?**
+> О: Если в пуле добавлено несколько аккаунтов (`AGY_POOL_ENABLED=true`), сервер сам переключится на следующий свободный аккаунт. Добавьте больше аккаунтов через вкладку `Account Pool`.
+
+**В: Запросы к Google блокируются по региону (Location not supported)?**
+> О: Укажите прокси в `.env` (`AGY_GOOGLE_PROXY=http://user:pass@ip:port`) либо задайте индивидуальный прокси при добавлении аккаунта в веб-панели.
+
+**В: Как обновить веб-панель после правок кода?**
+> О: Перейдите в папку `ui` и выполните `npm run build`.
+
+---
+
+## 📄 Лицензия
+
+MIT License — свободное использование и модификация.

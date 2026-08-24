@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { apiUrl } from '../lib/api';
 
 export function AudioPage() {
   const [text, setText] = useState('Hello world!');
@@ -7,8 +8,10 @@ export function AudioPage() {
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
   const [loadingTTS, setLoadingTTS] = useState(false);
 
+  const getApiKey = () => localStorage.getItem('AGY_API_KEY') || localStorage.getItem('agy_api_key') || '';
+
   useEffect(() => {
-    fetch('/v1/audio/voices', { headers: { Authorization: `Bearer ${localStorage.getItem('agy_api_key')}` } })
+    fetch(apiUrl('/v1/audio/voices'), { headers: { Authorization: `Bearer ${getApiKey()}` } })
       .then(res => res.json())
       .then(data => {
         if (data.voices) setVoices(data.voices);
@@ -19,8 +22,8 @@ export function AudioPage() {
   const handleTTS = async () => {
     setLoadingTTS(true);
     try {
-      const apiKey = localStorage.getItem('agy_api_key') || '';
-      const res = await fetch('/v1/audio/speech', {
+      const apiKey = getApiKey();
+      const res = await fetch(apiUrl('/v1/audio/speech'), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

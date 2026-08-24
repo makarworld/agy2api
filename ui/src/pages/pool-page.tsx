@@ -1,72 +1,94 @@
-import { useEffect, useRef, useState } from 'react';
-import { RefreshCw, UserPlus, X } from 'lucide-react';
+import { useState } from 'react';
+import { RefreshCw, UserPlus, ExternalLink, Check, Copy, AlertCircle } from 'lucide-react';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { AccountsTable } from '../components/accounts-table';
 import { useStats } from '../hooks/use-stats';
 import { useApiKey } from '../hooks/use-api-key';
-
-type FlowState = 'idle' | 'starting' | 'pending' | 'saving';
+import { apiUrl } from '../lib/api';
 
 export function PoolPage() {
   const { apiKey } = useApiKey();
   const { accounts, poolEnabled, loading, refresh } = useStats();
+
+  const [label, setLabel] = useState('');
   const [proxy, setProxy] = useState('');
-  const [flowState, setFlowState] = useState<FlowState>('idle');
-  const [message, setMessage] = useState<string | null>(null);
-  const pollRef = useRef<number | null>(null);
-
-  const stopPolling = () => {
-    if (pollRef.current) {
-      clearInterval(pollRef.current);
-      pollRef.current = null;
-    }
-  };
-
-  useEffect(() => stopPolling, []);
+  const [authUrl, setAuthUrl] = useState<string | null>(null);
+  const [flowId, setFlowId] = useState<string | null>(null);
+  const [authCode, setAuthCode] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const [generatingUrl, setGeneratingUrl] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const [statusMsg, setStatusMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
   const authHeaders = { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` };
 
-  const startAddAccount = async () => {
-    setFlowState('starting');
-    setMessage(null);
-    const res = await fetch('/v1/accounts/add-flow/start', {
-      method: 'POST',
-      headers: authHeaders,
-      body: JSON.stringify({ proxy: proxy.trim() || null }),
-    });
-    const data = await res.json();
-    setMessage(data.message || (data.auto_added_current ?? null));
-    if (data.auto_added_current) refresh();
-    setFlowState('pending');
-
-    pollRef.current = window.setInterval(async () => {
-      const statusRes = await fetch('/v1/accounts/add-flow/status', { headers: authHeaders });
-      const status = await statusRes.json();
-      if (status.changed) {
-        stopPolling();
-        setFlowState('saving');
-        const label = window.prompt('New Google account signed in! Give it a label:', 'account-2');
-        if (label) {
-          await fetch('/v1/accounts', {
-            method: 'POST',
-            headers: authHeaders,
-            body: JSON.stringify({ label, proxy: proxy.trim() || null }),
-          });
-        }
-        await fetch('/v1/accounts/add-flow/cancel', { method: 'POST', headers: authHeaders });
-        setFlowState('idle');
-        setMessage(label ? `Added "${label}" to the pool.` : null);
-        refresh();
-      }
-    }, 3000);
+  const startOAuth = async () => {
+    setGeneratingUrl(true);
+    setStatusMsg(null);
+    try {
+      const q = proxy.trim() ? `?proxy=${encodeURIComponent(proxy.trim())}` : '';
+      const res = await fetch(apiUrl(`/v1/accounts/oauth/start${q}`), { headers: authHeaders });
+      if (!res.ok) throw new Error('Failed to generate authorization URL');
+      const data = await res.json();
+      setAuthUrl(data.url);
+      setFlowId(data.flow_id);
+    } catch (err: any) {
+      setStatusMsg({ type: 'error', text: err.message || 'Error generating auth link' });
+    } finally {
+      setGeneratingUrl(false);
+    }
   };
 
-  const cancelFlow = async () => {
-    stopPolling();
-    await fetch('/v1/accounts/add-flow/cancel', { method: 'POST', headers: authHeaders });
-    setFlowState('idle');
-    setMessage(null);
+  const copyUrl = () => {
+    if (!authUrl) return;
+    navigator.clipboard.writeText(authUrl);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  const completeOAuth = async () => {
+    if (!authCode.trim()) {
+      setStatusMsg({ type: 'error', text: 'Please paste the authorization code or redirect URL' });
+      return;
+    }
+    setSubmitting(true);
+    setStatusMsg(null);
+    try {
+      const res = await fetch(apiUrl('/v1/accounts/oauth/complete'), {
+        method: 'POST',
+        headers: authHeaders,
+        body: JSON.stringify({
+          flow_id: flowId,
+          code: authCode.trim(),
+          label: label.trim() || undefined,
+          proxy: proxy.trim() || undefined,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || 'Failed to connect account');
+
+      setStatusMsg({
+        type: 'success',
+        text: `Account "${data.label}" (${data.email || data.id}) connected successfully!`,
+      });
+      setAuthUrl(null);
+      setFlowId(null);
+      setAuthCode('');
+      setLabel('');
+      refresh();
+    } catch (err: any) {
+      setStatusMsg({ type: 'error', text: err.message || 'Failed to exchange OAuth code' });
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const resetForm = () => {
+    setAuthUrl(null);
+    setFlowId(null);
+    setAuthCode('');
+    setStatusMsg(null);
   };
 
   return (
@@ -75,7 +97,7 @@ export function PoolPage() {
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">Account Pool</h1>
           <p className="text-sm text-muted-foreground mt-1">
-            All agy accounts connected to the rotation pool.
+            Google Antigravity accounts connected for automatic rotation and quota sharing.
           </p>
         </div>
         <Button onClick={refresh} disabled={loading} variant="outline" size="sm" className="gap-2">
@@ -84,10 +106,26 @@ export function PoolPage() {
         </Button>
       </div>
 
-      <div className="border rounded-xl p-4 bg-card mb-6 space-y-3">
-        {flowState === 'idle' ? (
-          <div className="flex items-end gap-3">
-            <div className="flex-1">
+      <div className="border rounded-xl p-5 bg-card mb-6 space-y-4">
+        <h2 className="text-sm font-semibold tracking-wide flex items-center gap-2">
+          <UserPlus className="w-4 h-4 text-primary" />
+          Add Account via Google OAuth
+        </h2>
+
+        {!authUrl ? (
+          <div className="grid grid-cols-1 md:grid-cols-12 gap-3 items-end">
+            <div className="md:col-span-4">
+              <label className="text-xs text-muted-foreground uppercase tracking-wide">
+                Account Label (optional)
+              </label>
+              <Input
+                value={label}
+                onChange={(e) => setLabel(e.target.value)}
+                placeholder="e.g. personal, work-2"
+                className="mt-1"
+              />
+            </div>
+            <div className="md:col-span-5">
               <label className="text-xs text-muted-foreground uppercase tracking-wide">
                 Proxy (optional)
               </label>
@@ -98,24 +136,75 @@ export function PoolPage() {
                 className="mt-1"
               />
             </div>
-            <Button onClick={startAddAccount} className="gap-2">
-              <UserPlus className="w-4 h-4" />
-              Add Account
-            </Button>
+            <div className="md:col-span-3">
+              <Button
+                onClick={startOAuth}
+                disabled={generatingUrl}
+                className="w-full gap-2"
+              >
+                {generatingUrl ? 'Generating...' : 'Generate Login Link'}
+              </Button>
+            </div>
           </div>
         ) : (
-          <div className="flex items-center justify-between">
-            <div className="text-sm">
-              {flowState === 'starting' && 'Opening login terminal…'}
-              {flowState === 'pending' && (message || 'Waiting for you to sign in with the new account…')}
-              {flowState === 'saving' && 'Saving new account…'}
+          <div className="space-y-4 border-t pt-4">
+            <div className="bg-muted/40 p-3 rounded-lg flex flex-col md:flex-row items-center justify-between gap-3">
+              <div className="text-xs text-muted-foreground break-all flex-1 font-mono">
+                {authUrl}
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                <Button size="sm" variant="outline" onClick={copyUrl} className="gap-1">
+                  {copied ? <Check className="w-3.5 h-3.5 text-green-500" /> : <Copy className="w-3.5 h-3.5" />}
+                  {copied ? 'Copied' : 'Copy Link'}
+                </Button>
+                <a href={authUrl} target="_blank" rel="noreferrer">
+                  <Button size="sm" className="gap-1">
+                    <ExternalLink className="w-3.5 h-3.5" />
+                    Open Google Sign-In
+                  </Button>
+                </a>
+              </div>
             </div>
-            {flowState !== 'saving' && (
-              <Button onClick={cancelFlow} variant="outline" size="sm" className="gap-2">
-                <X className="w-4 h-4" />
-                Cancel
-              </Button>
-            )}
+
+            <div className="space-y-2">
+              <label className="text-xs font-medium">
+                Paste Authorization Code or Redirect URL:
+              </label>
+              <div className="flex gap-2">
+                <Input
+                  value={authCode}
+                  onChange={(e) => setAuthCode(e.target.value)}
+                  placeholder="4/0ATsMZq... or https://antigravity.google/oauth-callback?code=..."
+                  className="font-mono text-sm"
+                />
+                <Button
+                  onClick={completeOAuth}
+                  disabled={submitting || !authCode.trim()}
+                  className="shrink-0"
+                >
+                  {submitting ? 'Connecting...' : 'Connect Account'}
+                </Button>
+                <Button variant="ghost" onClick={resetForm} disabled={submitting}>
+                  Cancel
+                </Button>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Sign in with the Google account in your browser, then copy the code displayed on page (or from the URL) and paste it above.
+              </p>
+            </div>
+          </div>
+        )}
+
+        {statusMsg && (
+          <div
+            className={`p-3 rounded-lg text-sm flex items-center gap-2 ${
+              statusMsg.type === 'success'
+                ? 'bg-green-500/10 text-green-700 dark:text-green-300 border border-green-500/20'
+                : 'bg-destructive/10 text-destructive border border-destructive/20'
+            }`}
+          >
+            <AlertCircle className="w-4 h-4 shrink-0" />
+            <span>{statusMsg.text}</span>
           </div>
         )}
       </div>

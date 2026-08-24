@@ -1,6 +1,7 @@
 import { useEffect } from 'react';
-import { BrowserRouter, Routes, Route } from 'react-router-dom';
+import { HashRouter, Routes, Route } from 'react-router-dom';
 import { Layout } from './components/layout';
+import { AuthGuard } from './components/auth-guard';
 import { ApiKeysPage } from './pages/api-keys-page';
 import { LogsPage } from './pages/logs-page';
 import { ChatPage } from './pages/chat-page';
@@ -17,20 +18,22 @@ function App() {
   }, []);
 
   return (
-    <BrowserRouter>
-      <Routes>
-        <Route path="/" element={<Layout />}>
-          <Route index element={<ChatPage />} />
-          <Route path="images" element={<ImagesPage />} />
-          <Route path="audio" element={<AudioPage />} />
-          <Route path="requests" element={<RequestsPage />} />
-          <Route path="stats" element={<StatsPage />} />
-          <Route path="pool" element={<PoolPage />} />
-          <Route path="logs" element={<LogsPage />} />
-          <Route path="keys" element={<ApiKeysPage />} />
-        </Route>
-      </Routes>
-    </BrowserRouter>
+    <HashRouter>
+      <AuthGuard>
+        <Routes>
+          <Route path="/" element={<Layout />}>
+            <Route index element={<ChatPage />} />
+            <Route path="images" element={<ImagesPage />} />
+            <Route path="audio" element={<AudioPage />} />
+            <Route path="requests" element={<RequestsPage />} />
+            <Route path="stats" element={<StatsPage />} />
+            <Route path="pool" element={<PoolPage />} />
+            <Route path="logs" element={<LogsPage />} />
+            <Route path="keys" element={<ApiKeysPage />} />
+          </Route>
+        </Routes>
+      </AuthGuard>
+    </HashRouter>
   );
 }
 

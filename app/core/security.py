@@ -10,9 +10,10 @@ load_dotenv()
 # Default to "sk-dummy" if not set, for local testing without strict enforcement
 API_KEY = os.environ.get("AGY_API_KEY", "sk-dummy")
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_COMPAT_API_KEY", API_KEY)
+ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", os.environ.get("AGY_ADMIN_PASSWORD", API_KEY))
 
 def get_api_key(credentials: HTTPAuthorizationCredentials = Security(security)):
-    if credentials.credentials != API_KEY:
+    if credentials.credentials != API_KEY and credentials.credentials != ADMIN_PASSWORD:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect API key",

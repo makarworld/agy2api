@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState, useRef } from 'react';
 import { useApiKey } from './use-api-key';
+import { apiUrl } from '../lib/api';
 
 export interface ChatItem {
   chat_id: string;
@@ -46,6 +47,7 @@ export interface RequestsOverview {
   total_prompt_tokens: number;
   total_completion_tokens: number;
   total_cache_tokens: number;
+  total_tokens: number;
   avg_latency_ms: number;
   models: { model: string; count: number }[];
   endpoints: { endpoint: string; count: number }[];
@@ -97,7 +99,7 @@ export function useRequests() {
     try {
       const headers = { Authorization: `Bearer ${apiKey}` };
       const hoursParam = filtersRef.current.windowHours ? `?window_hours=${filtersRef.current.windowHours}` : '';
-      const res = await fetch(`/v1/stats/overview${hoursParam}`, { headers });
+      const res = await fetch(apiUrl(`/v1/stats/overview${hoursParam}`), { headers });
       if (res.ok) {
         const data = await res.json();
         setOverview(data);
@@ -124,7 +126,7 @@ export function useRequests() {
       if (current.status !== 'all') params.append('status', current.status);
       if (current.windowHours) params.append('window_hours', String(current.windowHours));
 
-      const res = await fetch(`/v1/stats/chats?${params.toString()}`, { headers });
+      const res = await fetch(apiUrl(`/v1/stats/chats?${params.toString()}`), { headers });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       setChats(data.chats || []);
@@ -153,7 +155,7 @@ export function useRequests() {
       if (current.status !== 'all') params.append('status', current.status);
       if (current.windowHours) params.append('window_hours', String(current.windowHours));
 
-      const res = await fetch(`/v1/stats/requests?${params.toString()}`, { headers });
+      const res = await fetch(apiUrl(`/v1/stats/requests?${params.toString()}`), { headers });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       setRequests(data.requests || []);
@@ -184,7 +186,7 @@ export function useRequests() {
       setLoadingChatId(chatId);
       try {
         const headers = { Authorization: `Bearer ${apiKey}` };
-        const res = await fetch(`/v1/stats/chats/${encodeURIComponent(chatId)}`, { headers });
+        const res = await fetch(apiUrl(`/v1/stats/chats/${encodeURIComponent(chatId)}`), { headers });
         if (res.ok) {
           const data = await res.json();
           const reqs = data.requests || [];
@@ -206,7 +208,7 @@ export function useRequests() {
       if (!apiKey) return;
       try {
         const headers = { Authorization: `Bearer ${apiKey}` };
-        const res = await fetch(`/v1/stats/chats/${encodeURIComponent(chatId)}`, {
+        const res = await fetch(apiUrl(`/v1/stats/chats/${encodeURIComponent(chatId)}`), {
           method: 'DELETE',
           headers,
         });
@@ -231,7 +233,7 @@ export function useRequests() {
       try {
         const headers = { Authorization: `Bearer ${apiKey}` };
         const param = olderThanHours ? `?older_than_hours=${olderThanHours}` : '';
-        const res = await fetch(`/v1/stats/requests${param}`, {
+        const res = await fetch(apiUrl(`/v1/stats/requests${param}`), {
           method: 'DELETE',
           headers,
         });

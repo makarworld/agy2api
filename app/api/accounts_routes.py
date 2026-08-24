@@ -26,6 +26,14 @@ class AddFlowStartRequest(BaseModel):
     proxy: Optional[str] = None
 
 
+class OAuthCompleteRequest(BaseModel):
+    flow_id: Optional[str] = None
+    code: str
+    label: Optional[str] = None
+    proxy: Optional[str] = None
+    code_verifier: Optional[str] = None
+
+
 def _pool_disabled_response():
     raise HTTPException(status_code=400, detail="Account pool is disabled (set AGY_POOL_ENABLED=true)")
 
@@ -54,6 +62,27 @@ async def list_accounts(api_key: str = Depends(get_api_key)):
             "total_completion_tokens": state.get("total_completion_tokens", 0),
         })
     return {"pool_enabled": pool_manager.pool_enabled(), "accounts": result}
+
+
+@router.get("/accounts/oauth/start", summary="Generate Antigravity Google OAuth PKCE authorization URL")
+async def start_oauth_flow(proxy: Optional[str] = None, api_key: str = Depends(get_api_key)):
+    return pool_manager.generate_oauth_auth_url(proxy=proxy)
+
+
+@router.post("/accounts/oauth/complete", summary="Exchange Google OAuth code for tokens and save account to pool")
+async def complete_oauth_flow_route(req: OAuthCompleteRequest, api_key: str = Depends(get_api_key)):
+    try:
+        record = await pool_manager.complete_oauth_flow(
+            flow_id=req.flow_id,
+            code=req.code,
+            label=req.label,
+            proxy=req.proxy,
+            code_verifier=req.code_verifier,
+        )
+        return record
+    except Exception as e:
+        logger.error(f"[accounts] OAuth completion failed: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @router.post("/accounts", summary="Snapshot the currently logged-in agy session as a new pool account")

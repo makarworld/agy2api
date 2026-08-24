@@ -197,6 +197,9 @@ function RequestDetailModal({
             <span className="font-medium">
               {request.prompt_tokens.toLocaleString()} / {request.completion_tokens.toLocaleString()} / {request.cache_tokens.toLocaleString()}
             </span>
+            <span className="text-muted-foreground block text-[11px] mt-0.5">
+              Total: {(request.prompt_tokens + request.completion_tokens).toLocaleString()} (cache already in In)
+            </span>
           </div>
         </div>
 
@@ -456,7 +459,7 @@ function ChatCard({
                         <span>{formatLatency(req.latency_ms)}</span>
                         <span>•</span>
                         <span>
-                          {req.prompt_tokens + req.completion_tokens + req.cache_tokens} tok
+                          {req.prompt_tokens + req.completion_tokens} tok
                         </span>
                       </div>
 
@@ -642,7 +645,7 @@ export function RequestsPage() {
           <StatTile
             label="Tokens (IN / OUT)"
             value={`${formatTokens(overview.total_prompt_tokens)} / ${formatTokens(overview.total_completion_tokens)}`}
-            subtext={`Total: ${formatTokens(overview.total_prompt_tokens + overview.total_completion_tokens + overview.total_cache_tokens)}`}
+            subtext={`Total: ${formatTokens(overview.total_tokens ?? overview.total_prompt_tokens + overview.total_completion_tokens)} · cache ⊆ IN: ${formatTokens(overview.total_cache_tokens)}`}
             icon={<Coins className="w-4 h-4 text-amber-400" />}
           />
           <StatTile

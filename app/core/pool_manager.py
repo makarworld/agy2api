@@ -1,18 +1,24 @@
 import asyncio
+import base64
 import hashlib
 import json
 import logging
 import os
 import platform
 import re
+import secrets
 import shutil
 import subprocess
 import time
+import urllib.parse
 import uuid
-from typing import List, Optional, Set, Tuple
+from typing import Dict, List, Optional, Set, Tuple
+
+import httpx
 
 from app.core import oauth_refresh
 from app.core import stats_store
+from app.core.proxy_config import get_google_proxy, httpx_client_kwargs
 
 logger = logging.getLogger(__name__)
 
@@ -81,8 +87,9 @@ async def run_agy_subprocess_without_pool(
     cmd: List[str], timeout: Optional[float] = None, input_data: Optional[bytes] = None
 ) -> Tuple[int, bytes, bytes]:
     """Run agy CLI against live ~/.gemini without pool account rotation."""
-    await _ensure_oauth_fresh(proxy=get_active_account_proxy())
-    return await _run_subprocess(cmd, timeout, input_data=input_data)
+    proxy = get_active_account_proxy()
+    await _ensure_oauth_fresh(proxy=proxy)
+    return await _run_subprocess(cmd, timeout, env=_proxy_env(proxy), input_data=input_data)
 
 
 def _manifest_path() -> str:
@@ -161,7 +168,7 @@ def current_session_matches_pool() -> Optional[str]:
 
 
 def launch_login_terminal(env: Optional[dict] = None) -> bool:
-    """Best-effort: opens a terminal window running `gemini` so the user can complete
+    """Best-effort: opens a terminal window running `agy auth login` so the user can complete
     whatever login flow it presents (browser-based OAuth). Returns False if no
     terminal could be launched (e.g. a headless Linux server) -- caller should show
     a manual fallback instruction in that case."""
@@ -169,15 +176,15 @@ def launch_login_terminal(env: Optional[dict] = None) -> bool:
     try:
         if system == "Windows":
             subprocess.Popen(
-                ["cmd", "/c", "start", "AGY Account Login", "cmd", "/k", "gemini"],
+                ["cmd", "/c", "start", "AGY Account Login", "cmd", "/k", "agy", "auth", "login"],
                 env=env,
             )
             return True
         elif system == "Darwin":
-            subprocess.Popen(["osascript", "-e", 'tell app "Terminal" to do script "gemini"'], env=env)
+            subprocess.Popen(["osascript", "-e", 'tell app "Terminal" to do script "agy auth login"'], env=env)
             return True
         else:
-            subprocess.Popen(["x-terminal-emulator", "-e", "gemini"], env=env)
+            subprocess.Popen(["x-terminal-emulator", "-e", "agy auth login"], env=env)
             return True
     except Exception as e:
         logger.warning(f"[pool] Could not launch login terminal: {e}")
@@ -199,7 +206,7 @@ async def start_add_account_flow(proxy: Optional[str] = None) -> dict:
     global _pending_add_baseline_hash
     _pending_add_baseline_hash = _hash_file(os.path.join(_gemini_home(), "oauth_creds.json"))
 
-    terminal_launched = launch_login_terminal(env=_proxy_env(proxy))
+    terminal_launched = launch_login_terminal(env=_proxy_env(get_google_proxy(proxy)))
 
     return {
         "auto_added_current": auto_added_current,
@@ -209,7 +216,7 @@ async def start_add_account_flow(proxy: Optional[str] = None) -> dict:
             "then this page will detect it automatically."
             if terminal_launched
             else "Could not open a terminal automatically. Open one yourself and run "
-                 "`gemini`, sign in with the new account, then this page will detect it."
+                 "`agy auth login`, sign in with the new account, then this page will detect it."
         ),
     }
 
@@ -220,6 +227,202 @@ async def check_add_account_flow() -> dict:
     current_hash = _hash_file(os.path.join(_gemini_home(), "oauth_creds.json"))
     changed = current_hash is not None and current_hash != _pending_add_baseline_hash
     return {"pending": True, "changed": changed}
+
+
+_OAUTH_FLOWS: Dict[str, dict] = {}
+_OAUTH_FLOW_TTL = 900  # 15 min
+
+
+def generate_oauth_auth_url(proxy: Optional[str] = None) -> dict:
+    """Generate PKCE auth URL for Antigravity Google OAuth."""
+    client_id = os.environ.get("ANTIGRAVITY_CLIENT_ID", "").strip()
+    if not client_id:
+        raise RuntimeError("ANTIGRAVITY_CLIENT_ID must be set in .env to generate OAuth URLs")
+
+    # Generate PKCE verifier & challenge
+    code_verifier = secrets.token_urlsafe(32)
+    code_challenge_bytes = hashlib.sha256(code_verifier.encode("ascii")).digest()
+    code_challenge = base64.urlsafe_b64encode(code_challenge_bytes).decode("ascii").rstrip("=")
+
+    state = secrets.token_urlsafe(16)
+    flow_id = secrets.token_hex(8)
+
+    scope = (
+        "https://www.googleapis.com/auth/cloud-platform "
+        "https://www.googleapis.com/auth/userinfo.email "
+        "https://www.googleapis.com/auth/userinfo.profile "
+        "https://www.googleapis.com/auth/cclog "
+        "https://www.googleapis.com/auth/experimentsandconfigs "
+        "https://www.googleapis.com/auth/aicode "
+        "openid"
+    )
+    redirect_uri = "https://antigravity.google/oauth-callback"
+
+    params = {
+        "access_type": "offline",
+        "client_id": client_id,
+        "code_challenge": code_challenge,
+        "code_challenge_method": "S256",
+        "prompt": "consent",
+        "redirect_uri": redirect_uri,
+        "response_type": "code",
+        "scope": scope,
+        "state": state,
+    }
+    url = f"https://accounts.google.com/o/oauth2/auth?{urllib.parse.urlencode(params)}"
+        "scope": scope,
+        "state": state,
+    }
+    url = f"https://accounts.google.com/o/oauth2/auth?{urllib.parse.urlencode(params)}"
+
+    _OAUTH_FLOWS[flow_id] = {
+        "flow_id": flow_id,
+        "code_verifier": code_verifier,
+        "redirect_uri": redirect_uri,
+        "client_id": client_id,
+        "created_at": time.time(),
+        "proxy": proxy,
+    }
+
+    # Clean old flows
+    now = time.time()
+    for fid in list(_OAUTH_FLOWS.keys()):
+        if now - _OAUTH_FLOWS[fid]["created_at"] > _OAUTH_FLOW_TTL:
+            _OAUTH_FLOWS.pop(fid, None)
+
+    return {
+        "flow_id": flow_id,
+        "url": url,
+        "state": state,
+        "code_challenge": code_challenge,
+    }
+
+
+async def complete_oauth_flow(
+    flow_id: Optional[str],
+    code: str,
+    label: Optional[str] = None,
+    proxy: Optional[str] = None,
+    code_verifier: Optional[str] = None,
+) -> dict:
+    """Exchange authorization code for tokens and store account in pool."""
+    flow = _OAUTH_FLOWS.pop(flow_id, None) if flow_id else None
+    verifier = code_verifier or (flow.get("code_verifier") if flow else None)
+    if not verifier:
+        raise ValueError("Missing code_verifier (expired or invalid flow_id)")
+
+    redirect_uri = flow.get("redirect_uri") if flow else "https://antigravity.google/oauth-callback"
+    client_id = (flow.get("client_id") if flow else None) or os.environ.get("ANTIGRAVITY_CLIENT_ID", "").strip()
+    client_secret = os.environ.get("ANTIGRAVITY_CLIENT_SECRET", "").strip()
+    if not client_id or not client_secret:
+        raise RuntimeError("ANTIGRAVITY_CLIENT_ID and ANTIGRAVITY_CLIENT_SECRET must be set in .env")
+
+    req_proxy = proxy or (flow.get("proxy") if flow else None)
+    effective_proxy = get_google_proxy(req_proxy)
+
+    # Clean code in case user pasted full callback URL or raw string
+    clean_code = code.strip()
+    if "code=" in clean_code:
+        try:
+            parsed = urllib.parse.urlparse(clean_code)
+            qs = urllib.parse.parse_qs(parsed.query or parsed.fragment)
+            if "code" in qs:
+                clean_code = qs["code"][0]
+        except Exception:
+            pass
+
+    async with httpx.AsyncClient(**httpx_client_kwargs(proxy=effective_proxy, timeout=30.0)) as client:
+        resp = await client.post(
+            "https://oauth2.googleapis.com/token",
+            data={
+                "client_id": client_id,
+                "client_secret": client_secret,
+                "code": clean_code,
+                "code_verifier": verifier,
+                "grant_type": "authorization_code",
+                "redirect_uri": redirect_uri,
+            },
+            headers={
+                "content-type": "application/x-www-form-urlencoded",
+                "user-agent": "Go-http-client/2.0",
+                "accept-encoding": "gzip",
+            },
+        )
+
+    if resp.status_code != 200:
+        raise RuntimeError(f"Google OAuth token exchange failed (HTTP {resp.status_code}): {resp.text[:500]}")
+
+    payload = resp.json()
+    refresh_token = payload.get("refresh_token")
+    access_token = payload.get("access_token")
+    id_token = payload.get("id_token")
+    expires_in = int(payload.get("expires_in", 3600))
+    expiry_date = int((time.time() + expires_in) * 1000)
+
+    # Parse email from id_token if present
+    email = None
+    if id_token:
+        try:
+            parts = id_token.split(".")
+            if len(parts) >= 2:
+                padded = parts[1] + "=" * ((4 - len(parts[1]) % 4) % 4)
+                decoded_jwt = json.loads(base64.urlsafe_b64decode(padded.encode()).decode("utf-8"))
+                email = decoded_jwt.get("email")
+        except Exception as e:
+            logger.warning(f"[pool] Failed decoding email from id_token: {e}")
+
+    acc_label = label.strip() if label and label.strip() else (email.split("@")[0] if email else "account")
+    account_id = f"{_slugify(acc_label)}-{uuid.uuid4().hex[:6]}"
+    account_dir = os.path.join(_pool_dir(), "accounts", account_id)
+    os.makedirs(account_dir, exist_ok=True)
+
+    # Write oauth_creds.json
+    creds_data = {
+        "access_token": access_token,
+        "expires_in": expires_in,
+        "refresh_token": refresh_token,
+        "scope": payload.get("scope", ""),
+        "token_type": payload.get("token_type", "Bearer"),
+        "id_token": id_token,
+        "expiry_date": expiry_date,
+    }
+    with open(os.path.join(account_dir, "oauth_creds.json"), "w", encoding="utf-8") as f:
+        json.dump(creds_data, f, indent=2)
+
+    # Write google_accounts.json
+    if email:
+        with open(os.path.join(account_dir, "google_accounts.json"), "w", encoding="utf-8") as f:
+            json.dump({"active": email, "old": []}, f, indent=2)
+
+    # Generate installation IDs if needed
+    for fname in ("installation_id", "antigravity-cli_installation_id", "antigravity_installation_id"):
+        with open(os.path.join(account_dir, fname), "w", encoding="utf-8") as f:
+            f.write(str(uuid.uuid4()))
+
+    manifest = _load_manifest()
+    record = {"id": account_id, "label": acc_label, "added_at": time.time()}
+    if req_proxy:
+        record["proxy"] = req_proxy
+    manifest.setdefault("accounts", []).append(record)
+    _save_manifest(manifest)
+
+    await stats_store.upsert_pool_account_state(account_id, status="healthy")
+    logger.info(f"[pool] Created new account {account_id} via direct OAuth PKCE (email={email})")
+
+    # If no active account is set or activated, activate this one
+    if not get_active_account_id():
+        try:
+            await activate_account(account_id)
+        except Exception:
+            pass
+
+    return {
+        "id": account_id,
+        "label": acc_label,
+        "email": email,
+        "added_at": record["added_at"],
+        "proxy": req_proxy,
+    }
 
 
 def cancel_add_account_flow() -> None:
@@ -234,10 +437,11 @@ def get_active_account_id() -> Optional[str]:
 
 def get_active_account_proxy() -> Optional[str]:
     account_id = get_active_account_id()
-    if not account_id:
-        return None
-    account = _find_account(account_id)
-    return account.get("proxy") if account else None
+    account_proxy = None
+    if account_id:
+        account = _find_account(account_id)
+        account_proxy = account.get("proxy") if account else None
+    return get_google_proxy(account_proxy)
 
 
 async def _ensure_oauth_fresh(proxy: Optional[str] = None) -> None:
@@ -272,6 +476,14 @@ async def init_pool_state() -> None:
     except Exception as e:
         logger.warning(f"Failed to restore pool active account from DB: {e}")
 
+    accounts = list_accounts()
+    if accounts:
+        target_id = _active_account_id if _active_account_id and _find_account(_active_account_id) else accounts[0]["id"]
+        try:
+            await activate_account(target_id)
+        except Exception as e:
+            logger.warning(f"[pool] Failed initial activation of account {target_id}: {e}")
+
 
 async def activate_account(account_id: str) -> None:
     account = _find_account(account_id)
@@ -280,7 +492,7 @@ async def activate_account(account_id: str) -> None:
 
     account_dir = os.path.join(_pool_dir(), "accounts", account_id)
     gemini_home = _gemini_home()
-    proxy = account.get("proxy")
+    proxy = get_google_proxy(account.get("proxy"))
 
     live_token = _read_live_access_token(gemini_home)
     snapshot_token = _read_snapshot_access_token(account_dir)
@@ -461,8 +673,9 @@ async def execute_agy(
     full serialization costs nothing that wasn't already implicit.
     """
     if not pool_enabled():
-        await _ensure_oauth_fresh(proxy=get_active_account_proxy())
-        return await _run_subprocess(cmd, timeout, input_data=input_data)
+        proxy = get_active_account_proxy()
+        await _ensure_oauth_fresh(proxy=proxy)
+        return await _run_subprocess(cmd, timeout, env=_proxy_env(proxy), input_data=input_data)
 
     async with _LOCK:
         max_attempts = int(os.environ.get("AGY_POOL_MAX_RETRIES", "3"))
@@ -477,9 +690,11 @@ async def execute_agy(
             if get_active_account_id() != account["id"]:
                 await activate_account(account["id"])
             else:
-                await _ensure_oauth_fresh(proxy=account.get("proxy"))
+                proxy = get_google_proxy(account.get("proxy"))
+                await _ensure_oauth_fresh(proxy=proxy)
 
-            env = _proxy_env(account.get("proxy"))
+            proxy = get_google_proxy(account.get("proxy"))
+            env = _proxy_env(proxy)
             returncode, stdout, stderr = await _run_subprocess(cmd, timeout, env=env, input_data=input_data)
             await sync_back_credentials(account["id"])
 

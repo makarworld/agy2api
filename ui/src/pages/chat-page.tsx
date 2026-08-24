@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useApiKey } from '../hooks/use-api-key';
 import { fileToBase64 } from '../lib/utils';
+import { apiUrl } from '../lib/api';
 
 import { Input } from '../components/ui/input';
 import { Send, Image as ImageIcon, X } from 'lucide-react';
@@ -68,7 +69,7 @@ export function ChatPage() {
     setIsLoading(true);
 
     try {
-      const response = await fetch('/v1/chat/completions', {
+      const response = await fetch(apiUrl('/v1/chat/completions'), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

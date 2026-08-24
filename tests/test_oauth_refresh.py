@@ -236,7 +236,7 @@ class TestOAuthRefresh(unittest.TestCase):
 
         asyncio.run(_run())
 
-    def test_ensure_fresh_stale_expiry_verify_ok_skips_refresh(self):
+    def test_ensure_fresh_stale_expiry_still_refreshes_despite_verify_cache(self):
         async def _run():
             with tempfile.TemporaryDirectory() as tmp:
                 path = os.path.join(tmp, "oauth_creds.json")
@@ -248,6 +248,16 @@ class TestOAuthRefresh(unittest.TestCase):
                 with open(path, "w", encoding="utf-8") as f:
                     json.dump(data, f)
 
+                oauth_refresh._verify_cache[
+                    oauth_refresh._access_token_suffix("live-token")
+                ] = time.time() + 600
+
+                mock_response = {
+                    "access_token": "refreshed-access",
+                    "refresh_token": "refresh-abc",
+                    "token_type": "Bearer",
+                    "expires_in": 3600,
+                }
                 with patch(
                     "app.core.oauth_refresh.verify_access_token",
                     new_callable=AsyncMock,
@@ -256,10 +266,63 @@ class TestOAuthRefresh(unittest.TestCase):
                     with patch(
                         "app.core.oauth_refresh.refresh_google_token",
                         new_callable=AsyncMock,
+                        return_value=mock_response,
                     ) as mock_refresh:
                         refreshed = await oauth_refresh.ensure_fresh_credentials(tmp)
-                        self.assertFalse(refreshed)
-                        mock_refresh.assert_not_called()
+                        self.assertTrue(refreshed)
+                        mock_refresh.assert_called_once()
+
+                with open(path, "r", encoding="utf-8") as f:
+                    saved = json.load(f)
+                self.assertEqual(saved["access_token"], "refreshed-access")
+
+        asyncio.run(_run())
+
+    def test_invalidate_verify_cache(self):
+        token_a = "ya29.a" + "x" * 20
+        token_b = "ya29.b" + "y" * 20
+        key_a = oauth_refresh._access_token_suffix(token_a)
+        key_b = oauth_refresh._access_token_suffix(token_b)
+        oauth_refresh._verify_cache[key_a] = time.time() + 600
+        oauth_refresh._verify_cache[key_b] = time.time() + 600
+        oauth_refresh.invalidate_verify_cache(token_a)
+        self.assertNotIn(key_a, oauth_refresh._verify_cache)
+        self.assertIn(key_b, oauth_refresh._verify_cache)
+        oauth_refresh.invalidate_verify_cache()
+        self.assertEqual(oauth_refresh._verify_cache, {})
+
+    def test_force_refresh_bypasses_valid_expiry(self):
+        async def _run():
+            with tempfile.TemporaryDirectory() as tmp:
+                path = os.path.join(tmp, "oauth_creds.json")
+                future_ms = int((time.time() + 7200) * 1000)
+                data = {
+                    "access_token": "valid-token",
+                    "refresh_token": "refresh-abc",
+                    "expiry_date": future_ms,
+                }
+                with open(path, "w", encoding="utf-8") as f:
+                    json.dump(data, f)
+
+                mock_response = {
+                    "access_token": "forced-access",
+                    "refresh_token": "refresh-abc",
+                    "token_type": "Bearer",
+                    "expires_in": 3600,
+                }
+                with patch(
+                    "app.core.oauth_refresh.verify_access_token",
+                    new_callable=AsyncMock,
+                    return_value=True,
+                ):
+                    with patch(
+                        "app.core.oauth_refresh.refresh_google_token",
+                        new_callable=AsyncMock,
+                        return_value=mock_response,
+                    ) as mock_refresh:
+                        refreshed = await oauth_refresh.ensure_fresh_credentials(tmp, force=True)
+                        self.assertTrue(refreshed)
+                        mock_refresh.assert_called_once()
 
         asyncio.run(_run())
 

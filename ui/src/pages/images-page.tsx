@@ -3,6 +3,7 @@ import { useApiKey } from '../hooks/use-api-key';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Image as ImageIcon, Loader2 } from 'lucide-react';
+import { apiUrl } from '../lib/api';
 
 export function ImagesPage() {
   const { apiKey } = useApiKey();
@@ -23,7 +24,7 @@ export function ImagesPage() {
     setError(null);
 
     try {
-      const response = await fetch('/v1/images/generations', {
+      const response = await fetch(apiUrl('/v1/images/generations'), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

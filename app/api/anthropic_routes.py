@@ -10,7 +10,9 @@ from fastapi.responses import StreamingResponse, JSONResponse
 from app.api.anthropic_models import AnthropicMessagesRequest
 from app.core.security import get_anthropic_api_key
 from app.core.agy_runner import run_completion, stream_agy_completion, with_heartbeat
+from app.core.auto_classifier import is_auto_classifier_request, shortcut_enabled, shortcut_response
 from app.core.file_handler import TempFileManager
+from app.core.http_tools_bridge import stream_tool_call_key
 from app.core.model_manager import resolve_backend_model, get_force_model
 from app.core import stats_store
 from app.core import pool_manager
@@ -136,6 +138,74 @@ def _sse(event_type: str, data: dict) -> str:
     return f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
 
 
+def _tool_dedupe_key(tc: dict) -> str:
+    tc_id = (tc.get("id") or "").strip()
+    if tc_id:
+        return f"id:{tc_id}"
+    return stream_tool_call_key(tc)
+
+
+async def _stream_classifier_shortcut(
+    client_model: str,
+    start_time: float,
+    chat_id: str,
+    chat_title: str,
+    prompt_preview: str,
+    *,
+    prompt_tokens: int,
+    response_text: str,
+):
+    msg_id = f"msg_{uuid.uuid4().hex[:24]}"
+    completion_tokens = max(1, len(response_text) // 4)
+
+    yield _sse("message_start", {
+        "type": "message_start",
+        "message": {
+            "id": msg_id,
+            "type": "message",
+            "role": "assistant",
+            "content": [],
+            "model": client_model,
+            "stop_reason": None,
+            "stop_sequence": None,
+            "usage": {"input_tokens": prompt_tokens, "output_tokens": 0, "cache_read_input_tokens": 0},
+        },
+    })
+    yield _sse("content_block_start", {
+        "type": "content_block_start",
+        "index": 0,
+        "content_block": {"type": "text", "text": ""},
+    })
+    yield _sse("content_block_delta", {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {"type": "text_delta", "text": response_text},
+    })
+    yield _sse("content_block_stop", {"type": "content_block_stop", "index": 0})
+    yield _sse("message_delta", {
+        "type": "message_delta",
+        "delta": {"stop_reason": "end_turn", "stop_sequence": None},
+        "usage": {"output_tokens": completion_tokens},
+    })
+    yield _sse("message_stop", {"type": "message_stop"})
+
+    await stats_store.record_request(
+        endpoint="anthropic-classifier-shortcut",
+        model=client_model,
+        pool_account=pool_manager.get_active_account_id(),
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        cache_tokens=0,
+        success=True,
+        latency_ms=int((time.time() - start_time) * 1000),
+        error_type=None,
+        chat_id=chat_id,
+        chat_title=chat_title,
+        prompt_preview=prompt_preview,
+        response_preview=response_text,
+    )
+
+
 async def _stream_response(
     messages: List[dict],
     system: Optional[str],
@@ -164,18 +234,15 @@ async def _stream_response(
             "usage": {"input_tokens": fallback_prompt_tokens, "output_tokens": 0, "cache_read_input_tokens": 0},
         },
     })
-    yield _sse("content_block_start", {
-        "type": "content_block_start",
-        "index": 0,
-        "content_block": {"type": "text", "text": ""},
-    })
 
     final_usage: dict = {}
     assistant_chunks: List[str] = []
     tool_calls_collected: List[dict] = []
-    text_block_open = True
+    emitted_tool_keys: set[str] = set()
+    text_block_open = False
     block_index = 0
     stop_reason = "end_turn"
+    error_message: Optional[str] = None
 
     try:
         async for piece in with_heartbeat(
@@ -191,12 +258,14 @@ async def _stream_response(
                 yield ": ping\n\n"
                 continue
 
-            if "tool_calls" in piece:
+            if "tool_calls" in piece and "usage" not in piece:
                 for tc in piece["tool_calls"]:
-                    if text_block_open and assistant_chunks:
-                        yield _sse("content_block_stop", {"type": "content_block_stop", "index": 0})
-                        text_block_open = False
-                    elif text_block_open and not assistant_chunks:
+                    tool_key = _tool_dedupe_key(tc)
+                    if tool_key in emitted_tool_keys:
+                        continue
+                    emitted_tool_keys.add(tool_key)
+
+                    if text_block_open:
                         yield _sse("content_block_stop", {"type": "content_block_stop", "index": 0})
                         text_block_open = False
 
@@ -224,6 +293,13 @@ async def _stream_response(
                     yield _sse("content_block_stop", {"type": "content_block_stop", "index": block_index})
 
             if "delta" in piece:
+                if not text_block_open:
+                    yield _sse("content_block_start", {
+                        "type": "content_block_start",
+                        "index": 0,
+                        "content_block": {"type": "text", "text": ""},
+                    })
+                    text_block_open = True
                 assistant_chunks.append(piece["delta"])
                 yield _sse("content_block_delta", {
                     "type": "content_block_delta",
@@ -235,10 +311,15 @@ async def _stream_response(
                 final_usage = piece.get("usage", {})
                 if piece.get("stop_reason"):
                     stop_reason = piece["stop_reason"]
+                if piece.get("error"):
+                    error_message = piece["error"]
                 if piece.get("tool_calls"):
                     for tc in piece["tool_calls"]:
-                        if tc not in tool_calls_collected:
-                            tool_calls_collected.append(tc)
+                        tool_key = _tool_dedupe_key(tc)
+                        if tool_key in emitted_tool_keys:
+                            continue
+                        emitted_tool_keys.add(tool_key)
+                        tool_calls_collected.append(tc)
     except Exception as e:
         await stats_store.record_request(
             endpoint="anthropic-chat", model=client_model, pool_account=pool_manager.get_active_account_id(),
@@ -261,6 +342,25 @@ async def _stream_response(
     if tool_calls_collected:
         stop_reason = "tool_use"
 
+    if error_message or (not assistant_text and not tool_calls_collected):
+        if not error_message:
+            error_message = "Model returned no output"
+        if not assistant_text:
+            yield _sse("content_block_start", {
+                "type": "content_block_start",
+                "index": 0,
+                "content_block": {"type": "text", "text": ""},
+            })
+            assistant_chunks.append(error_message)
+            yield _sse("content_block_delta", {
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": {"type": "text_delta", "text": error_message},
+            })
+            text_block_open = True
+            assistant_text = error_message
+        stop_reason = "error"
+
     prompt_tokens = final_usage.get("input_tokens", fallback_prompt_tokens)
     completion_tokens = final_usage.get("output_tokens", 0) + final_usage.get("thinking_tokens", 0)
     if completion_tokens == 0 and assistant_text:
@@ -269,11 +369,13 @@ async def _stream_response(
         completion_tokens = max(1, len(json.dumps(tool_calls_collected)) // 4)
     cache_tokens = final_usage.get("cache_read_tokens", 0)
 
+    is_error = stop_reason == "error"
     preview = assistant_text[:1500] if assistant_text else json.dumps(tool_calls_collected)[:1500]
     await stats_store.record_request(
         endpoint="anthropic-chat", model=client_model, pool_account=pool_manager.get_active_account_id(),
         prompt_tokens=prompt_tokens, completion_tokens=completion_tokens, cache_tokens=cache_tokens,
-        success=True, latency_ms=int((time.time() - start_time) * 1000), error_type=None,
+        success=not is_error, latency_ms=int((time.time() - start_time) * 1000),
+        error_type="EmptyModelResponse" if is_error else None,
         chat_id=chat_id, chat_title=chat_title, prompt_preview=prompt_preview,
         response_preview=preview,
     )
@@ -315,6 +417,55 @@ async def create_message(
         user_identifier=user_identifier,
         system_text=system,
     )
+
+    if shortcut_enabled() and is_auto_classifier_request(messages, system=system):
+        response_text = shortcut_response()
+        prompt_tokens = max(1, sum(_message_char_len(m) for m in messages) // 4)
+        logger.info("[anthropic] auto-classifier shortcut -> %s", response_text)
+        if req.stream:
+            return StreamingResponse(
+                _stream_classifier_shortcut(
+                    req.model,
+                    start_time,
+                    chat_id,
+                    chat_title,
+                    prompt_preview,
+                    prompt_tokens=prompt_tokens,
+                    response_text=response_text,
+                ),
+                media_type="text/event-stream",
+            )
+
+        completion_tokens = max(1, len(response_text) // 4)
+        await stats_store.record_request(
+            endpoint="anthropic-classifier-shortcut",
+            model=req.model,
+            pool_account=pool_manager.get_active_account_id(),
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            cache_tokens=0,
+            success=True,
+            latency_ms=int((time.time() - start_time) * 1000),
+            error_type=None,
+            chat_id=chat_id,
+            chat_title=chat_title,
+            prompt_preview=prompt_preview,
+            response_preview=response_text,
+        )
+        return JSONResponse(content={
+            "id": f"msg_{uuid.uuid4().hex[:24]}",
+            "type": "message",
+            "role": "assistant",
+            "model": req.model,
+            "content": [{"type": "text", "text": response_text}],
+            "stop_reason": "end_turn",
+            "stop_sequence": None,
+            "usage": {
+                "input_tokens": prompt_tokens,
+                "output_tokens": completion_tokens,
+                "cache_read_input_tokens": 0,
+            },
+        })
 
     if req.stream:
         return StreamingResponse(

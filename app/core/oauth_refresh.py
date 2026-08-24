@@ -10,6 +10,7 @@ from urllib.parse import unquote
 import httpx
 
 from app.core.cloudcode_common import QUOTA_PROJECT, QUOTA_SUMMARY_URL, cloudcode_headers
+from app.core.proxy_config import httpx_client_kwargs
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +29,7 @@ _REFRESH_HEADERS = {
 _verify_cache: dict[str, float] = {}
 _VERIFY_CACHE_TTL_SECONDS = int(os.environ.get("AGY_OAUTH_VERIFY_CACHE_SECONDS", "300"))
 _verify_lock = asyncio.Lock()
+_refresh_lock = asyncio.Lock()
 
 _active_credential: Optional[Tuple[str, CredentialKind]] = None
 
@@ -112,15 +114,38 @@ def token_file_path(gemini_home: Optional[str] = None) -> str:
 
 
 def discover_credential_candidates(gemini_home: Optional[str] = None) -> list[Tuple[str, CredentialKind]]:
-    """All existing credential files under ~/.gemini (antigravity first)."""
+    """All existing credential files under ~/.gemini or pool fallback (antigravity first)."""
     home = gemini_home or os.path.expanduser("~/.gemini")
     candidates: list[Tuple[str, CredentialKind]] = []
     for path, kind in (
         (os.path.join(home, ANTIGRAVITY_TOKEN_REL), "antigravity"),
         (os.path.join(home, OAUTH_CREDS_REL), "gemini_flat"),
     ):
-        if os.path.exists(path):
+        if os.path.exists(path) and os.path.getsize(path) > 0:
             candidates.append((path, kind))
+
+    if not candidates:
+        pool_dir = os.path.expanduser(os.environ.get("AGY_POOL_DIR", "~/.agy2api-pool"))
+        manifest_path = os.path.join(pool_dir, "accounts.json")
+        if os.path.exists(manifest_path):
+            try:
+                with open(manifest_path, "r", encoding="utf-8") as f:
+                    manifest = json.load(f)
+                for acc in manifest.get("accounts", []):
+                    acc_id = acc.get("id")
+                    if not acc_id:
+                        continue
+                    acc_dir = os.path.join(pool_dir, "accounts", acc_id)
+                    for filename, kind in (
+                        ("antigravity-oauth-token", "antigravity"),
+                        ("oauth_creds.json", "gemini_flat"),
+                    ):
+                        p = os.path.join(acc_dir, filename)
+                        if os.path.exists(p) and os.path.getsize(p) > 0:
+                            candidates.append((p, kind))
+            except Exception as e:
+                logger.warning(f"[oauth] Failed reading pool accounts as credential fallback: {e}")
+
     return candidates
 
 
@@ -359,6 +384,17 @@ def _apply_refresh_to_file(
     return data
 
 
+def invalidate_verify_cache(access_token: Optional[str] = None) -> None:
+    """Drop cached quota-verify results (all tokens, or one access token)."""
+    if access_token:
+        token = access_token.strip()
+        if token.lower().startswith("bearer "):
+            token = token[7:].strip()
+        _verify_cache.pop(_access_token_suffix(token), None)
+    else:
+        _verify_cache.clear()
+
+
 def _verify_cache_valid(access_token: str) -> bool:
     token = access_token.strip()
     if not token:
@@ -387,7 +423,7 @@ async def verify_access_token(
             return True
 
         quota_project = project or QUOTA_PROJECT
-        async with httpx.AsyncClient(proxy=proxy, timeout=30.0) as client:
+        async with httpx.AsyncClient(**httpx_client_kwargs(proxy=proxy, timeout=30.0)) as client:
             response = await client.post(
                 QUOTA_SUMMARY_URL,
                 headers=cloudcode_headers(access_token),
@@ -440,7 +476,7 @@ async def refresh_google_token(
 ) -> dict:
     """Exchange a refresh token for a new access token via Google OAuth."""
     refresh_token = _normalize_refresh_token(refresh_token) or refresh_token.strip()
-    async with httpx.AsyncClient(proxy=proxy, timeout=30.0) as client:
+    async with httpx.AsyncClient(**httpx_client_kwargs(proxy=proxy, timeout=30.0)) as client:
         response = await client.post(
             OAUTH_TOKEN_URL,
             data={
@@ -471,6 +507,7 @@ async def ensure_fresh_credentials(
     *,
     proxy: Optional[str] = None,
     pool_account_id: Optional[str] = None,
+    force: bool = False,
 ) -> bool:
     """Refresh the active OAuth credential file when expired or missing access_token.
 
@@ -480,10 +517,12 @@ async def ensure_fresh_credentials(
     if not refresh_enabled():
         return False
 
+    home = gemini_home or os.path.expanduser("~/.gemini")
+
     override_token = env_access_token()
-    if override_token:
+    if override_token and not force:
         if _verify_cache_valid(override_token) or await verify_access_token(override_token, proxy=proxy):
-            patched_path = patch_access_token_to_file(override_token, gemini_home)
+            patched_path = patch_access_token_to_file(override_token, home)
             logger.info(
                 "[oauth] using AGY_ACCESS_TOKEN env override (suffix %s, file=%s, pool_account=%s)",
                 _token_suffix(override_token),
@@ -501,17 +540,7 @@ async def ensure_fresh_credentials(
             _token_suffix(override_token),
         )
 
-    quick = discover_credential_file(gemini_home)
-    if quick:
-        quick_path, quick_kind = quick
-        quick_data = _read_token_file(quick_path)
-        if quick_data:
-            quick_view = _normalize_token_view(quick_data, quick_kind)
-            quick_token = quick_view.get("access_token")
-            if quick_token and _verify_cache_valid(quick_token):
-                return False
-
-    discovered = await discover_verified_credential_file(gemini_home, proxy=proxy)
+    discovered = await discover_verified_credential_file(home, proxy=proxy)
     if not discovered:
         return False
 
@@ -522,25 +551,9 @@ async def ensure_fresh_credentials(
 
     view = _normalize_token_view(data, kind)
     access_token = view.get("access_token")
+    needs_refresh = force or _needs_refresh_from_view(view)
 
-    if access_token and await _verify_access_token_cached(
-        access_token, proxy=proxy, pool_account_id=pool_account_id
-    ):
-        if _needs_refresh_from_view(view):
-            logger.debug(
-                "[oauth] skip refresh — quota verify OK despite stale expiry (%s, access_suffix=%s, pool_account=%s)",
-                os.path.basename(path),
-                _token_suffix(access_token),
-                pool_account_id or "none",
-            )
-        return False
-
-    if not _needs_refresh_from_view(view):
-        logger.debug(
-            "[oauth] access token still valid — skip refresh (%s, suffix %s)",
-            os.path.basename(path),
-            _token_suffix(view.get("refresh_token")),
-        )
+    if not needs_refresh:
         return False
 
     refresh_token = view.get("refresh_token")
@@ -554,67 +567,95 @@ async def ensure_fresh_credentials(
             )
         return False
 
-    client_id = _client_id(kind)
-    logger.info(
-        "[oauth] Refreshing access token (%s, kind=%s, refresh_suffix=%s, access_suffix=%s, client_id=%s...%s, pool_account=%s)",
-        os.path.basename(path),
-        kind,
-        _token_suffix(refresh_token),
-        _token_suffix(access_token),
-        client_id[:20],
-        client_id[-10:],
-        pool_account_id or "none",
-    )
-    try:
-        new_token = await refresh_google_token(refresh_token, proxy=proxy, kind=kind)
-    except RuntimeError as e:
-        if access_token and await verify_access_token(access_token, proxy=proxy):
-            logger.warning(
-                "[oauth] refresh failed but quota verify OK — using existing access token (%s, access_suffix=%s, pool_account=%s): %s",
-                os.path.basename(path),
-                _token_suffix(access_token),
-                pool_account_id or "none",
-                e,
-            )
+    async with _refresh_lock:
+        data = _read_token_file(path)
+        if not data:
+            return False
+        view = _normalize_token_view(data, kind)
+        access_token = view.get("access_token")
+
+        if not force and not _needs_refresh_from_view(view):
+            if access_token and (
+                _verify_cache_valid(access_token)
+                or await _verify_access_token_cached(
+                    access_token, proxy=proxy, pool_account_id=pool_account_id
+                )
+            ):
+                return False
+
+        refresh_token = view.get("refresh_token")
+        if not refresh_token:
+            logger.warning("[oauth] credential file has no refresh_token — cannot refresh (%s)", path)
+            if access_token:
+                raise RuntimeError(
+                    f"No refresh_token in {path} and quota verify failed for access token "
+                    f"(suffix {_token_suffix(access_token)})"
+                )
             return False
 
-        hint = (
-            "refresh_token on disk may be stale or revoked — disk access_suffix=%s may differ "
-            "from agy in-memory Bearer; copy working token from HTTP Toolkit, run "
-            "scripts/patch_access_token.py, or set AGY_ACCESS_TOKEN, then re-snapshot the pool "
-            "account (POST /v1/accounts or scripts/add_account_to_pool.py)"
-        )
-        logger.warning(
-            "[oauth] refresh failed for %s (kind=%s, refresh_suffix=%s, access_suffix=%s, pool_account=%s, proxy=%s): %s. %s",
-            path,
+        client_id = _client_id(kind)
+        logger.info(
+            "[oauth] Refreshing access token (%s, kind=%s, refresh_suffix=%s, access_suffix=%s, client_id=%s...%s, pool_account=%s, force=%s)",
+            os.path.basename(path),
             kind,
             _token_suffix(refresh_token),
             _token_suffix(access_token),
+            client_id[:20],
+            client_id[-10:],
             pool_account_id or "none",
-            "yes" if proxy else "no",
-            e,
-            hint % _token_suffix(access_token),
+            force,
         )
-        raise
+        try:
+            new_token = await refresh_google_token(refresh_token, proxy=proxy, kind=kind)
+        except (RuntimeError, Exception) as e:
+            if access_token and await verify_access_token(access_token, proxy=proxy):
+                logger.warning(
+                    "[oauth] refresh failed but quota verify OK — using existing access token (%s, access_suffix=%s, pool_account=%s): %s",
+                    os.path.basename(path),
+                    _token_suffix(access_token),
+                    pool_account_id or "none",
+                    e,
+                )
+                return False
 
-    updated = _apply_refresh_to_file(
-        data,
-        kind,
-        access_token=new_token["access_token"],
-        refresh_token=new_token["refresh_token"],
-        token_type=new_token["token_type"],
-        expires_in=new_token["expires_in"],
-        scope=new_token.get("scope"),
-        id_token=new_token.get("id_token"),
-    )
-    _write_token_file(path, updated)
-    _set_active_credential(path, kind)
-    logger.info("[oauth] access token refreshed and saved to %s", path)
-    if pool_account_id:
-        from app.core import pool_manager
+            hint = (
+                "refresh_token on disk may be stale or revoked — disk access_suffix=%s may differ "
+                "from agy in-memory Bearer; copy working token from HTTP Toolkit, run "
+                "scripts/patch_access_token.py, or set AGY_ACCESS_TOKEN, then re-snapshot the pool "
+                "account (POST /v1/accounts or scripts/add_account_to_pool.py)"
+            )
+            logger.warning(
+                "[oauth] refresh failed for %s (kind=%s, refresh_suffix=%s, access_suffix=%s, pool_account=%s, proxy=%s): %s. %s",
+                path,
+                kind,
+                _token_suffix(refresh_token),
+                _token_suffix(access_token),
+                pool_account_id or "none",
+                "yes" if proxy else "no",
+                e,
+                hint % _token_suffix(access_token),
+            )
+            raise
 
-        await pool_manager.sync_back_credentials(pool_account_id)
-    return True
+        updated = _apply_refresh_to_file(
+            data,
+            kind,
+            access_token=new_token["access_token"],
+            refresh_token=new_token["refresh_token"],
+            token_type=new_token["token_type"],
+            expires_in=new_token["expires_in"],
+            scope=new_token.get("scope"),
+            id_token=new_token.get("id_token"),
+        )
+        _write_token_file(path, updated)
+        _set_active_credential(path, kind)
+        invalidate_verify_cache(access_token)
+        logger.info("[oauth] access token refreshed and saved to %s", path)
+        if pool_account_id:
+            from app.core import pool_manager
+
+            await pool_manager.sync_back_credentials(pool_account_id)
+        return True
 
 
 async def ensure_fresh_antigravity_token(
@@ -622,9 +663,12 @@ async def ensure_fresh_antigravity_token(
     *,
     proxy: Optional[str] = None,
     pool_account_id: Optional[str] = None,
+    force: bool = False,
 ) -> bool:
     """Alias for ensure_fresh_credentials (pool_manager compatibility)."""
-    return await ensure_fresh_credentials(gemini_home, proxy=proxy, pool_account_id=pool_account_id)
+    return await ensure_fresh_credentials(
+        gemini_home, proxy=proxy, pool_account_id=pool_account_id, force=force
+    )
 
 
 def read_access_token(gemini_home: Optional[str] = None) -> str:

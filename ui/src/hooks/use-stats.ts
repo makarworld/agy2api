@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useApiKey } from './use-api-key';
+import { apiUrl } from '../lib/api';
 
 export interface StatsSummary {
   uptime_seconds: number;
@@ -11,6 +12,7 @@ export interface StatsSummary {
     prompt_tokens: number;
     completion_tokens: number;
     cache_tokens: number;
+    total_tokens: number;
   };
   by_model: { model: string; requests: number; prompt_tokens: number; completion_tokens: number; cache_tokens: number }[];
   by_account: { pool_account: string; requests: number; prompt_tokens: number; completion_tokens: number }[];
@@ -57,9 +59,9 @@ export function useStats(pollIntervalMs = 15000) {
     try {
       const headers = { Authorization: `Bearer ${apiKey}` };
       const [summaryRes, tsRes, accountsRes] = await Promise.all([
-        fetch('/v1/stats/summary', { headers }),
-        fetch('/v1/stats/timeseries?bucket_seconds=3600&window_hours=48', { headers }),
-        fetch('/v1/accounts', { headers }),
+        fetch(apiUrl('/v1/stats/summary'), { headers }),
+        fetch(apiUrl('/v1/stats/timeseries?bucket_seconds=3600&window_hours=48'), { headers }),
+        fetch(apiUrl('/v1/accounts'), { headers }),
       ]);
 
       if (summaryRes.ok) setSummary(await summaryRes.json());
