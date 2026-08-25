@@ -4,10 +4,8 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
+from app.core import oauth_refresh, pool_manager, stats_store
 from app.core.security import get_api_key
-from app.core import pool_manager
-from app.core import stats_store
-from app.core import oauth_refresh
 
 logger = logging.getLogger(__name__)
 
@@ -149,6 +147,12 @@ async def activate_account(account_id: str, api_key: str = Depends(get_api_key))
         return {"active_account_id": account_id}
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
+
+
+@router.post("/accounts/dedupe", summary="Remove duplicate accounts that share the same email")
+async def dedupe_accounts(api_key: str = Depends(get_api_key)):
+    removed = await pool_manager.dedupe_accounts_by_email()
+    return {"removed": removed}
 
 
 @router.delete("/accounts/{account_id}", summary="Remove an account from the pool")

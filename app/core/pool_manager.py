@@ -501,7 +501,7 @@ async def complete_oauth_flow(
     _save_manifest(manifest)
 
     # Clear quota cache for this account
-    oauth_refresh.clear_account_quota_cache(account_id)
+    # oauth_refresh.clear_account_quota_cache(account_id)
 
     # If this is the currently active account in ~/.gemini, sync updated credentials to ~/.gemini immediately
     if account_id == get_active_account_id():
@@ -691,6 +691,35 @@ async def delete_account(account_id: str) -> None:
         shutil.rmtree(account_dir, ignore_errors=True)
 
 
+async def dedupe_accounts_by_email() -> List[str]:
+    """Collapses accounts that resolve to the same Google email, keeping the most
+    recently added one (freshest credentials). Accounts whose email can't be
+    determined are left alone. Returns the removed account ids."""
+    manifest = _load_manifest()
+    seen: Set[str] = set()
+    removed: List[str] = []
+
+    for acc in sorted(manifest.get("accounts", []), key=lambda a: a.get("added_at") or 0, reverse=True):
+        email = (acc.get("email") or _extract_account_email(acc["id"]) or "").strip().lower()
+        if not email:
+            continue
+        acc["email"] = email  # backfill so the manifest stops needing the on-disk lookup
+        if email in seen:
+            removed.append(acc["id"])
+        else:
+            seen.add(email)
+
+    manifest["accounts"] = [a for a in manifest.get("accounts", []) if a["id"] not in removed]
+    _save_manifest(manifest)
+
+    # The credential snapshots are deliberately left on disk -- dropping them from
+    # the manifest is enough to stop rotation using them, and keeping the files
+    # makes an accidental dedupe recoverable by hand.
+    for account_id in removed:
+        logger.info(f"[pool] Dropped duplicate account {account_id} from manifest")
+    return removed
+
+
 async def select_next_healthy_account(exclude: Set[str] = frozenset()) -> Optional[dict]:
     accounts = [a for a in list_accounts() if a["id"] not in exclude]
     if not accounts:
@@ -759,6 +788,37 @@ async def _run_subprocess(
     else:
         stdout, stderr = await process.communicate(input=input_data)
     return process.returncode, stdout, stderr
+
+
+async def acquire_http_account(
+    exclude: Set[str] = frozenset(),
+) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+    """Pool-aware credential acquisition for the HTTP transport.
+
+    Swaps ~/.gemini to the least-recently-used healthy account and returns
+    (account_id, proxy, access_token). The lock is only held while credentials
+    are swapped and the token is read -- once the bearer token is in hand the
+    request no longer depends on what's on disk, so concurrent streams don't
+    serialize the way execute_agy() has to for subprocesses.
+
+    Returns (None, proxy, token) when the pool is disabled.
+    """
+    if not pool_enabled():
+        proxy = get_active_account_proxy()
+        await _ensure_oauth_fresh(proxy=proxy)
+        return None, proxy, _read_live_access_token(_gemini_home())
+
+    async with _LOCK:
+        account = await select_next_healthy_account(exclude=exclude)
+        if account is None:
+            raise RuntimeError("All pool accounts are rate-limited or unhealthy")
+
+        proxy = get_google_proxy(account.get("proxy"))
+        if get_active_account_id() != account["id"]:
+            await activate_account(account["id"])
+        else:
+            await _ensure_oauth_fresh(proxy=proxy, pool_account_id=account["id"])
+        return account["id"], proxy, _read_live_access_token(_gemini_home())
 
 
 async def execute_agy(

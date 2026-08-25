@@ -33,7 +33,9 @@ SAFETY_SETTINGS = [
     {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
 ]
 
-_cached_project_id: Optional[str] = None
+# Keyed by pool account id ("" when the pool is disabled) -- the Cloud Code project
+# is per-Google-account, so a single global cache leaks one account's project to another.
+_cached_project_ids: dict[str, str] = {}
 
 
 def _gemini_home() -> str:
@@ -96,24 +98,26 @@ async def get_access_token(
 async def _refresh_after_401(
     access_token: str,
     *,
+    account_id: Optional[str] = None,
     proxy: Optional[str] = None,
 ) -> str:
     """Invalidate verify cache, force refresh, return a new access token."""
     oauth_refresh.invalidate_verify_cache(access_token)
-    global _cached_project_id
-    _cached_project_id = None
+    _cached_project_ids.pop(account_id or "", None)
     return await get_access_token(proxy=proxy, force=True)
 
 
 async def _get_project_id(
     access_token: str,
     *,
+    account_id: Optional[str] = None,
     proxy: Optional[str] = None,
     _auth_retried: bool = False,
 ) -> str:
-    global _cached_project_id
-    if _cached_project_id:
-        return _cached_project_id
+    cache_key = account_id or ""
+    cached = _cached_project_ids.get(cache_key)
+    if cached:
+        return cached
 
     async with httpx.AsyncClient(**httpx_client_kwargs(proxy=proxy, timeout=60.0)) as client:
         response = await client.post(
@@ -123,16 +127,23 @@ async def _get_project_id(
         )
     if response.status_code == 401 and not _auth_retried:
         logger.warning("[http] loadCodeAssist 401 — forcing OAuth refresh and retrying")
-        access_token = await _refresh_after_401(access_token, proxy=proxy)
-        return await _get_project_id(access_token, proxy=proxy, _auth_retried=True)
+        access_token = await _refresh_after_401(access_token, account_id=account_id, proxy=proxy)
+        return await _get_project_id(access_token, account_id=account_id, proxy=proxy, _auth_retried=True)
     if response.status_code != 200:
         raise RuntimeError(f"loadCodeAssist failed (HTTP {response.status_code}): {response.text[:500]}")
 
     payload = response.json()
     project_raw = payload.get("cloudaicompanionProject") or _deep_find(payload, "cloudaicompanionProject")
     project = _normalize_project_id(project_raw)
-    _cached_project_id = project
+    _cached_project_ids[cache_key] = project
     return project
+
+
+def _is_rate_limited(status_code: int, detail: str) -> bool:
+    if status_code == 429:
+        return True
+    lowered = detail.lower()
+    return any(sig in lowered for sig in pool_manager.RATE_LIMIT_SIGNALS)
 
 
 def _map_usage(usage_metadata: dict) -> dict:
@@ -254,9 +265,12 @@ async def stream_completion(
     proxy: Optional[str] = None,
 ) -> AsyncIterator[dict]:
     """Direct HTTP stream to Cloud Code Assist with Claude Code tools passthrough."""
-    proxy = proxy if proxy is not None else await _active_proxy()
-    access_token = await get_access_token(proxy=proxy)
-    project_id = await _get_project_id(access_token, proxy=proxy)
+    excluded: set[str] = set()
+    account_id, pool_proxy, access_token = await pool_manager.acquire_http_account()
+    proxy = proxy if proxy is not None else pool_proxy
+    if not access_token:
+        access_token = await get_access_token(proxy=proxy)
+    project_id = await _get_project_id(access_token, account_id=account_id, proxy=proxy)
     backend_model, thinking_level = resolve_http_model(model or "gemini-2.5-flash")
     tools_present = bool(anthropic_tools_to_gemini(tools))
     allow_thought_text = thought_as_text_enabled(tools_present=tools_present)
@@ -290,6 +304,7 @@ async def stream_completion(
         last_finish_reason: Optional[str] = None
         last_sse_obj: Optional[dict] = None
         retried_auth = False
+        rate_limit_detail: Optional[str] = None
 
         async with httpx.AsyncClient(**httpx_client_kwargs(proxy=proxy, timeout=300.0)) as client:
             async with client.stream(
@@ -304,12 +319,17 @@ async def stream_completion(
                         "[http] streamGenerateContent 401 — forcing OAuth refresh and retrying: %s",
                         detail,
                     )
-                    access_token = await _refresh_after_401(access_token, proxy=proxy)
+                    access_token = await _refresh_after_401(access_token, account_id=account_id, proxy=proxy)
                     auth_retried = True
                     retried_auth = True
                 elif response.status_code != 200:
                     detail = (await response.aread()).decode(errors="replace")[:500]
-                    raise RuntimeError(f"streamGenerateContent failed (HTTP {response.status_code}): {detail}")
+                    if account_id and _is_rate_limited(response.status_code, detail):
+                        rate_limit_detail = detail
+                    else:
+                        if account_id:
+                            await pool_manager.mark_failure(account_id)
+                        raise RuntimeError(f"streamGenerateContent failed (HTTP {response.status_code}): {detail}")
                 else:
                     async for line in response.aiter_lines():
                         if not line or not line.startswith("data:"):
@@ -340,6 +360,15 @@ async def stream_completion(
                         new_calls = ingest_stream_tool_calls(tool_calls, pending_tool_calls)
                         if new_calls:
                             yield {"tool_calls": new_calls}
+
+        if rate_limit_detail is not None:
+            cooldown = int(os.environ.get("AGY_POOL_COOLDOWN_SECONDS", "3600"))
+            await pool_manager.mark_rate_limited(account_id, cooldown)
+            excluded.add(account_id)
+            logger.warning("[http] account %s rate-limited, rotating: %s", account_id, rate_limit_detail[:200])
+            account_id, proxy, access_token = await pool_manager.acquire_http_account(exclude=excluded)
+            project_id = await _get_project_id(access_token, account_id=account_id, proxy=proxy)
+            continue
 
         if retried_auth:
             continue
@@ -388,6 +417,9 @@ async def stream_completion(
                 "error": error_msg,
             }
             return
+
+        if account_id:
+            await pool_manager.mark_success(account_id)
 
         stop_reason = "tool_use" if all_tool_calls else "end_turn"
         yield {

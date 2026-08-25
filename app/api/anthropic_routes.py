@@ -1,21 +1,21 @@
 import json
+import logging
+import os
 import time
 import uuid
-import logging
 from typing import Any, List, Optional
 
-from fastapi import APIRouter, Depends, BackgroundTasks, Request
-from fastapi.responses import StreamingResponse, JSONResponse
+from fastapi import APIRouter, BackgroundTasks, Depends, Request
+from fastapi.responses import JSONResponse, StreamingResponse
 
 from app.api.anthropic_models import AnthropicMessagesRequest
-from app.core.security import get_anthropic_api_key
+from app.core import pool_manager, stats_store
 from app.core.agy_runner import run_completion, stream_agy_completion, with_heartbeat
 from app.core.auto_classifier import is_auto_classifier_request, shortcut_enabled, shortcut_response
 from app.core.file_handler import TempFileManager
 from app.core.http_tools_bridge import stream_tool_call_key
-from app.core.model_manager import resolve_backend_model, get_force_model
-from app.core import stats_store
-from app.core import pool_manager
+from app.core.model_manager import get_force_model, resolve_backend_model
+from app.core.security import get_anthropic_api_key
 
 logger = logging.getLogger(__name__)
 
