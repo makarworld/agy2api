@@ -7,6 +7,7 @@ from pydantic import BaseModel
 from app.core.security import get_api_key
 from app.core import pool_manager
 from app.core import stats_store
+from app.core import oauth_refresh
 
 logger = logging.getLogger(__name__)
 
@@ -44,23 +45,46 @@ async def list_accounts(api_key: str = Depends(get_api_key)):
     states = {s["account_id"]: s for s in await stats_store.list_pool_account_states()}
     active_id = pool_manager.get_active_account_id()
 
+    # If pool is disabled, we still might have the active session in accounts or single account
+    account_items = (
+        accounts if pool_manager.pool_enabled() else (accounts or [{"id": "active", "label": "Default Session"}])
+    )
+
     result = []
-    for acc in accounts:
-        state = states.get(acc["id"], {})
-        result.append({
-            "id": acc["id"],
-            "label": acc.get("label"),
-            "added_at": acc.get("added_at"),
-            "proxy": acc.get("proxy"),
-            "active": acc["id"] == active_id,
-            "status": state.get("status", "healthy"),
-            "cooldown_until": state.get("cooldown_until"),
-            "consecutive_failures": state.get("consecutive_failures", 0),
-            "last_used_ts": state.get("last_used_ts"),
-            "total_requests": state.get("total_requests", 0),
-            "total_prompt_tokens": state.get("total_prompt_tokens", 0),
-            "total_completion_tokens": state.get("total_completion_tokens", 0),
-        })
+    for acc in account_items:
+        acc_id = acc.get("id", "active")
+        state = states.get(acc_id, {})
+        token, proxy, account_dir = pool_manager.get_account_token_and_proxy(acc_id)
+        quota_data = {}
+        if token or account_dir:
+            try:
+                quota_data = await oauth_refresh.retrieve_account_quota(
+                    account_dir=account_dir,
+                    access_token=token,
+                    proxy=proxy,
+                    pool_account_id=acc_id,
+                )
+            except Exception as e:
+                logger.debug(f"[accounts] Failed to retrieve quota for {acc_id}: {e}")
+
+        result.append(
+            {
+                "id": acc_id,
+                "label": acc.get("label"),
+                "email": acc.get("email"),
+                "added_at": acc.get("added_at"),
+                "proxy": acc.get("proxy"),
+                "active": acc_id == active_id if pool_manager.pool_enabled() else True,
+                "status": state.get("status", "healthy"),
+                "cooldown_until": state.get("cooldown_until"),
+                "consecutive_failures": state.get("consecutive_failures", 0),
+                "last_used_ts": state.get("last_used_ts"),
+                "total_requests": state.get("total_requests", 0),
+                "total_prompt_tokens": state.get("total_prompt_tokens", 0),
+                "total_completion_tokens": state.get("total_completion_tokens", 0),
+                "quota": quota_data,
+            }
+        )
     return {"pool_enabled": pool_manager.pool_enabled(), "accounts": result}
 
 

@@ -196,7 +196,7 @@ class TestOAuthRefresh(unittest.TestCase):
                 with patch(
                     "app.core.oauth_refresh.verify_access_token",
                     new_callable=AsyncMock,
-                    side_effect=[False, False, True],
+                    side_effect=[True, True, True],
                 ):
                     with patch(
                         "app.core.oauth_refresh.refresh_google_token",
@@ -248,9 +248,7 @@ class TestOAuthRefresh(unittest.TestCase):
                 with open(path, "w", encoding="utf-8") as f:
                     json.dump(data, f)
 
-                oauth_refresh._verify_cache[
-                    oauth_refresh._access_token_suffix("live-token")
-                ] = time.time() + 600
+                oauth_refresh._verify_cache[oauth_refresh._access_token_suffix("live-token")] = time.time() + 600
 
                 mock_response = {
                     "access_token": "refreshed-access",

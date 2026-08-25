@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -73,9 +74,7 @@ class TestAgyHttpClientOAuthRetry(unittest.TestCase):
                             return_value="token-b",
                         ) as mock_refresh:
                             chunks = []
-                            async for item in agy_http_client.stream_completion(
-                                [{"role": "user", "content": "hello"}]
-                            ):
+                            async for item in agy_http_client.stream_completion([{"role": "user", "content": "hello"}]):
                                 chunks.append(item)
 
             mock_refresh.assert_called_once()
@@ -120,9 +119,7 @@ class TestAgyHttpClientOAuthRetry(unittest.TestCase):
                         return_value="proj-1",
                     ):
                         chunks = []
-                        async for item in agy_http_client.stream_completion(
-                            [{"role": "user", "content": "hello"}]
-                        ):
+                        async for item in agy_http_client.stream_completion([{"role": "user", "content": "hello"}]):
                             chunks.append(item)
 
             self.assertEqual(mock_client.stream.call_count, 2)
@@ -147,29 +144,70 @@ class TestAgyHttpClientOAuthRetry(unittest.TestCase):
             mock_client.__aenter__.return_value = mock_client
             mock_client.stream = MagicMock(return_value=stream_ctx)
 
-            with patch("httpx.AsyncClient", return_value=mock_client):
-                with patch.object(
-                    agy_http_client,
-                    "get_access_token",
-                    new_callable=AsyncMock,
-                    return_value="token-a",
-                ):
+            with patch.dict(os.environ, {"AGY_HTTP_EMPTY_AS_EMPTY_CONTENT": "false"}):
+                with patch("httpx.AsyncClient", return_value=mock_client):
                     with patch.object(
                         agy_http_client,
-                        "_get_project_id",
+                        "get_access_token",
                         new_callable=AsyncMock,
-                        return_value="proj-1",
+                        return_value="token-a",
                     ):
-                        chunks = []
-                        async for item in agy_http_client.stream_completion(
-                            [{"role": "user", "content": "hello"}]
+                        with patch.object(
+                            agy_http_client,
+                            "_get_project_id",
+                            new_callable=AsyncMock,
+                            return_value="proj-1",
                         ):
-                            chunks.append(item)
+                            chunks = []
+                            async for item in agy_http_client.stream_completion([{"role": "user", "content": "hello"}]):
+                                chunks.append(item)
 
             self.assertEqual(mock_client.stream.call_count, 2)
             final = [c for c in chunks if "usage" in c][-1]
             self.assertEqual(final.get("stop_reason"), "error")
             self.assertIn("empty response", final.get("error", "").lower())
+
+        asyncio.run(_run())
+
+    def test_stream_completion_empty_stop_reason_returns_end_turn_when_flag_enabled(self):
+        async def _run():
+            empty_response = MagicMock(status_code=200)
+            empty_response.aiter_lines = lambda: _async_lines(
+                ['data: {"candidates":[{"content":{"parts":[]},"finishReason":"STOP"}]}']
+            )
+
+            stream_ctx = AsyncMock()
+            stream_ctx.__aenter__ = AsyncMock(return_value=empty_response)
+            stream_ctx.__aexit__ = AsyncMock(return_value=False)
+
+            mock_client = AsyncMock()
+            mock_client.__aenter__.return_value = mock_client
+            mock_client.stream = MagicMock(return_value=stream_ctx)
+
+            with patch.dict(os.environ, {"AGY_HTTP_EMPTY_AS_EMPTY_CONTENT": "true"}):
+                with patch("httpx.AsyncClient", return_value=mock_client):
+                    with patch.object(
+                        agy_http_client,
+                        "get_access_token",
+                        new_callable=AsyncMock,
+                        return_value="token-a",
+                    ):
+                        with patch.object(
+                            agy_http_client,
+                            "_get_project_id",
+                            new_callable=AsyncMock,
+                            return_value="proj-1",
+                        ):
+                            chunks = []
+                            async for item in agy_http_client.stream_completion([{"role": "user", "content": "hello"}]):
+                                chunks.append(item)
+
+            self.assertEqual(mock_client.stream.call_count, 2)
+            final = [c for c in chunks if "usage" in c][-1]
+            self.assertEqual(final.get("stop_reason"), "end_turn")
+            self.assertEqual(final.get("text"), "")
+            self.assertEqual(final.get("tool_calls"), [])
+            self.assertNotIn("error", final)
 
         asyncio.run(_run())
 

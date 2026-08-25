@@ -23,11 +23,12 @@ export function PoolPage() {
 
   const authHeaders = { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` };
 
-  const startOAuth = async () => {
+  const startOAuth = async (overrideProxy?: string) => {
     setGeneratingUrl(true);
     setStatusMsg(null);
     try {
-      const q = proxy.trim() ? `?proxy=${encodeURIComponent(proxy.trim())}` : '';
+      const activeProxy = overrideProxy !== undefined ? overrideProxy : proxy;
+      const q = activeProxy.trim() ? `?proxy=${encodeURIComponent(activeProxy.trim())}` : '';
       const res = await fetch(apiUrl(`/v1/accounts/oauth/start${q}`), { headers: authHeaders });
       if (!res.ok) throw new Error('Failed to generate authorization URL');
       const data = await res.json();
@@ -38,6 +39,18 @@ export function PoolPage() {
     } finally {
       setGeneratingUrl(false);
     }
+  };
+
+  const handleRelogin = (acc: any) => {
+    const accLabel = acc.label || acc.id;
+    const accProxy = acc.proxy || '';
+    setLabel(accLabel);
+    setProxy(accProxy);
+    setAuthCode('');
+    setAuthUrl(null);
+    setFlowId(null);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+    startOAuth(accProxy);
   };
 
   const copyUrl = () => {
@@ -138,7 +151,7 @@ export function PoolPage() {
             </div>
             <div className="md:col-span-3">
               <Button
-                onClick={startOAuth}
+                onClick={() => startOAuth()}
                 disabled={generatingUrl}
                 className="w-full gap-2"
               >
@@ -209,7 +222,12 @@ export function PoolPage() {
         )}
       </div>
 
-      <AccountsTable accounts={accounts} poolEnabled={poolEnabled} onChanged={refresh} />
+      <AccountsTable
+        accounts={accounts}
+        poolEnabled={poolEnabled}
+        onChanged={refresh}
+        onRelogin={handleRelogin}
+      />
     </div>
   );
 }

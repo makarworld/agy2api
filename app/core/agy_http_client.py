@@ -146,7 +146,9 @@ def _map_usage(usage_metadata: dict) -> dict:
         "output_tokens": usage_metadata.get("candidatesTokenCount", 0),
         "thinking_tokens": usage_metadata.get("thoughtsTokenCount", 0),
         "cache_read_tokens": cache_read,
-        "total_tokens": prompt_total + usage_metadata.get("candidatesTokenCount", 0) + usage_metadata.get("thoughtsTokenCount", 0),
+        "total_tokens": prompt_total
+        + usage_metadata.get("candidatesTokenCount", 0)
+        + usage_metadata.get("thoughtsTokenCount", 0),
     }
 
 
@@ -162,11 +164,7 @@ def _generation_config(
 
     if thinking_level:
         thinking_cfg["thinkingLevel"] = thinking_level
-    if (
-        backend_model.startswith("gemini-3.")
-        and "flash" in backend_model
-        and not tools_present
-    ):
+    if backend_model.startswith("gemini-3.") and "flash" in backend_model and not tools_present:
         thinking_cfg.setdefault("includeThoughts", True)
         thinking_cfg.setdefault("thinkingBudget", -1)
     elif tools_present:
@@ -311,9 +309,7 @@ async def stream_completion(
                     retried_auth = True
                 elif response.status_code != 200:
                     detail = (await response.aread()).decode(errors="replace")[:500]
-                    raise RuntimeError(
-                        f"streamGenerateContent failed (HTTP {response.status_code}): {detail}"
-                    )
+                    raise RuntimeError(f"streamGenerateContent failed (HTTP {response.status_code}): {detail}")
                 else:
                     async for line in response.aiter_lines():
                         if not line or not line.startswith("data:"):
@@ -369,6 +365,21 @@ async def stream_completion(
 
             error_msg = f"Gemini returned empty response (finishReason={last_finish_reason or 'unknown'})"
             logger.error("[http] %s", error_msg)
+            empty_as_empty_content = (
+                os.environ.get("AGY_HTTP_EMPTY_AS_EMPTY_CONTENT", "true").lower() in ("true", "1", "yes")
+                if last_finish_reason == "STOP"
+                else os.environ.get("AGY_HTTP_EMPTY_AS_EMPTY_CONTENT", "false").lower() in ("true", "1", "yes")
+            )
+            if empty_as_empty_content:
+                logger.info("[http] returning empty content [] with stop_reason=end_turn")
+                yield {
+                    "usage": final_usage,
+                    "text": "",
+                    "tool_calls": [],
+                    "stop_reason": "end_turn",
+                }
+                return
+
             yield {
                 "usage": final_usage,
                 "text": "",

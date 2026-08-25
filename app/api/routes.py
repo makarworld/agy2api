@@ -3,11 +3,20 @@ import time
 import uuid
 import io
 import json
-from typing import List, Optional
+from typing import List, Optional, Tuple
 from fastapi import APIRouter, Depends, Request, BackgroundTasks, UploadFile, File, Form
 from fastapi.responses import StreamingResponse, Response, JSONResponse
 from pydantic import BaseModel, Field
-from app.api.models import ChatCompletionRequest, ChatCompletionResponse, Choice, ChoiceMessage, Usage, ModelList, Model, SpeechRequest
+from app.api.models import (
+    ChatCompletionRequest,
+    ChatCompletionResponse,
+    Choice,
+    ChoiceMessage,
+    Usage,
+    ModelList,
+    Model,
+    SpeechRequest,
+)
 from app.core.security import get_api_key
 from app.core.agy_runner import run_agy_prompt, run_completion, stream_agy_completion, with_heartbeat
 import logging
@@ -22,11 +31,19 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 capcut_wrapper = AsyncCapCutWrapper()
 
+
 class ImageGenerationRequest(BaseModel):
-    prompt: str = Field(..., description="A text description of the desired image(s). (Tips: You can include desired aspect ratios here like 9:16 or 16:9)")
+    prompt: str = Field(
+        ...,
+        description="A text description of the desired image(s). (Tips: You can include desired aspect ratios here like 9:16 or 16:9)",
+    )
     n: Optional[int] = Field(1, description="The number of images to generate")
-    response_format: Optional[str] = Field("url", description="The format in which the generated images are returned. Must be one of url or b64_json")
-    reference_images: Optional[List[str]] = Field(None, description="Optional list of base64 data URIs to use as reference images.")
+    response_format: Optional[str] = Field(
+        "url", description="The format in which the generated images are returned. Must be one of url or b64_json"
+    )
+    reference_images: Optional[List[str]] = Field(
+        None, description="Optional list of base64 data URIs to use as reference images."
+    )
 
     model_config = {
         "json_schema_extra": {
@@ -34,29 +51,38 @@ class ImageGenerationRequest(BaseModel):
                 {
                     "prompt": "A cute orange cat playing with a ball of yarn, cartoon style, tỉ lệ 9:16",
                     "n": 1,
-                    "response_format": "url"
+                    "response_format": "url",
                 }
             ]
         }
     }
 
+
 class ImageObject(BaseModel):
     url: Optional[str] = None
     b64_json: Optional[str] = None
+
 
 class ImageGenerationResponse(BaseModel):
     created: int
     data: List[ImageObject]
 
-@router.get("/models", response_model=ModelList, summary="List Models", description="Returns a list of available AI models.")
+
+@router.get(
+    "/models", response_model=ModelList, summary="List Models", description="Returns a list of available AI models."
+)
 async def list_models(api_key: str = Depends(get_api_key)):
     models = await get_available_models()
     return ModelList(data=models)
 
-def _extract_message_text(msg, file_mgr: TempFileManager, files_to_attach: list) -> str:
+
+def _extract_message_content_and_images(
+    msg, file_mgr: TempFileManager, files_to_attach: list
+) -> Tuple[str, List[dict]]:
     if isinstance(msg.content, str):
-        return msg.content
+        return msg.content, []
     text_parts = []
+    images = []
     for p in msg.content:
         if p.get("type") == "text":
             text_parts.append(p.get("text", ""))
@@ -64,27 +90,41 @@ def _extract_message_text(msg, file_mgr: TempFileManager, files_to_attach: list)
             url = p.get("image_url", {}).get("url", "")
             if url.startswith("data:"):
                 import re
+
                 ext = ".png"
-                match = re.match(r'^data:([^/]+)/([^;,]+)', url)
+                mime_type = "image/png"
+                match = re.match(r"^data:([^/]+)/([^;,]+)(?:;base64)?,(.*)$", url)
                 if match:
+                    top_type = match.group(1).lower()
                     mime_sub = match.group(2).lower()
-                    if mime_sub in ['jpeg', 'jpg']: ext = ".jpg"
-                    elif mime_sub == 'pdf': ext = ".pdf"
-                    elif mime_sub == 'msword': ext = ".doc"
-                    elif 'wordprocessingml' in mime_sub: ext = ".docx"
-                    elif mime_sub == 'plain': ext = ".txt"
-                    elif mime_sub == 'csv': ext = ".csv"
-                    elif mime_sub in ['png', 'gif', 'webp']: ext = f".{mime_sub}"
-                    else: ext = f".{mime_sub}"
+                    mime_type = f"{top_type}/{mime_sub}"
+                    raw_data = match.group(3)
+                    if raw_data:
+                        images.append({"mime_type": mime_type, "data": raw_data})
+                    if mime_sub in ["jpeg", "jpg"]:
+                        ext = ".jpg"
+                    elif mime_sub == "pdf":
+                        ext = ".pdf"
+                    elif mime_sub == "msword":
+                        ext = ".doc"
+                    elif "wordprocessingml" in mime_sub:
+                        ext = ".docx"
+                    elif mime_sub == "plain":
+                        ext = ".txt"
+                    elif mime_sub == "csv":
+                        ext = ".csv"
+                    elif mime_sub in ["png", "gif", "webp"]:
+                        ext = f".{mime_sub}"
+                    else:
+                        ext = f".{mime_sub}"
                 try:
                     fpath = file_mgr.add_base64_file(url, ext=ext)
                     files_to_attach.append(fpath)
-                    text_parts.append(f"[Attached Image: {fpath}]")
                 except Exception as e:
-                    text_parts.append(f"[Failed to attach image: {e}]")
+                    logger.warning(f"Failed to attach image: {e}")
             else:
                 text_parts.append(f"[Image URL: {url}]")
-    return " ".join(text_parts)
+    return " ".join(text_parts), images
 
 
 def _usage_from_agy(agy_usage: Optional[dict], fallback_prompt_len: int, fallback_completion_len: int) -> Usage:
@@ -101,8 +141,12 @@ def _usage_from_agy(agy_usage: Optional[dict], fallback_prompt_len: int, fallbac
         completion_tokens = max(1, fallback_completion_len // 4)
         cache_tokens = 0
         total_tokens = prompt_tokens + completion_tokens
-    return Usage(prompt_tokens=prompt_tokens, completion_tokens=completion_tokens,
-                 total_tokens=total_tokens, cache_tokens=cache_tokens)
+    return Usage(
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        total_tokens=total_tokens,
+        cache_tokens=cache_tokens,
+    )
 
 
 async def _openai_stream(
@@ -119,7 +163,9 @@ async def _openai_stream(
 
     def _chunk(delta: dict, finish_reason=None):
         return {
-            "id": response_id, "object": "chat.completion.chunk", "created": created,
+            "id": response_id,
+            "object": "chat.completion.chunk",
+            "created": created,
             "model": client_model,
             "choices": [{"index": 0, "delta": delta, "finish_reason": finish_reason}],
         }
@@ -140,10 +186,18 @@ async def _openai_stream(
                 final_usage = piece.get("usage", {})
     except Exception as e:
         await stats_store.record_request(
-            endpoint="openai-chat", model=client_model, pool_account=pool_manager.get_active_account_id(),
-            prompt_tokens=0, completion_tokens=0, cache_tokens=0, success=False,
-            latency_ms=int((time.time() - start_time) * 1000), error_type=type(e).__name__,
-            chat_id=chat_id, chat_title=chat_title, prompt_preview=prompt_preview,
+            endpoint="openai-chat",
+            model=client_model,
+            pool_account=pool_manager.get_active_account_id(),
+            prompt_tokens=0,
+            completion_tokens=0,
+            cache_tokens=0,
+            success=False,
+            latency_ms=int((time.time() - start_time) * 1000),
+            error_type=type(e).__name__,
+            chat_id=chat_id,
+            chat_title=chat_title,
+            prompt_preview=prompt_preview,
             response_preview=f"Error: {str(e)}",
         )
         yield f"data: {json.dumps(_chunk({}, finish_reason='error'))}\n\n"
@@ -154,28 +208,46 @@ async def _openai_stream(
     final_prompt_len = sum(len(m["content"]) for m in messages)
     usage = _usage_from_agy(final_usage, final_prompt_len, len(assistant_text))
     await stats_store.record_request(
-        endpoint="openai-chat", model=client_model, pool_account=pool_manager.get_active_account_id(),
-        prompt_tokens=usage.prompt_tokens, completion_tokens=usage.completion_tokens, cache_tokens=usage.cache_tokens,
-        success=True, latency_ms=int((time.time() - start_time) * 1000), error_type=None,
-        chat_id=chat_id, chat_title=chat_title, prompt_preview=prompt_preview,
+        endpoint="openai-chat",
+        model=client_model,
+        pool_account=pool_manager.get_active_account_id(),
+        prompt_tokens=usage.prompt_tokens,
+        completion_tokens=usage.completion_tokens,
+        cache_tokens=usage.cache_tokens,
+        success=True,
+        latency_ms=int((time.time() - start_time) * 1000),
+        error_type=None,
+        chat_id=chat_id,
+        chat_title=chat_title,
+        prompt_preview=prompt_preview,
         response_preview=assistant_text[:1500],
     )
     yield f"data: {json.dumps(_chunk({}, finish_reason='stop'))}\n\n"
     yield "data: [DONE]\n\n"
 
 
-@router.post("/chat/completions", response_model=None, summary="Chat Completions", description="Creates a model response for the given chat conversation. Supports multimodal inputs via base64 data URIs.")
-async def chat_completions(req: ChatCompletionRequest, background_tasks: BackgroundTasks, request: Request, api_key: str = Depends(get_api_key)):
+@router.post(
+    "/chat/completions",
+    response_model=None,
+    summary="Chat Completions",
+    description="Creates a model response for the given chat conversation. Supports multimodal inputs via base64 data URIs.",
+)
+async def chat_completions(
+    req: ChatCompletionRequest, background_tasks: BackgroundTasks, request: Request, api_key: str = Depends(get_api_key)
+):
     logger.info(f"Processing chat completions for model: {req.model}")
     start_time = time.time()
     file_mgr = TempFileManager()
     background_tasks.add_task(file_mgr.cleanup)
 
     files_to_attach = []
-    messages = [
-        {"role": msg.role, "content": _extract_message_text(msg, file_mgr, files_to_attach)}
-        for msg in req.messages
-    ]
+    messages = []
+    for msg in req.messages:
+        content_text, msg_images = _extract_message_content_and_images(msg, file_mgr, files_to_attach)
+        m_entry = {"role": msg.role, "content": content_text}
+        if msg_images:
+            m_entry["images"] = msg_images
+        messages.append(m_entry)
 
     chat_id, chat_title, prompt_preview = stats_store.extract_chat_metadata(
         headers=dict(request.headers),
@@ -196,17 +268,27 @@ async def chat_completions(req: ChatCompletionRequest, background_tasks: Backgro
         agy_response = await run_completion(messages=messages, model=agy_model)
     except Exception as e:
         await stats_store.record_request(
-            endpoint="openai-chat", model=req.model, pool_account=pool_manager.get_active_account_id(),
-            prompt_tokens=0, completion_tokens=0, cache_tokens=0, success=False,
-            latency_ms=int((time.time() - start_time) * 1000), error_type=type(e).__name__,
-            chat_id=chat_id, chat_title=chat_title, prompt_preview=prompt_preview,
+            endpoint="openai-chat",
+            model=req.model,
+            pool_account=pool_manager.get_active_account_id(),
+            prompt_tokens=0,
+            completion_tokens=0,
+            cache_tokens=0,
+            success=False,
+            latency_ms=int((time.time() - start_time) * 1000),
+            error_type=type(e).__name__,
+            chat_id=chat_id,
+            chat_title=chat_title,
+            prompt_preview=prompt_preview,
             response_preview=f"Error: {str(e)}",
         )
         raise
 
     assistant_text = ""
     if isinstance(agy_response, dict):
-        assistant_text = agy_response.get("text") or agy_response.get("content") or agy_response.get("response") or str(agy_response)
+        assistant_text = (
+            agy_response.get("text") or agy_response.get("content") or agy_response.get("response") or str(agy_response)
+        )
     else:
         assistant_text = str(agy_response)
 
@@ -215,10 +297,18 @@ async def chat_completions(req: ChatCompletionRequest, background_tasks: Backgro
     usage = _usage_from_agy(agy_usage, final_prompt_len, len(assistant_text))
 
     await stats_store.record_request(
-        endpoint="openai-chat", model=req.model, pool_account=pool_manager.get_active_account_id(),
-        prompt_tokens=usage.prompt_tokens, completion_tokens=usage.completion_tokens, cache_tokens=usage.cache_tokens,
-        success=True, latency_ms=int((time.time() - start_time) * 1000), error_type=None,
-        chat_id=chat_id, chat_title=chat_title, prompt_preview=prompt_preview,
+        endpoint="openai-chat",
+        model=req.model,
+        pool_account=pool_manager.get_active_account_id(),
+        prompt_tokens=usage.prompt_tokens,
+        completion_tokens=usage.completion_tokens,
+        cache_tokens=usage.cache_tokens,
+        success=True,
+        latency_ms=int((time.time() - start_time) * 1000),
+        error_type=None,
+        chat_id=chat_id,
+        chat_title=chat_title,
+        prompt_preview=prompt_preview,
         response_preview=assistant_text[:1500],
     )
 
@@ -227,23 +317,35 @@ async def chat_completions(req: ChatCompletionRequest, background_tasks: Backgro
         created=int(time.time()),
         model=req.model,
         choices=[Choice(message=ChoiceMessage(content=assistant_text))],
-        usage=usage
+        usage=usage,
     )
     return response
 
-@router.post("/images/generations", response_model=ImageGenerationResponse, summary="Image Generations", description="Creates an image given a prompt using the AGY artist skills.")
-async def generate_image(req: ImageGenerationRequest, background_tasks: BackgroundTasks, request: Request, api_key: str = Depends(get_api_key)):
+
+@router.post(
+    "/images/generations",
+    response_model=ImageGenerationResponse,
+    summary="Image Generations",
+    description="Creates an image given a prompt using the AGY artist skills.",
+)
+async def generate_image(
+    req: ImageGenerationRequest,
+    background_tasks: BackgroundTasks,
+    request: Request,
+    api_key: str = Depends(get_api_key),
+):
     logger.info(f"Generating image. Prompt: {req.prompt[:50]}...")
     start_time = time.time()
     file_mgr = TempFileManager()
     background_tasks.add_task(file_mgr.cleanup)
-    
+
     ref_paths = []
     if req.reference_images:
         for url in req.reference_images:
             if url.startswith("data:"):
                 ext = ".png"
-                if "jpeg" in url or "jpg" in url: ext = ".jpg"
+                if "jpeg" in url or "jpg" in url:
+                    ext = ".jpg"
                 try:
                     fpath = file_mgr.add_base64_file(url, ext=ext)
                     ref_paths.append(fpath)
@@ -251,66 +353,85 @@ async def generate_image(req: ImageGenerationRequest, background_tasks: Backgrou
                     pass
 
     prompt = f"Generate an image for the following prompt: '{req.prompt}'. Return ONLY the absolute local file path of the generated image in your response, do not include any other conversational text."
-    
+
     if ref_paths:
         paths_str = ", ".join([f"'{p}'" for p in ref_paths])
         prompt = f"Use the reference images at {paths_str} to generate an image for the following prompt: '{req.prompt}'. Return ONLY the absolute local file path of the generated image in your response, do not include any other conversational text."
-    
+
     import hashlib
+
     img_chat_id = "img_" + hashlib.sha256(req.prompt.encode("utf-8", errors="replace")).hexdigest()[:12]
     img_title = f"Image: {req.prompt.strip().replace(chr(10), ' ')[:80]}"
-    
+
     try:
         agy_response = await run_agy_prompt(prompt=prompt)
     except Exception as e:
         await stats_store.record_request(
-            endpoint="image-generation", model="artist", pool_account=pool_manager.get_active_account_id(),
-            prompt_tokens=max(1, len(req.prompt) // 4), completion_tokens=0, cache_tokens=0, success=False,
-            latency_ms=int((time.time() - start_time) * 1000), error_type=type(e).__name__,
-            chat_id=img_chat_id, chat_title=img_title, prompt_preview=req.prompt[:1000],
+            endpoint="image-generation",
+            model="artist",
+            pool_account=pool_manager.get_active_account_id(),
+            prompt_tokens=max(1, len(req.prompt) // 4),
+            completion_tokens=0,
+            cache_tokens=0,
+            success=False,
+            latency_ms=int((time.time() - start_time) * 1000),
+            error_type=type(e).__name__,
+            chat_id=img_chat_id,
+            chat_title=img_title,
+            prompt_preview=req.prompt[:1000],
             response_preview=f"Error: {str(e)}",
         )
         raise
-    
+
     image_path = ""
     if isinstance(agy_response, dict):
-        image_path = agy_response.get("text") or agy_response.get("content") or agy_response.get("response") or str(agy_response)
+        image_path = (
+            agy_response.get("text") or agy_response.get("content") or agy_response.get("response") or str(agy_response)
+        )
     else:
         image_path = str(agy_response)
-        
+
     image_path = image_path.strip()
     img_data = ImageObject(url=image_path)
-    
+
     import os
+
     if os.path.exists(image_path) and os.path.isfile(image_path):
         import base64
+
         with open(image_path, "rb") as f:
             b64 = base64.b64encode(f.read()).decode("utf-8")
             if req.response_format == "b64_json":
                 img_data = ImageObject(b64_json=b64)
             else:
                 img_data = ImageObject(url=f"data:image/png;base64,{b64}")
-                
+
         def remove_file(path):
             try:
                 os.remove(path)
             except Exception:
                 pass
-        
+
         background_tasks.add_task(remove_file, image_path)
 
     await stats_store.record_request(
-        endpoint="image-generation", model="artist", pool_account=pool_manager.get_active_account_id(),
-        prompt_tokens=max(1, len(req.prompt) // 4), completion_tokens=100, cache_tokens=0, success=True,
-        latency_ms=int((time.time() - start_time) * 1000), error_type=None,
-        chat_id=img_chat_id, chat_title=img_title, prompt_preview=req.prompt[:1000],
+        endpoint="image-generation",
+        model="artist",
+        pool_account=pool_manager.get_active_account_id(),
+        prompt_tokens=max(1, len(req.prompt) // 4),
+        completion_tokens=100,
+        cache_tokens=0,
+        success=True,
+        latency_ms=int((time.time() - start_time) * 1000),
+        error_type=None,
+        chat_id=img_chat_id,
+        chat_title=img_title,
+        prompt_preview=req.prompt[:1000],
         response_preview=f"Generated image: {image_path[:200]}",
     )
 
-    return ImageGenerationResponse(
-        created=int(time.time()),
-        data=[img_data]
-    )
+    return ImageGenerationResponse(created=int(time.time()), data=[img_data])
+
 
 @router.post("/auth/verify", summary="Verify admin password / API key")
 async def verify_auth(api_key: str = Depends(get_api_key)):
@@ -318,6 +439,7 @@ async def verify_auth(api_key: str = Depends(get_api_key)):
 
 
 import subprocess
+
 
 def _read_local_log_tail(lines: int) -> str:
     log_path = os.environ.get("AGY_LOG_FILE_PATH", "app/data/agy2api.log")
@@ -337,7 +459,7 @@ async def get_logs(lines: int = 100, api_key: str = Depends(get_api_key)):
         result = subprocess.run(
             ["journalctl", "--user", "-u", "agy-wrapper.service", "-n", str(lines), "--no-pager"],
             capture_output=True,
-            text=True
+            text=True,
         )
         if result.returncode == 0:
             return {"logs": result.stdout}
@@ -349,52 +471,62 @@ async def get_logs(lines: int = 100, api_key: str = Depends(get_api_key)):
     except Exception as e:
         return {"logs": f"Error reading logs: {str(e)}"}
 
+
 @router.post(
-    "/audio/speech", 
-    summary="Text to Speech (Audio Generations)", 
+    "/audio/speech",
+    summary="Text to Speech (Audio Generations)",
     description="Tạo tệp âm thanh từ văn bản dựa trên chuẩn OpenAI Audio API (engine CapCut).",
     response_class=StreamingResponse,
-    responses={
-        200: {
-            "description": "Binary stream của file MP3 (audio/mpeg)",
-            "content": {"audio/mpeg": {}}
-        }
-    }
+    responses={200: {"description": "Binary stream của file MP3 (audio/mpeg)", "content": {"audio/mpeg": {}}}},
 )
 async def audio_speech(req: SpeechRequest, request: Request, api_key: str = Depends(get_api_key)):
     logger.info(f"Generating speech (voice={req.voice}, speed={req.speed}). Text: {req.input[:50]}...")
     start_time = time.time()
     import hashlib
+
     tts_chat_id = "tts_" + hashlib.sha256(req.input.encode("utf-8", errors="replace")).hexdigest()[:12]
     tts_title = f"TTS: {req.input.strip().replace(chr(10), ' ')[:80]}"
     try:
-        audio_bytes = await capcut_wrapper.generate_speech(
-            text=req.input,
-            voice=req.voice,
-            speed=req.speed
-        )
+        audio_bytes = await capcut_wrapper.generate_speech(text=req.input, voice=req.voice, speed=req.speed)
         await stats_store.record_request(
-            endpoint="audio-speech", model=req.model, pool_account=pool_manager.get_active_account_id(),
-            prompt_tokens=max(1, len(req.input) // 4), completion_tokens=len(audio_bytes) // 100, cache_tokens=0,
-            success=True, latency_ms=int((time.time() - start_time) * 1000), error_type=None,
-            chat_id=tts_chat_id, chat_title=tts_title, prompt_preview=req.input[:1000],
+            endpoint="audio-speech",
+            model=req.model,
+            pool_account=pool_manager.get_active_account_id(),
+            prompt_tokens=max(1, len(req.input) // 4),
+            completion_tokens=len(audio_bytes) // 100,
+            cache_tokens=0,
+            success=True,
+            latency_ms=int((time.time() - start_time) * 1000),
+            error_type=None,
+            chat_id=tts_chat_id,
+            chat_title=tts_title,
+            prompt_preview=req.input[:1000],
             response_preview=f"Audio generated ({req.voice}, {req.speed}x, {len(audio_bytes)} bytes)",
         )
         return StreamingResponse(io.BytesIO(audio_bytes), media_type="audio/mpeg")
     except Exception as e:
         await stats_store.record_request(
-            endpoint="audio-speech", model=req.model, pool_account=pool_manager.get_active_account_id(),
-            prompt_tokens=max(1, len(req.input) // 4), completion_tokens=0, cache_tokens=0,
-            success=False, latency_ms=int((time.time() - start_time) * 1000), error_type=type(e).__name__,
-            chat_id=tts_chat_id, chat_title=tts_title, prompt_preview=req.input[:1000],
+            endpoint="audio-speech",
+            model=req.model,
+            pool_account=pool_manager.get_active_account_id(),
+            prompt_tokens=max(1, len(req.input) // 4),
+            completion_tokens=0,
+            cache_tokens=0,
+            success=False,
+            latency_ms=int((time.time() - start_time) * 1000),
+            error_type=type(e).__name__,
+            chat_id=tts_chat_id,
+            chat_title=tts_title,
+            prompt_preview=req.input[:1000],
             response_preview=f"Error: {str(e)}",
         )
         return JSONResponse(status_code=500, content={"error": str(e)})
 
+
 @router.get(
-    "/audio/voices", 
-    summary="List Voices", 
-    description="Lấy danh sách tất cả các giọng đọc (voices) khả dụng từ engine CapCut."
+    "/audio/voices",
+    summary="List Voices",
+    description="Lấy danh sách tất cả các giọng đọc (voices) khả dụng từ engine CapCut.",
 )
 async def audio_voices(api_key: str = Depends(get_api_key)):
     try:
@@ -403,10 +535,11 @@ async def audio_voices(api_key: str = Depends(get_api_key)):
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
 
+
 @router.post(
-    "/audio/transcriptions", 
-    summary="Speech to Text (Audio Transcriptions)", 
-    description="Chuyển đổi file âm thanh thành văn bản hoặc phụ đề thời gian chuẩn."
+    "/audio/transcriptions",
+    summary="Speech to Text (Audio Transcriptions)",
+    description="Chuyển đổi file âm thanh thành văn bản hoặc phụ đề thời gian chuẩn.",
 )
 async def audio_transcriptions(
     background_tasks: BackgroundTasks,
@@ -415,7 +548,7 @@ async def audio_transcriptions(
     model: str = Form("whisper-1", description="ID của mô hình (vd: whisper-1)"),
     language: str = Form(None, description="Mã ngôn ngữ (vd: en-US, vi-VN). Bỏ trống để tự nhận diện."),
     response_format: str = Form("json", description="Định dạng trả về (json, text, srt, vtt)"),
-    api_key: str = Depends(get_api_key)
+    api_key: str = Depends(get_api_key),
 ):
     logger.info(f"Transcribing audio file: {file.filename}, language: {language}, format: {response_format}")
     start_time = time.time()
@@ -424,38 +557,54 @@ async def audio_transcriptions(
     try:
         file_mgr = TempFileManager()
         background_tasks.add_task(file_mgr.cleanup)
-        
+
         import os
+
         ext = os.path.splitext(file.filename)[1] if file.filename else ".mp3"
         temp_path = os.path.join(file_mgr.temp_dir.name, f"upload{ext}")
         with open(temp_path, "wb") as f:
             f.write(await file.read())
-            
+
         transcription = await capcut_wrapper.transcribe_audio(
-            file_path=temp_path,
-            response_format=response_format,
-            language=language
+            file_path=temp_path, response_format=response_format, language=language
         )
-        
+
         await stats_store.record_request(
-            endpoint="audio-transcription", model=model, pool_account=pool_manager.get_active_account_id(),
-            prompt_tokens=50, completion_tokens=max(1, len(transcription) // 4), cache_tokens=0,
-            success=True, latency_ms=int((time.time() - start_time) * 1000), error_type=None,
-            chat_id=stt_chat_id, chat_title=stt_title, prompt_preview=f"Transcribe: {file.filename}",
+            endpoint="audio-transcription",
+            model=model,
+            pool_account=pool_manager.get_active_account_id(),
+            prompt_tokens=50,
+            completion_tokens=max(1, len(transcription) // 4),
+            cache_tokens=0,
+            success=True,
+            latency_ms=int((time.time() - start_time) * 1000),
+            error_type=None,
+            chat_id=stt_chat_id,
+            chat_title=stt_title,
+            prompt_preview=f"Transcribe: {file.filename}",
             response_preview=transcription[:1500],
         )
 
         if response_format in ["json", "verbose_json"]:
             import json
+
             return JSONResponse(content=json.loads(transcription))
         else:
             return Response(content=transcription, media_type="text/plain")
     except Exception as e:
         await stats_store.record_request(
-            endpoint="audio-transcription", model=model, pool_account=pool_manager.get_active_account_id(),
-            prompt_tokens=50, completion_tokens=0, cache_tokens=0,
-            success=False, latency_ms=int((time.time() - start_time) * 1000), error_type=type(e).__name__,
-            chat_id=stt_chat_id, chat_title=stt_title, prompt_preview=f"Transcribe: {file.filename}",
+            endpoint="audio-transcription",
+            model=model,
+            pool_account=pool_manager.get_active_account_id(),
+            prompt_tokens=50,
+            completion_tokens=0,
+            cache_tokens=0,
+            success=False,
+            latency_ms=int((time.time() - start_time) * 1000),
+            error_type=type(e).__name__,
+            chat_id=stt_chat_id,
+            chat_title=stt_title,
+            prompt_preview=f"Transcribe: {file.filename}",
             response_preview=f"Error: {str(e)}",
         )
         return JSONResponse(status_code=500, content={"error": str(e)})

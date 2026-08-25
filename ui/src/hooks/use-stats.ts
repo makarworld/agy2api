@@ -28,9 +28,21 @@ export interface TimeseriesBucket {
   failures: number;
 }
 
+export interface AccountQuota {
+  gemini_5h?: number | null;
+  gemini_weekly?: number | null;
+  claude_5h?: number | null;
+  claude_weekly?: number | null;
+  gemini_5h_reset?: string | null;
+  gemini_weekly_reset?: string | null;
+  claude_5h_reset?: string | null;
+  claude_weekly_reset?: string | null;
+}
+
 export interface PoolAccount {
   id: string;
   label: string;
+  email?: string | null;
   added_at: number;
   proxy: string | null;
   active: boolean;
@@ -41,9 +53,10 @@ export interface PoolAccount {
   total_requests: number;
   total_prompt_tokens: number;
   total_completion_tokens: number;
+  quota?: AccountQuota;
 }
 
-export function useStats(pollIntervalMs = 15000) {
+export function useStats(pollIntervalMs = 30000) {
   const { apiKey } = useApiKey();
   const [summary, setSummary] = useState<StatsSummary | null>(null);
   const [timeseries, setTimeseries] = useState<TimeseriesBucket[]>([]);

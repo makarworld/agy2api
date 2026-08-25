@@ -402,6 +402,155 @@ def _verify_cache_valid(access_token: str) -> bool:
     return _verify_cache.get(_access_token_suffix(token), 0.0) > time.time()
 
 
+_quota_summary_cache: dict[str, Tuple[float, dict]] = {}
+_QUOTA_CACHE_TTL_SECONDS = 300.0  # 5 minutes cache to avoid frequent requests to Google
+_quota_fetch_lock = asyncio.Lock()
+
+
+def _parse_quota_buckets(payload: dict) -> dict:
+    """Parse retrieveUserQuotaSummary response into structured limits for UI/MCP."""
+    res = {
+        "gemini_5h": None,
+        "gemini_weekly": None,
+        "claude_5h": None,
+        "claude_weekly": None,
+        "gemini_5h_reset": None,
+        "gemini_weekly_reset": None,
+        "claude_5h_reset": None,
+        "claude_weekly_reset": None,
+    }
+    if not isinstance(payload, dict):
+        return res
+
+    for group in payload.get("groups", []):
+        if not isinstance(group, dict):
+            continue
+        group_name = (group.get("displayName") or "").lower()
+        for bucket in group.get("buckets", []):
+            if not isinstance(bucket, dict):
+                continue
+            bucket_id = (bucket.get("bucketId") or "").lower()
+            fraction = bucket.get("remainingFraction")
+            reset_time = bucket.get("resetTime")
+
+            # Check gemini vs 3p/claude
+            if "gemini" in bucket_id or "gemini" in group_name:
+                if "5h" in bucket_id:
+                    res["gemini_5h"] = fraction
+                    res["gemini_5h_reset"] = reset_time
+                elif "weekly" in bucket_id:
+                    res["gemini_weekly"] = fraction
+                    res["gemini_weekly_reset"] = reset_time
+            elif "3p" in bucket_id or "claude" in bucket_id or "claude" in group_name:
+                if "5h" in bucket_id:
+                    res["claude_5h"] = fraction
+                    res["claude_5h_reset"] = reset_time
+                elif "weekly" in bucket_id:
+                    res["claude_weekly"] = fraction
+                    res["claude_weekly_reset"] = reset_time
+    return res
+
+
+async def retrieve_account_quota(
+    account_dir: Optional[str] = None,
+    *,
+    access_token: Optional[str] = None,
+    proxy: Optional[str] = None,
+    pool_account_id: Optional[str] = None,
+) -> dict:
+    """Fetch quota for an account or token, auto-refreshing on 401 if needed."""
+    target_token = access_token
+    cred_path = None
+    cred_kind = None
+
+    if account_dir and not target_token:
+        discovered = discover_credential_candidates(account_dir)
+        if discovered:
+            cred_path, cred_kind = discovered[0]
+            target_token = access_token_from_path(cred_path)
+
+    if not target_token:
+        return _parse_quota_buckets({})
+
+    cache_key = _access_token_suffix(target_token)
+    now = time.time()
+    if cache_key in _quota_summary_cache:
+        exp, cached_data = _quota_summary_cache[cache_key]
+        if exp > now:
+            return cached_data
+
+    async with _quota_fetch_lock:
+        if cache_key in _quota_summary_cache:
+            exp, cached_data = _quota_summary_cache[cache_key]
+            if exp > time.time():
+                return cached_data
+
+        try:
+            async with httpx.AsyncClient(**httpx_client_kwargs(proxy=proxy, timeout=15.0)) as client:
+                response = await client.post(
+                    QUOTA_SUMMARY_URL,
+                    headers=cloudcode_headers(target_token),
+                    json={"project": QUOTA_PROJECT},
+                )
+
+            if response.status_code == 200:
+                parsed = _parse_quota_buckets(response.json())
+                _quota_summary_cache[cache_key] = (time.time() + _QUOTA_CACHE_TTL_SECONDS, parsed)
+                _verify_cache[cache_key] = time.time() + _VERIFY_CACHE_TTL_SECONDS
+                return parsed
+
+            elif response.status_code == 401:
+                invalidate_verify_cache(target_token)
+                logger.info(
+                    "[oauth] Quota check returned 401 (suffix %s) — attempting OAuth refresh for %s",
+                    _token_suffix(target_token),
+                    pool_account_id or (os.path.basename(account_dir) if account_dir else "active"),
+                )
+                # Attempt to refresh token if we have account dir or default home
+                refreshed = False
+                if account_dir:
+                    refreshed = await ensure_fresh_credentials(
+                        account_dir, proxy=proxy, pool_account_id=pool_account_id, force=True
+                    )
+                    if refreshed:
+                        new_token = access_token_from_path(cred_path) if cred_path else None
+                        if new_token:
+                            target_token = new_token
+                else:
+                    refreshed = await ensure_fresh_credentials(proxy=proxy, pool_account_id=pool_account_id, force=True)
+                    if refreshed:
+                        target_token = read_access_token()
+
+                if refreshed and target_token:
+                    async with httpx.AsyncClient(**httpx_client_kwargs(proxy=proxy, timeout=15.0)) as client:
+                        r2 = await client.post(
+                            QUOTA_SUMMARY_URL,
+                            headers=cloudcode_headers(target_token),
+                            json={"project": QUOTA_PROJECT},
+                        )
+                    if r2.status_code == 200:
+                        parsed = _parse_quota_buckets(r2.json())
+                        new_key = _access_token_suffix(target_token)
+                        _quota_summary_cache[new_key] = (time.time() + _QUOTA_CACHE_TTL_SECONDS, parsed)
+                        _verify_cache[new_key] = time.time() + _VERIFY_CACHE_TTL_SECONDS
+                        return parsed
+
+        except Exception as e:
+            logger.debug("[oauth] retrieve_account_quota error for %s: %s", pool_account_id or "account", e)
+
+    return _parse_quota_buckets({})
+
+
+async def retrieve_user_quota(
+    access_token: str,
+    *,
+    project: Optional[str] = None,
+    proxy: Optional[str] = None,
+) -> dict:
+    """Fetch and parse quota summary (Gemini 5h/7d and Claude 5h/7d) with caching."""
+    return await retrieve_account_quota(access_token=access_token, proxy=proxy)
+
+
 async def verify_access_token(
     access_token: str,
     *,
@@ -577,9 +726,7 @@ async def ensure_fresh_credentials(
         if not force and not _needs_refresh_from_view(view):
             if access_token and (
                 _verify_cache_valid(access_token)
-                or await _verify_access_token_cached(
-                    access_token, proxy=proxy, pool_account_id=pool_account_id
-                )
+                or await _verify_access_token_cached(access_token, proxy=proxy, pool_account_id=pool_account_id)
             ):
                 return False
 
@@ -666,9 +813,7 @@ async def ensure_fresh_antigravity_token(
     force: bool = False,
 ) -> bool:
     """Alias for ensure_fresh_credentials (pool_manager compatibility)."""
-    return await ensure_fresh_credentials(
-        gemini_home, proxy=proxy, pool_account_id=pool_account_id, force=force
-    )
+    return await ensure_fresh_credentials(gemini_home, proxy=proxy, pool_account_id=pool_account_id, force=force)
 
 
 def read_access_token(gemini_home: Optional[str] = None) -> str:

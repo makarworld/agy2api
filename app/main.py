@@ -12,6 +12,8 @@ from app.api.routes import router as api_router
 from app.api.anthropic_routes import router as anthropic_router
 from app.api.stats_routes import router as stats_router
 from app.api.accounts_routes import router as accounts_router
+from app.api.settings_routes import router as settings_router
+from app.api.mcp_routes import router as mcp_router
 from app.core.model_manager import get_available_models
 from app.core import stats_store
 from app.core import pool_manager
@@ -24,10 +26,11 @@ from app.core.logging_setup import setup_logging, trace_id_var
 setup_logging()
 logger = logging.getLogger(__name__)
 
+
 async def agy_garbage_collector():
     brain_dir = os.path.expanduser("~/.gemini/antigravity-cli/brain")
     max_age_seconds = 24 * 3600  # 24 hours
-    
+
     while True:
         try:
             if os.path.exists(brain_dir):
@@ -40,8 +43,9 @@ async def agy_garbage_collector():
                             print(f"[Garbage Collector] Deleted old conversation log: {folder}")
         except Exception as e:
             print(f"[Garbage Collector] Error cleaning up: {e}")
-            
+
         await asyncio.sleep(6 * 3600)  # Sleep for 6 hours
+
 
 async def pool_git_autosync_loop():
     interval = int(os.environ.get("AGY_POOL_GIT_AUTOSYNC_INTERVAL_SECONDS", "3600"))
@@ -52,6 +56,7 @@ async def pool_git_autosync_loop():
             print("[Pool Autosync] Pulled latest account pool state")
         except Exception as e:
             print(f"[Pool Autosync] Error: {e}")
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -72,17 +77,20 @@ async def lifespan(app: FastAPI):
         autosync_task.cancel()
     await agy_session_pool.shutdown()
 
+
 app = FastAPI(
     title="AGY OpenAI API Wrapper",
     description="An OpenAI compatible API wrapper for Antigravity CLI",
     version="1.0.0",
-    lifespan=lifespan
+    lifespan=lifespan,
 )
 
 app.include_router(api_router, prefix="/v1")
 app.include_router(anthropic_router, prefix="/anthropic/v1")
 app.include_router(stats_router, prefix="/v1")
 app.include_router(accounts_router, prefix="/v1")
+app.include_router(settings_router, prefix="/v1")
+app.include_router(mcp_router)
 
 
 @app.exception_handler(HTTPException)
@@ -95,14 +103,15 @@ async def anthropic_style_http_exception_handler(request: Request, exc: HTTPExce
         )
     return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
 
+
 @app.middleware("http")
 async def trace_log_middleware(request: Request, call_next):
     trace_id = uuid.uuid4().hex[:8]
     trace_id_var.set(trace_id)
-    
+
     logger.info(f"Incoming request: {request.method} {request.url.path}")
     start_time = time.time()
-    
+
     try:
         response = await call_next(request)
         process_time = time.time() - start_time
@@ -114,9 +123,11 @@ async def trace_log_middleware(request: Request, call_next):
         logger.error(f"Request failed: {str(e)} in {process_time:.3f}s", exc_info=True)
         raise
 
+
 @app.get("/health")
 async def health_check():
     return JSONResponse(content={"status": "ok", "message": "AGY wrapper is running"})
+
 
 # Serve UI if dist folder exists
 base_dir = getattr(sys, "_MEIPASS", os.path.dirname(os.path.dirname(__file__)))
@@ -140,5 +151,3 @@ async def spa_fallback_handler(request: Request, exc):
 
 if os.path.exists(ui_dist):
     app.mount("/", StaticFiles(directory=ui_dist, html=True), name="static")
-
-

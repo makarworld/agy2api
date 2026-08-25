@@ -10,6 +10,7 @@ import { AudioPage } from './pages/audio-page';
 import { StatsPage } from './pages/stats-page';
 import { PoolPage } from './pages/pool-page';
 import { RequestsPage } from './pages/requests-page';
+import { SettingsPage } from './pages/settings-page';
 
 function App() {
   // Apply dark mode based on preference or default
@@ -28,6 +29,7 @@ function App() {
             <Route path="requests" element={<RequestsPage />} />
             <Route path="stats" element={<StatsPage />} />
             <Route path="pool" element={<PoolPage />} />
+            <Route path="settings" element={<SettingsPage />} />
             <Route path="logs" element={<LogsPage />} />
             <Route path="keys" element={<ApiKeysPage />} />
           </Route>

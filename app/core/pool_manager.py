@@ -110,13 +110,73 @@ def _save_manifest(manifest: dict) -> None:
         json.dump(manifest, f, indent=2, ensure_ascii=False)
 
 
+def get_account_token_and_proxy(account_id: str) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+    """Retrieve (token, proxy, account_dir) for a given account (or active account from ~/.gemini)."""
+    acc = _find_account(account_id)
+    proxy = get_google_proxy(acc.get("proxy") if acc else None)
+    if not pool_enabled() or account_id == get_active_account_id() or not acc:
+        token = _read_live_access_token(_gemini_home())
+        return token, proxy, None
+
+    account_dir = os.path.join(_pool_dir(), "accounts", account_id)
+    token = _read_snapshot_access_token(account_dir)
+    return token, proxy, account_dir
+
+
+def _extract_account_email(account_id: str) -> Optional[str]:
+    """Helper to get email from google_accounts.json or oauth_creds.json in account dir."""
+    account_dir = os.path.join(_pool_dir(), "accounts", account_id)
+    g_acc_path = os.path.join(account_dir, "google_accounts.json")
+    if os.path.exists(g_acc_path):
+        try:
+            with open(g_acc_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                email = data.get("active")
+                if email:
+                    return email
+        except Exception:
+            pass
+    oauth_path = os.path.join(account_dir, "oauth_creds.json")
+    if os.path.exists(oauth_path):
+        try:
+            with open(oauth_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                id_token = data.get("id_token")
+                if id_token:
+                    parts = id_token.split(".")
+                    if len(parts) >= 2:
+                        padded = parts[1] + "=" * ((4 - len(parts[1]) % 4) % 4)
+                        decoded_jwt = json.loads(base64.urlsafe_b64decode(padded.encode()).decode("utf-8"))
+                        return decoded_jwt.get("email")
+        except Exception:
+            pass
+    return None
+
+
 def list_accounts() -> List[dict]:
-    return _load_manifest().get("accounts", [])
+    accounts = _load_manifest().get("accounts", [])
+    for acc in accounts:
+        if not acc.get("email"):
+            acc_email = _extract_account_email(acc["id"])
+            if acc_email:
+                acc["email"] = acc_email
+    return accounts
 
 
 def _find_account(account_id: str) -> Optional[dict]:
     for acc in list_accounts():
         if acc["id"] == account_id:
+            return acc
+    return None
+
+
+def _find_account_by_email(email: str) -> Optional[dict]:
+    if not email:
+        return None
+    email_clean = email.strip().lower()
+    for acc in list_accounts():
+        acc_email = acc.get("email") or _extract_account_email(acc["id"])
+        if acc_email and acc_email.strip().lower() == email_clean:
             return acc
     return None
 
@@ -216,7 +276,7 @@ async def start_add_account_flow(proxy: Optional[str] = None) -> dict:
             "then this page will detect it automatically."
             if terminal_launched
             else "Could not open a terminal automatically. Open one yourself and run "
-                 "`agy auth login`, sign in with the new account, then this page will detect it."
+            "`agy auth login`, sign in with the new account, then this page will detect it."
         ),
     }
 
@@ -266,10 +326,6 @@ def generate_oauth_auth_url(proxy: Optional[str] = None) -> dict:
         "prompt": "consent",
         "redirect_uri": redirect_uri,
         "response_type": "code",
-        "scope": scope,
-        "state": state,
-    }
-    url = f"https://accounts.google.com/o/oauth2/auth?{urllib.parse.urlencode(params)}"
         "scope": scope,
         "state": state,
     }
@@ -371,10 +427,24 @@ async def complete_oauth_flow(
         except Exception as e:
             logger.warning(f"[pool] Failed decoding email from id_token: {e}")
 
-    acc_label = label.strip() if label and label.strip() else (email.split("@")[0] if email else "account")
-    account_id = f"{_slugify(acc_label)}-{uuid.uuid4().hex[:6]}"
-    account_dir = os.path.join(_pool_dir(), "accounts", account_id)
-    os.makedirs(account_dir, exist_ok=True)
+    # Check if account with same email already exists for deduplication
+    existing_acc = _find_account_by_email(email) if email else None
+    if existing_acc:
+        account_id = existing_acc["id"]
+        acc_label = (
+            label.strip()
+            if label and label.strip()
+            else existing_acc.get("label", email.split("@")[0] if email else "account")
+        )
+        account_dir = os.path.join(_pool_dir(), "accounts", account_id)
+        os.makedirs(account_dir, exist_ok=True)
+        is_update = True
+    else:
+        acc_label = label.strip() if label and label.strip() else (email.split("@")[0] if email else "account")
+        account_id = f"{_slugify(acc_label)}-{uuid.uuid4().hex[:6]}"
+        account_dir = os.path.join(_pool_dir(), "accounts", account_id)
+        os.makedirs(account_dir, exist_ok=True)
+        is_update = False
 
     # Write oauth_creds.json
     creds_data = {
@@ -396,18 +466,56 @@ async def complete_oauth_flow(
 
     # Generate installation IDs if needed
     for fname in ("installation_id", "antigravity-cli_installation_id", "antigravity_installation_id"):
-        with open(os.path.join(account_dir, fname), "w", encoding="utf-8") as f:
-            f.write(str(uuid.uuid4()))
+        id_path = os.path.join(account_dir, fname)
+        if not os.path.exists(id_path):
+            with open(id_path, "w", encoding="utf-8") as f:
+                f.write(str(uuid.uuid4()))
 
     manifest = _load_manifest()
-    record = {"id": account_id, "label": acc_label, "added_at": time.time()}
-    if req_proxy:
-        record["proxy"] = req_proxy
-    manifest.setdefault("accounts", []).append(record)
+    accounts_list = manifest.setdefault("accounts", [])
+    if is_update:
+        for acc in accounts_list:
+            if acc["id"] == account_id:
+                if label and label.strip():
+                    acc["label"] = acc_label
+                if email:
+                    acc["email"] = email
+                if req_proxy is not None:
+                    if req_proxy:
+                        acc["proxy"] = req_proxy
+                    else:
+                        acc.pop("proxy", None)
+                record = acc
+                break
+        else:
+            record = {"id": account_id, "label": acc_label, "email": email, "added_at": time.time()}
+            if req_proxy:
+                record["proxy"] = req_proxy
+            accounts_list.append(record)
+    else:
+        record = {"id": account_id, "label": acc_label, "email": email, "added_at": time.time()}
+        if req_proxy:
+            record["proxy"] = req_proxy
+        accounts_list.append(record)
+
     _save_manifest(manifest)
 
-    await stats_store.upsert_pool_account_state(account_id, status="healthy")
-    logger.info(f"[pool] Created new account {account_id} via direct OAuth PKCE (email={email})")
+    # Clear quota cache for this account
+    oauth_refresh.clear_account_quota_cache(account_id)
+
+    # If this is the currently active account in ~/.gemini, sync updated credentials to ~/.gemini immediately
+    if account_id == get_active_account_id():
+        try:
+            await activate_account(account_id)
+        except Exception as e:
+            logger.warning(f"[pool] Failed reactivating updated account {account_id}: {e}")
+
+    await stats_store.upsert_pool_account_state(
+        account_id, status="healthy", consecutive_failures=0, cooldown_until=None
+    )
+    logger.info(
+        f"[pool] {'Updated' if is_update else 'Created'} account {account_id} via direct OAuth PKCE (email={email})"
+    )
 
     # If no active account is set or activated, activate this one
     if not get_active_account_id():
@@ -420,8 +528,9 @@ async def complete_oauth_flow(
         "id": account_id,
         "label": acc_label,
         "email": email,
-        "added_at": record["added_at"],
-        "proxy": req_proxy,
+        "added_at": record.get("added_at", time.time()),
+        "proxy": record.get("proxy"),
+        "updated": is_update,
     }
 
 
@@ -444,19 +553,20 @@ def get_active_account_proxy() -> Optional[str]:
     return get_google_proxy(account_proxy)
 
 
-async def _ensure_oauth_fresh(proxy: Optional[str] = None) -> None:
+async def _ensure_oauth_fresh(proxy: Optional[str] = None, pool_account_id: Optional[str] = None) -> None:
+    target_id = pool_account_id or get_active_account_id()
     try:
         refreshed = await oauth_refresh.ensure_fresh_antigravity_token(
             _gemini_home(),
             proxy=proxy,
-            pool_account_id=get_active_account_id(),
+            pool_account_id=target_id,
         )
-        if refreshed and pool_enabled() and get_active_account_id():
-            await sync_back_credentials(get_active_account_id())
+        if refreshed and pool_enabled() and target_id:
+            await sync_back_credentials(target_id)
     except Exception as e:
         logger.warning(
             "[oauth] ensure_fresh_credentials failed (pool_account=%s): %s",
-            get_active_account_id() or "none",
+            target_id or "none",
             e,
         )
 
@@ -478,7 +588,9 @@ async def init_pool_state() -> None:
 
     accounts = list_accounts()
     if accounts:
-        target_id = _active_account_id if _active_account_id and _find_account(_active_account_id) else accounts[0]["id"]
+        target_id = (
+            _active_account_id if _active_account_id and _find_account(_active_account_id) else accounts[0]["id"]
+        )
         try:
             await activate_account(target_id)
         except Exception as e:
@@ -494,32 +606,22 @@ async def activate_account(account_id: str) -> None:
     gemini_home = _gemini_home()
     proxy = get_google_proxy(account.get("proxy"))
 
-    live_token = _read_live_access_token(gemini_home)
-    snapshot_token = _read_snapshot_access_token(account_dir)
-    live_valid = bool(live_token and await oauth_refresh.verify_access_token(live_token, proxy=proxy))
-    snapshot_valid = bool(snapshot_token and await oauth_refresh.verify_access_token(snapshot_token, proxy=proxy))
+    for src_name, dest_rel in CREDENTIAL_FILES:
+        src = os.path.join(account_dir, src_name)
+        if not os.path.exists(src):
+            continue
+        dest = os.path.join(gemini_home, dest_rel)
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        tmp = dest + ".tmp"
+        shutil.copyfile(src, tmp)
+        os.replace(tmp, dest)
 
-    if live_valid and not snapshot_valid:
-        logger.warning(
-            "[pool] Skipping credential swap for %s — live ~/.gemini token verifies via quota, snapshot stale",
-            account_id,
-        )
-    else:
-        for src_name, dest_rel in CREDENTIAL_FILES:
-            src = os.path.join(account_dir, src_name)
-            if not os.path.exists(src):
-                continue
-            dest = os.path.join(gemini_home, dest_rel)
-            os.makedirs(os.path.dirname(dest), exist_ok=True)
-            tmp = dest + ".tmp"
-            shutil.copyfile(src, tmp)
-            os.replace(tmp, dest)
-
+    oauth_refresh.clear_active_credential_cache()
     global _active_account_id
     _active_account_id = account_id
     await stats_store.set_active_account_id_db(account_id)
     await stats_store.upsert_pool_account_state(account_id, last_used_ts=time.time())
-    await _ensure_oauth_fresh(proxy=proxy)
+    await _ensure_oauth_fresh(proxy=proxy, pool_account_id=account_id)
     logger.info(f"[pool] Activated account {account_id}")
 
 
@@ -722,10 +824,9 @@ async def execute_agy(
 
 # ---- git sync -------------------------------------------------------------------
 
+
 def _git_sync(*args: str) -> str:
-    result = subprocess.run(
-        ["git", "-C", _pool_dir(), *args], capture_output=True, text=True
-    )
+    result = subprocess.run(["git", "-C", _pool_dir(), *args], capture_output=True, text=True)
     if result.returncode != 0:
         raise RuntimeError(f"git {' '.join(args)} failed: {result.stderr.strip()}")
     return result.stdout.strip()
@@ -737,9 +838,7 @@ async def git_pull() -> str:
 
 def _git_commit_and_push_sync(message: str) -> str:
     _git_sync("add", "-A")
-    result = subprocess.run(
-        ["git", "-C", _pool_dir(), "commit", "-m", message], capture_output=True, text=True
-    )
+    result = subprocess.run(["git", "-C", _pool_dir(), "commit", "-m", message], capture_output=True, text=True)
     if result.returncode != 0 and "nothing to commit" not in result.stdout.lower():
         raise RuntimeError(f"git commit failed: {result.stderr.strip()}")
     return _git_sync("push")

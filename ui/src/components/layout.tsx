@@ -1,5 +1,5 @@
 import { NavLink, Outlet } from 'react-router-dom';
-import { Key, Terminal, MessageSquare, Image as ImageIcon, Mic, BarChart3, Users, Layers, LogOut } from 'lucide-react';
+import { Key, Terminal, MessageSquare, Image as ImageIcon, Mic, BarChart3, Users, Layers, LogOut, Settings as SettingsIcon } from 'lucide-react';
 import { useApiKey } from '../hooks/use-api-key';
 
 export function Layout() {
@@ -20,6 +20,7 @@ export function Layout() {
           <NavItem to="/requests" icon={<Layers className="w-4 h-4" />} label="Requests" />
           <NavItem to="/stats" icon={<BarChart3 className="w-4 h-4" />} label="Stats" />
           <NavItem to="/pool" icon={<Users className="w-4 h-4" />} label="Pool" />
+          <NavItem to="/settings" icon={<SettingsIcon className="w-4 h-4" />} label="Settings" />
           <NavItem to="/logs" icon={<Terminal className="w-4 h-4" />} label="Logs" />
           <NavItem to="/keys" icon={<Key className="w-4 h-4" />} label="API Keys" />
         </nav>

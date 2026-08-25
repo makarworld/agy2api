@@ -221,14 +221,18 @@ class TestHttpToolsBridge(unittest.TestCase):
     def test_extract_function_call_from_response(self):
         obj = {
             "response": {
-                "candidates": [{
-                    "content": {
-                        "parts": [{
-                            "functionCall": {"name": "Bash", "args": {"command": "pwd"}, "id": "fc1"},
-                            "thoughtSignature": "sig",
-                        }],
-                    },
-                }],
+                "candidates": [
+                    {
+                        "content": {
+                            "parts": [
+                                {
+                                    "functionCall": {"name": "Bash", "args": {"command": "pwd"}, "id": "fc1"},
+                                    "thoughtSignature": "sig",
+                                }
+                            ],
+                        },
+                    }
+                ],
             },
         }
         text, tool_calls, _ = extract_parts_from_response(obj)
@@ -254,26 +258,28 @@ class TestHttpToolsBridge(unittest.TestCase):
     def test_extract_dedupes_duplicate_function_calls_in_one_chunk(self):
         obj = {
             "response": {
-                "candidates": [{
-                    "content": {
-                        "parts": [
-                            {
-                                "functionCall": {
-                                    "id": "call_1",
-                                    "name": "Read",
-                                    "args": {"file_path": "/a.py"},
+                "candidates": [
+                    {
+                        "content": {
+                            "parts": [
+                                {
+                                    "functionCall": {
+                                        "id": "call_1",
+                                        "name": "Read",
+                                        "args": {"file_path": "/a.py"},
+                                    },
                                 },
-                            },
-                            {
-                                "functionCall": {
-                                    "id": "call_1",
-                                    "name": "Read",
-                                    "args": {"file_path": "/a.py"},
+                                {
+                                    "functionCall": {
+                                        "id": "call_1",
+                                        "name": "Read",
+                                        "args": {"file_path": "/a.py"},
+                                    },
                                 },
-                            },
-                        ],
-                    },
-                }],
+                            ],
+                        },
+                    }
+                ],
             },
         }
         _, tool_calls, _ = extract_parts_from_response(obj)
@@ -287,8 +293,26 @@ class TestHttpToolsBridge(unittest.TestCase):
 
     def test_stream_chunks_same_tool_dedupe_by_key(self):
         chunks = [
-            {"response": {"candidates": [{"content": {"parts": [{"functionCall": {"name": "Task", "args": {"description": "Plan"}}}]}}]}},
-            {"response": {"candidates": [{"content": {"parts": [{"functionCall": {"name": "Task", "args": {"description": "Plan", "prompt": "x"}}}]}}]}},
+            {
+                "response": {
+                    "candidates": [
+                        {"content": {"parts": [{"functionCall": {"name": "Task", "args": {"description": "Plan"}}}]}}
+                    ]
+                }
+            },
+            {
+                "response": {
+                    "candidates": [
+                        {
+                            "content": {
+                                "parts": [
+                                    {"functionCall": {"name": "Task", "args": {"description": "Plan", "prompt": "x"}}}
+                                ]
+                            }
+                        }
+                    ]
+                }
+            },
         ]
         pending: dict = {}
         emitted = 0
@@ -301,7 +325,11 @@ class TestHttpToolsBridge(unittest.TestCase):
     def test_stream_partial_args_merge_into_named_call(self):
         chunks = [
             {"response": {"candidates": [{"content": {"parts": [{"functionCall": {"name": "Read", "args": {}}}]}}]}},
-            {"response": {"candidates": [{"content": {"parts": [{"functionCall": {"args": {"file_path": "/a.py"}}}]}}]}},
+            {
+                "response": {
+                    "candidates": [{"content": {"parts": [{"functionCall": {"args": {"file_path": "/a.py"}}}]}}]
+                }
+            },
         ]
         pending: dict = {}
         emitted = 0
@@ -314,14 +342,18 @@ class TestHttpToolsBridge(unittest.TestCase):
     def test_extract_keeps_function_call_inside_thought_part(self):
         obj = {
             "response": {
-                "candidates": [{
-                    "content": {
-                        "parts": [{
-                            "thought": True,
-                            "functionCall": {"name": "Bash", "args": {"command": "ls"}},
-                        }],
-                    },
-                }],
+                "candidates": [
+                    {
+                        "content": {
+                            "parts": [
+                                {
+                                    "thought": True,
+                                    "functionCall": {"name": "Bash", "args": {"command": "ls"}},
+                                }
+                            ],
+                        },
+                    }
+                ],
             },
         }
         text, tool_calls, _ = extract_parts_from_response(obj)
@@ -371,14 +403,16 @@ class TestHttpToolsBridge(unittest.TestCase):
     def test_extract_text_and_tool_calls(self):
         obj = {
             "response": {
-                "candidates": [{
-                    "content": {
-                        "parts": [
-                            {"text": "I'll run it"},
-                            {"functionCall": {"name": "Bash", "args": {"command": "ls"}}},
-                        ],
-                    },
-                }],
+                "candidates": [
+                    {
+                        "content": {
+                            "parts": [
+                                {"text": "I'll run it"},
+                                {"functionCall": {"name": "Bash", "args": {"command": "ls"}}},
+                            ],
+                        },
+                    }
+                ],
             },
         }
         text, tool_calls, _ = extract_parts_from_response(obj)
@@ -388,11 +422,13 @@ class TestHttpToolsBridge(unittest.TestCase):
     def test_thought_text_fallback_when_no_visible_output(self):
         obj = {
             "response": {
-                "candidates": [{
-                    "content": {
-                        "parts": [{"thought": True, "text": "internal reasoning"}],
-                    },
-                }],
+                "candidates": [
+                    {
+                        "content": {
+                            "parts": [{"thought": True, "text": "internal reasoning"}],
+                        },
+                    }
+                ],
             },
         }
         text, tool_calls, _ = extract_parts_from_response(obj, allow_thought_text=True)
@@ -402,11 +438,13 @@ class TestHttpToolsBridge(unittest.TestCase):
     def test_thought_text_not_used_without_flag(self):
         obj = {
             "response": {
-                "candidates": [{
-                    "content": {
-                        "parts": [{"thought": True, "text": "hidden"}],
-                    },
-                }],
+                "candidates": [
+                    {
+                        "content": {
+                            "parts": [{"thought": True, "text": "hidden"}],
+                        },
+                    }
+                ],
             },
         }
         text, tool_calls, _ = extract_parts_from_response(obj, allow_thought_text=False)
@@ -430,7 +468,11 @@ class TestHttpToolsBridge(unittest.TestCase):
     def test_finalize_after_partial_stream_merge(self):
         chunks = [
             {"response": {"candidates": [{"content": {"parts": [{"functionCall": {"name": "Read", "args": {}}}]}}]}},
-            {"response": {"candidates": [{"content": {"parts": [{"functionCall": {"args": {"file_path": "/a.py"}}}]}}]}},
+            {
+                "response": {
+                    "candidates": [{"content": {"parts": [{"functionCall": {"args": {"file_path": "/a.py"}}}]}}]
+                }
+            },
         ]
         pending: dict = {}
         for obj in chunks:
@@ -442,7 +484,9 @@ class TestHttpToolsBridge(unittest.TestCase):
         self.assertEqual(out[0]["input"]["file_path"], "/a.py")
 
     def test_trim_tool_result_exceeds_limit(self):
-        with mock.patch.dict(os.environ, {"AGY_HTTP_MAX_TOOL_RESULT_CHARS": "100"}):
+        with mock.patch.dict(
+            os.environ, {"AGY_HTTP_TRIM_TOOL_RESULTS": "true", "AGY_HTTP_MAX_TOOL_RESULT_CHARS": "100"}
+        ):
             long_content = "x" * 200
             messages = [
                 {
@@ -489,7 +533,11 @@ class TestHttpToolsBridge(unittest.TestCase):
     def test_old_tool_results_trimmed_more_aggressively(self):
         with mock.patch.dict(
             os.environ,
-            {"AGY_HTTP_MAX_TOOL_RESULT_CHARS": "12000", "AGY_HTTP_OLD_TOOL_RESULT_CHARS": "50"},
+            {
+                "AGY_HTTP_TRIM_TOOL_RESULTS": "true",
+                "AGY_HTTP_MAX_TOOL_RESULT_CHARS": "12000",
+                "AGY_HTTP_OLD_TOOL_RESULT_CHARS": "50",
+            },
         ):
             long_content = "y" * 200
             messages = [
@@ -510,6 +558,23 @@ class TestHttpToolsBridge(unittest.TestCase):
             recent_result = contents[2]["parts"][0]["functionResponse"]["response"]["result"]
             self.assertIn("truncated", old_result)
             self.assertEqual(recent_result, "short")
+
+    def test_messages_with_images_generate_inline_data_parts(self):
+        messages = [
+            {
+                "role": "user",
+                "content": "Look at this image",
+                "images": [{"mime_type": "image/jpeg", "data": "dGVzdC1qcGctZGF0YQ=="}],
+            }
+        ]
+        contents = messages_to_gemini_contents(messages)
+        self.assertEqual(len(contents), 1)
+        self.assertEqual(contents[0]["role"], "user")
+        parts = contents[0]["parts"]
+        self.assertEqual(len(parts), 2)
+        self.assertEqual(parts[0]["inlineData"]["mimeType"], "image/jpeg")
+        self.assertEqual(parts[0]["inlineData"]["data"], "dGVzdC1qcGctZGF0YQ==")
+        self.assertEqual(parts[1]["text"], "Look at this image")
 
 
 if __name__ == "__main__":

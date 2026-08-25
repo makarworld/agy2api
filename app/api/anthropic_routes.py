@@ -63,6 +63,7 @@ def _build_messages(system, messages, file_mgr: TempFileManager):
         text_parts: List[str] = []
         tool_calls: List[dict] = []
         tool_results: List[dict] = []
+        images: List[dict] = []
 
         for block in content:
             btype = block.get("type")
@@ -72,6 +73,8 @@ def _build_messages(system, messages, file_mgr: TempFileManager):
                 source = block.get("source", {})
                 media_type = source.get("media_type", "image/png")
                 data = source.get("data", "")
+                if data:
+                    images.append({"mime_type": media_type, "data": data})
                 ext = ".png"
                 if "jpeg" in media_type or "jpg" in media_type:
                     ext = ".jpg"
@@ -82,33 +85,39 @@ def _build_messages(system, messages, file_mgr: TempFileManager):
                 try:
                     fpath = file_mgr.add_base64_file(data, ext=ext)
                     files_to_attach.append(fpath)
-                    text_parts.append(f"[Attached Image: {fpath}]")
+                    # For CLI transport fallback
+                    # For HTTP transport, inlineData is used directly
                 except Exception as e:
-                    text_parts.append(f"[Failed to attach image: {e}]")
+                    logger.warning(f"Failed to save temp file for image: {e}")
             elif btype == "document":
                 source = block.get("source", {})
                 media_type = source.get("media_type", "application/pdf")
                 data = source.get("data", "")
+                if data:
+                    images.append({"mime_type": media_type, "data": data})
                 ext = ".pdf" if "pdf" in media_type else ".bin"
                 try:
                     fpath = file_mgr.add_base64_file(data, ext=ext)
                     files_to_attach.append(fpath)
-                    text_parts.append(f"[Attached Document: {fpath}]")
                 except Exception as e:
-                    text_parts.append(f"[Failed to attach document: {e}]")
+                    logger.warning(f"Failed to save temp file for document: {e}")
             elif btype == "tool_result":
-                tool_results.append({
-                    "tool_use_id": block.get("tool_use_id", ""),
-                    "content": block.get("content", ""),
-                    "is_error": block.get("is_error", False),
-                    "name": block.get("name"),
-                })
+                tool_results.append(
+                    {
+                        "tool_use_id": block.get("tool_use_id", ""),
+                        "content": block.get("content", ""),
+                        "is_error": block.get("is_error", False),
+                        "name": block.get("name"),
+                    }
+                )
             elif btype == "tool_use":
-                tool_calls.append({
-                    "id": block.get("id", ""),
-                    "name": block.get("name", ""),
-                    "input": block.get("input", {}),
-                })
+                tool_calls.append(
+                    {
+                        "id": block.get("id", ""),
+                        "name": block.get("name", ""),
+                        "input": block.get("input", {}),
+                    }
+                )
 
         entry: dict = {"role": role}
         if text_parts:
@@ -119,6 +128,8 @@ def _build_messages(system, messages, file_mgr: TempFileManager):
             entry["content"] = ""
         else:
             entry["content"] = ""
+        if images:
+            entry["images"] = images
         if tool_calls:
             entry["tool_calls"] = tool_calls
         if tool_results:
@@ -130,7 +141,9 @@ def _build_messages(system, messages, file_mgr: TempFileManager):
 
 def _extract_text(agy_response) -> str:
     if isinstance(agy_response, dict):
-        return agy_response.get("text") or agy_response.get("content") or agy_response.get("response") or str(agy_response)
+        return (
+            agy_response.get("text") or agy_response.get("content") or agy_response.get("response") or str(agy_response)
+        )
     return str(agy_response)
 
 
@@ -158,35 +171,47 @@ async def _stream_classifier_shortcut(
     msg_id = f"msg_{uuid.uuid4().hex[:24]}"
     completion_tokens = max(1, len(response_text) // 4)
 
-    yield _sse("message_start", {
-        "type": "message_start",
-        "message": {
-            "id": msg_id,
-            "type": "message",
-            "role": "assistant",
-            "content": [],
-            "model": client_model,
-            "stop_reason": None,
-            "stop_sequence": None,
-            "usage": {"input_tokens": prompt_tokens, "output_tokens": 0, "cache_read_input_tokens": 0},
+    yield _sse(
+        "message_start",
+        {
+            "type": "message_start",
+            "message": {
+                "id": msg_id,
+                "type": "message",
+                "role": "assistant",
+                "content": [],
+                "model": client_model,
+                "stop_reason": None,
+                "stop_sequence": None,
+                "usage": {"input_tokens": prompt_tokens, "output_tokens": 0, "cache_read_input_tokens": 0},
+            },
         },
-    })
-    yield _sse("content_block_start", {
-        "type": "content_block_start",
-        "index": 0,
-        "content_block": {"type": "text", "text": ""},
-    })
-    yield _sse("content_block_delta", {
-        "type": "content_block_delta",
-        "index": 0,
-        "delta": {"type": "text_delta", "text": response_text},
-    })
+    )
+    yield _sse(
+        "content_block_start",
+        {
+            "type": "content_block_start",
+            "index": 0,
+            "content_block": {"type": "text", "text": ""},
+        },
+    )
+    yield _sse(
+        "content_block_delta",
+        {
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": {"type": "text_delta", "text": response_text},
+        },
+    )
     yield _sse("content_block_stop", {"type": "content_block_stop", "index": 0})
-    yield _sse("message_delta", {
-        "type": "message_delta",
-        "delta": {"stop_reason": "end_turn", "stop_sequence": None},
-        "usage": {"output_tokens": completion_tokens},
-    })
+    yield _sse(
+        "message_delta",
+        {
+            "type": "message_delta",
+            "delta": {"stop_reason": "end_turn", "stop_sequence": None},
+            "usage": {"output_tokens": completion_tokens},
+        },
+    )
     yield _sse("message_stop", {"type": "message_stop"})
 
     await stats_store.record_request(
@@ -221,19 +246,22 @@ async def _stream_response(
     msg_id = f"msg_{uuid.uuid4().hex[:24]}"
     fallback_prompt_tokens = max(1, sum(_message_char_len(m) for m in messages) // 4)
 
-    yield _sse("message_start", {
-        "type": "message_start",
-        "message": {
-            "id": msg_id,
-            "type": "message",
-            "role": "assistant",
-            "content": [],
-            "model": client_model,
-            "stop_reason": None,
-            "stop_sequence": None,
-            "usage": {"input_tokens": fallback_prompt_tokens, "output_tokens": 0, "cache_read_input_tokens": 0},
+    yield _sse(
+        "message_start",
+        {
+            "type": "message_start",
+            "message": {
+                "id": msg_id,
+                "type": "message",
+                "role": "assistant",
+                "content": [],
+                "model": client_model,
+                "stop_reason": None,
+                "stop_sequence": None,
+                "usage": {"input_tokens": fallback_prompt_tokens, "output_tokens": 0, "cache_read_input_tokens": 0},
+            },
         },
-    })
+    )
 
     final_usage: dict = {}
     assistant_chunks: List[str] = []
@@ -275,37 +303,49 @@ async def _stream_response(
                     tool_input = tc.get("input", {})
                     tool_calls_collected.append(tc)
 
-                    yield _sse("content_block_start", {
-                        "type": "content_block_start",
-                        "index": block_index,
-                        "content_block": {
-                            "type": "tool_use",
-                            "id": tool_id,
-                            "name": tool_name,
-                            "input": {},
+                    yield _sse(
+                        "content_block_start",
+                        {
+                            "type": "content_block_start",
+                            "index": block_index,
+                            "content_block": {
+                                "type": "tool_use",
+                                "id": tool_id,
+                                "name": tool_name,
+                                "input": {},
+                            },
                         },
-                    })
-                    yield _sse("content_block_delta", {
-                        "type": "content_block_delta",
-                        "index": block_index,
-                        "delta": {"type": "input_json_delta", "partial_json": json.dumps(tool_input)},
-                    })
+                    )
+                    yield _sse(
+                        "content_block_delta",
+                        {
+                            "type": "content_block_delta",
+                            "index": block_index,
+                            "delta": {"type": "input_json_delta", "partial_json": json.dumps(tool_input)},
+                        },
+                    )
                     yield _sse("content_block_stop", {"type": "content_block_stop", "index": block_index})
 
             if "delta" in piece:
                 if not text_block_open:
-                    yield _sse("content_block_start", {
-                        "type": "content_block_start",
-                        "index": 0,
-                        "content_block": {"type": "text", "text": ""},
-                    })
+                    yield _sse(
+                        "content_block_start",
+                        {
+                            "type": "content_block_start",
+                            "index": 0,
+                            "content_block": {"type": "text", "text": ""},
+                        },
+                    )
                     text_block_open = True
                 assistant_chunks.append(piece["delta"])
-                yield _sse("content_block_delta", {
-                    "type": "content_block_delta",
-                    "index": 0,
-                    "delta": {"type": "text_delta", "text": piece["delta"]},
-                })
+                yield _sse(
+                    "content_block_delta",
+                    {
+                        "type": "content_block_delta",
+                        "index": 0,
+                        "delta": {"type": "text_delta", "text": piece["delta"]},
+                    },
+                )
 
             if "usage" in piece:
                 final_usage = piece.get("usage", {})
@@ -321,20 +361,45 @@ async def _stream_response(
                         emitted_tool_keys.add(tool_key)
                         tool_calls_collected.append(tc)
     except Exception as e:
+        logger.error(f"[anthropic] Stream exception ({type(e).__name__}): {e}")
         await stats_store.record_request(
-            endpoint="anthropic-chat", model=client_model, pool_account=pool_manager.get_active_account_id(),
-            prompt_tokens=0, completion_tokens=0, cache_tokens=0, success=False,
-            latency_ms=int((time.time() - start_time) * 1000), error_type=type(e).__name__,
-            chat_id=chat_id, chat_title=chat_title, prompt_preview=prompt_preview,
+            endpoint="anthropic-chat",
+            model=client_model,
+            pool_account=pool_manager.get_active_account_id(),
+            prompt_tokens=0,
+            completion_tokens=0,
+            cache_tokens=0,
+            success=False,
+            latency_ms=int((time.time() - start_time) * 1000),
+            error_type=type(e).__name__,
+            chat_id=chat_id,
+            chat_title=chat_title,
+            prompt_preview=prompt_preview,
             response_preview=f"Error: {str(e)}",
         )
         if text_block_open:
             yield _sse("content_block_stop", {"type": "content_block_stop", "index": 0})
-        yield _sse("message_delta", {
-            "type": "message_delta",
-            "delta": {"stop_reason": "error", "stop_sequence": None},
-            "usage": {"output_tokens": 0},
-        })
+
+        empty_on_error = os.environ.get("AGY_HTTP_EMPTY_AS_EMPTY_CONTENT", "true").lower() in ("true", "1", "yes")
+        if empty_on_error and not assistant_chunks and not tool_calls_collected:
+            logger.info(f"[anthropic] Returning empty content [] on stream {type(e).__name__} for client auto-retry")
+            yield _sse(
+                "message_delta",
+                {
+                    "type": "message_delta",
+                    "delta": {"stop_reason": "end_turn", "stop_sequence": None},
+                    "usage": {"output_tokens": 0},
+                },
+            )
+        else:
+            yield _sse(
+                "message_delta",
+                {
+                    "type": "message_delta",
+                    "delta": {"stop_reason": "error", "stop_sequence": None},
+                    "usage": {"output_tokens": 0},
+                },
+            )
         yield _sse("message_stop", {"type": "message_stop"})
         return
 
@@ -342,21 +407,29 @@ async def _stream_response(
     if tool_calls_collected:
         stop_reason = "tool_use"
 
-    if error_message or (not assistant_text and not tool_calls_collected):
-        if not error_message:
-            error_message = "Model returned no output"
+    if not error_message and not assistant_text and not tool_calls_collected:
+        # Empty response from upstream model: emit no content blocks and end_turn with 0 tokens.
+        # Claude Code treats empty content [] as invisible output and automatically retries.
+        stop_reason = "end_turn"
+    elif error_message:
         if not assistant_text:
-            yield _sse("content_block_start", {
-                "type": "content_block_start",
-                "index": 0,
-                "content_block": {"type": "text", "text": ""},
-            })
+            yield _sse(
+                "content_block_start",
+                {
+                    "type": "content_block_start",
+                    "index": 0,
+                    "content_block": {"type": "text", "text": ""},
+                },
+            )
             assistant_chunks.append(error_message)
-            yield _sse("content_block_delta", {
-                "type": "content_block_delta",
-                "index": 0,
-                "delta": {"type": "text_delta", "text": error_message},
-            })
+            yield _sse(
+                "content_block_delta",
+                {
+                    "type": "content_block_delta",
+                    "index": 0,
+                    "delta": {"type": "text_delta", "text": error_message},
+                },
+            )
             text_block_open = True
             assistant_text = error_message
         stop_reason = "error"
@@ -372,21 +445,31 @@ async def _stream_response(
     is_error = stop_reason == "error"
     preview = assistant_text[:1500] if assistant_text else json.dumps(tool_calls_collected)[:1500]
     await stats_store.record_request(
-        endpoint="anthropic-chat", model=client_model, pool_account=pool_manager.get_active_account_id(),
-        prompt_tokens=prompt_tokens, completion_tokens=completion_tokens, cache_tokens=cache_tokens,
-        success=not is_error, latency_ms=int((time.time() - start_time) * 1000),
+        endpoint="anthropic-chat",
+        model=client_model,
+        pool_account=pool_manager.get_active_account_id(),
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        cache_tokens=cache_tokens,
+        success=not is_error,
+        latency_ms=int((time.time() - start_time) * 1000),
         error_type="EmptyModelResponse" if is_error else None,
-        chat_id=chat_id, chat_title=chat_title, prompt_preview=prompt_preview,
+        chat_id=chat_id,
+        chat_title=chat_title,
+        prompt_preview=prompt_preview,
         response_preview=preview,
     )
 
     if text_block_open:
         yield _sse("content_block_stop", {"type": "content_block_stop", "index": 0})
-    yield _sse("message_delta", {
-        "type": "message_delta",
-        "delta": {"stop_reason": stop_reason, "stop_sequence": None},
-        "usage": {"output_tokens": completion_tokens},
-    })
+    yield _sse(
+        "message_delta",
+        {
+            "type": "message_delta",
+            "delta": {"stop_reason": stop_reason, "stop_sequence": None},
+            "usage": {"output_tokens": completion_tokens},
+        },
+    )
     yield _sse("message_stop", {"type": "message_stop"})
 
 
@@ -409,7 +492,9 @@ async def create_message(
 
     user_identifier = None
     if req.metadata and isinstance(req.metadata, dict):
-        user_identifier = req.metadata.get("user_id") or req.metadata.get("session_id") or req.metadata.get("conversation_id")
+        user_identifier = (
+            req.metadata.get("user_id") or req.metadata.get("session_id") or req.metadata.get("conversation_id")
+        )
 
     chat_id, chat_title, prompt_preview = stats_store.extract_chat_metadata(
         headers=dict(request.headers),
@@ -452,26 +537,34 @@ async def create_message(
             prompt_preview=prompt_preview,
             response_preview=response_text,
         )
-        return JSONResponse(content={
-            "id": f"msg_{uuid.uuid4().hex[:24]}",
-            "type": "message",
-            "role": "assistant",
-            "model": req.model,
-            "content": [{"type": "text", "text": response_text}],
-            "stop_reason": "end_turn",
-            "stop_sequence": None,
-            "usage": {
-                "input_tokens": prompt_tokens,
-                "output_tokens": completion_tokens,
-                "cache_read_input_tokens": 0,
-            },
-        })
+        return JSONResponse(
+            content={
+                "id": f"msg_{uuid.uuid4().hex[:24]}",
+                "type": "message",
+                "role": "assistant",
+                "model": req.model,
+                "content": [{"type": "text", "text": response_text}],
+                "stop_reason": "end_turn",
+                "stop_sequence": None,
+                "usage": {
+                    "input_tokens": prompt_tokens,
+                    "output_tokens": completion_tokens,
+                    "cache_read_input_tokens": 0,
+                },
+            }
+        )
 
     if req.stream:
         return StreamingResponse(
             _stream_response(
-                messages, system, agy_model, req.model, start_time,
-                chat_id, chat_title, prompt_preview,
+                messages,
+                system,
+                agy_model,
+                req.model,
+                start_time,
+                chat_id,
+                chat_title,
+                prompt_preview,
                 tools=req.tools,
                 tool_choice=req.tool_choice,
             ),
@@ -487,13 +580,43 @@ async def create_message(
             tool_choice=req.tool_choice,
         )
     except Exception as e:
+        logger.error(f"[anthropic] Message request exception ({type(e).__name__}): {e}")
         await stats_store.record_request(
-            endpoint="anthropic-chat", model=req.model, pool_account=pool_manager.get_active_account_id(),
-            prompt_tokens=0, completion_tokens=0, cache_tokens=0, success=False,
-            latency_ms=int((time.time() - start_time) * 1000), error_type=type(e).__name__,
-            chat_id=chat_id, chat_title=chat_title, prompt_preview=prompt_preview,
+            endpoint="anthropic-chat",
+            model=req.model,
+            pool_account=pool_manager.get_active_account_id(),
+            prompt_tokens=0,
+            completion_tokens=0,
+            cache_tokens=0,
+            success=False,
+            latency_ms=int((time.time() - start_time) * 1000),
+            error_type=type(e).__name__,
+            chat_id=chat_id,
+            chat_title=chat_title,
+            prompt_preview=prompt_preview,
             response_preview=f"Error: {str(e)}",
         )
+        empty_on_error = os.environ.get("AGY_HTTP_EMPTY_AS_EMPTY_CONTENT", "true").lower() in ("true", "1", "yes")
+        if empty_on_error:
+            logger.info(
+                f"[anthropic] Returning empty content [] on non-stream {type(e).__name__} for client auto-retry"
+            )
+            return JSONResponse(
+                content={
+                    "id": f"msg_{uuid.uuid4().hex[:24]}",
+                    "type": "message",
+                    "role": "assistant",
+                    "model": req.model,
+                    "content": [],
+                    "stop_reason": "end_turn",
+                    "stop_sequence": None,
+                    "usage": {
+                        "input_tokens": 0,
+                        "output_tokens": 0,
+                        "cache_read_input_tokens": 0,
+                    },
+                }
+            )
         raise
 
     assistant_text = _extract_text(agy_response)
@@ -504,14 +627,15 @@ async def create_message(
     if assistant_text:
         content_blocks.append({"type": "text", "text": assistant_text})
     for tc in tool_calls:
-        content_blocks.append({
-            "type": "tool_use",
-            "id": tc.get("id") or f"toolu_{uuid.uuid4().hex[:24]}",
-            "name": tc.get("name", ""),
-            "input": tc.get("input", {}),
-        })
-    if not content_blocks:
-        content_blocks.append({"type": "text", "text": ""})
+        content_blocks.append(
+            {
+                "type": "tool_use",
+                "id": tc.get("id") or f"toolu_{uuid.uuid4().hex[:24]}",
+                "name": tc.get("name", ""),
+                "input": tc.get("input", {}),
+            }
+        )
+    # If both text and tool_calls are empty, keep content_blocks as [] so client retries
 
     agy_usage = agy_response.get("usage") if isinstance(agy_response, dict) else None
     if isinstance(agy_usage, dict) and agy_usage:
@@ -520,32 +644,44 @@ async def create_message(
         cache_tokens = agy_usage.get("cache_read_tokens", 0)
     else:
         prompt_tokens = max(1, sum(_message_char_len(m) for m in messages) // 4)
-        completion_tokens = max(1, len(assistant_text) // 4) if assistant_text else max(1, len(json.dumps(tool_calls)) // 4)
+        completion_tokens = (
+            max(1, len(assistant_text) // 4) if assistant_text else max(1, len(json.dumps(tool_calls)) // 4)
+        )
         cache_tokens = 0
 
     preview = assistant_text[:1500] if assistant_text else json.dumps(tool_calls)[:1500]
     await stats_store.record_request(
-        endpoint="anthropic-chat", model=req.model, pool_account=pool_manager.get_active_account_id(),
-        prompt_tokens=prompt_tokens, completion_tokens=completion_tokens, cache_tokens=cache_tokens,
-        success=True, latency_ms=int((time.time() - start_time) * 1000), error_type=None,
-        chat_id=chat_id, chat_title=chat_title, prompt_preview=prompt_preview,
+        endpoint="anthropic-chat",
+        model=req.model,
+        pool_account=pool_manager.get_active_account_id(),
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        cache_tokens=cache_tokens,
+        success=True,
+        latency_ms=int((time.time() - start_time) * 1000),
+        error_type=None,
+        chat_id=chat_id,
+        chat_title=chat_title,
+        prompt_preview=prompt_preview,
         response_preview=preview,
     )
 
-    return JSONResponse(content={
-        "id": f"msg_{uuid.uuid4().hex[:24]}",
-        "type": "message",
-        "role": "assistant",
-        "model": req.model,
-        "content": content_blocks,
-        "stop_reason": stop_reason,
-        "stop_sequence": None,
-        "usage": {
-            "input_tokens": prompt_tokens,
-            "output_tokens": completion_tokens,
-            "cache_read_input_tokens": cache_tokens,
-        },
-    })
+    return JSONResponse(
+        content={
+            "id": f"msg_{uuid.uuid4().hex[:24]}",
+            "type": "message",
+            "role": "assistant",
+            "model": req.model,
+            "content": content_blocks,
+            "stop_reason": stop_reason,
+            "stop_sequence": None,
+            "usage": {
+                "input_tokens": prompt_tokens,
+                "output_tokens": completion_tokens,
+                "cache_read_input_tokens": cache_tokens,
+            },
+        }
+    )
 
 
 @router.post("/messages/count_tokens", summary="Count tokens (Anthropic-compatible stub)")

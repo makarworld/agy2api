@@ -1,4 +1,5 @@
 """Anthropic tools <-> Gemini functionDeclarations conversion for HTTP transport."""
+
 import json
 import logging
 import os
@@ -6,14 +7,16 @@ from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 # Gemini functionDeclarations.parameters accept a small OpenAPI subset only.
-_SCHEMA_ALLOWED_KEYS = frozenset({
-    "type",
-    "properties",
-    "required",
-    "items",
-    "description",
-    "enum",
-})
+_SCHEMA_ALLOWED_KEYS = frozenset(
+    {
+        "type",
+        "properties",
+        "required",
+        "items",
+        "description",
+        "enum",
+    }
+)
 
 _TYPE_MAP = {
     "object": "OBJECT",
@@ -65,8 +68,7 @@ def _sanitize_json_schema_for_gemini(schema: Any) -> Any:
                     (
                         item
                         for item in candidates
-                        if item.get("type") not in (None, "null", "NULL")
-                        or item.get("properties")
+                        if item.get("type") not in (None, "null", "NULL") or item.get("properties")
                     ),
                     candidates[0],
                 )
@@ -364,8 +366,7 @@ def messages_to_gemini_contents(
     contents: List[dict] = []
 
     tool_result_indices = [
-        idx for idx, msg in enumerate(messages)
-        if msg.get("role") == "user" and msg.get("tool_results")
+        idx for idx, msg in enumerate(messages) if msg.get("role") == "user" and msg.get("tool_results")
     ]
     last_tool_result_idx = tool_result_indices[-1] if tool_result_indices else -1
 
@@ -396,6 +397,17 @@ def messages_to_gemini_contents(
                 response_parts.append({"functionResponse": func_resp})
 
             user_parts: List[dict] = list(response_parts)
+            images = msg.get("images") or []
+            for img in images:
+                if isinstance(img, dict) and img.get("data"):
+                    user_parts.append(
+                        {
+                            "inlineData": {
+                                "mimeType": img.get("mime_type", "image/png"),
+                                "data": img["data"],
+                            }
+                        }
+                    )
             text = msg.get("content")
             if text:
                 user_parts.append({"text": text})
@@ -430,9 +442,23 @@ def messages_to_gemini_contents(
             continue
 
         api_role = "model" if role == "assistant" else "user"
+        parts: List[dict] = []
+        images = msg.get("images") or []
+        for img in images:
+            if isinstance(img, dict) and img.get("data"):
+                parts.append(
+                    {
+                        "inlineData": {
+                            "mimeType": img.get("mime_type", "image/png"),
+                            "data": img["data"],
+                        }
+                    }
+                )
         text = msg.get("content", "")
         if text:
-            contents.append({"role": api_role, "parts": [{"text": text}]})
+            parts.append({"text": text})
+        if parts:
+            contents.append({"role": api_role, "parts": parts})
     return contents
 
 
