@@ -1,14 +1,19 @@
+FROM node:20-slim AS ui-builder
+WORKDIR /ui
+COPY ui/package*.json ./
+RUN npm install
+COPY ui/ ./
+RUN npm run build
+
 FROM python:3.10-slim
 
 WORKDIR /app
 
-# We assume agy is installed on the host and we want to run this wrapper.
-# If agy needs to be in the container, you would install it here.
-# For now, we install the API requirements.
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
+COPY --from=ui-builder /ui/dist ./ui/dist
 
 EXPOSE 8008
 
