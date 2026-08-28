@@ -1,27 +1,26 @@
+import asyncio
+import logging
 import os
+import shutil
 import sys
 import time
-import shutil
-import asyncio
+import uuid
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request, HTTPException
-from fastapi.responses import JSONResponse, FileResponse
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from app.api.routes import router as api_router
-from app.api.anthropic_routes import router as anthropic_router
-from app.api.stats_routes import router as stats_router
-from app.api.accounts_routes import router as accounts_router
-from app.api.settings_routes import router as settings_router
-from app.api.mcp_routes import router as mcp_router
-from app.core.model_manager import get_available_models
-from app.core import stats_store
-from app.core import pool_manager
-from app.core import agy_session_pool
 
-import uuid
-import logging
+from app.api.accounts_routes import router as accounts_router
+from app.api.anthropic_routes import router as anthropic_router
+from app.api.keys_routes import router as keys_router
+from app.api.mcp_routes import router as mcp_router
+from app.api.routes import router as api_router
+from app.api.settings_routes import router as settings_router
+from app.api.stats_routes import router as stats_router
+from app.core import agy_session_pool, pool_manager, stats_store
 from app.core.logging_setup import setup_logging, trace_id_var
+from app.core.model_manager import get_available_models
 
 setup_logging()
 logger = logging.getLogger(__name__)
@@ -37,10 +36,14 @@ async def agy_garbage_collector():
                 now = time.time()
                 for folder in os.listdir(brain_dir):
                     folder_path = os.path.join(brain_dir, folder)
-                    if os.path.isdir(folder_path):
-                        if now - os.path.getmtime(folder_path) > max_age_seconds:
-                            shutil.rmtree(folder_path, ignore_errors=True)
-                            print(f"[Garbage Collector] Deleted old conversation log: {folder}")
+                    if (
+                        os.path.isdir(folder_path)
+                        and now - os.path.getmtime(folder_path) > max_age_seconds
+                    ):
+                        shutil.rmtree(folder_path, ignore_errors=True)
+                        print(
+                            f"[Garbage Collector] Deleted old conversation log: {folder}"
+                        )
         except Exception as e:
             print(f"[Garbage Collector] Error cleaning up: {e}")
 
@@ -90,16 +93,24 @@ app.include_router(anthropic_router, prefix="/anthropic/v1")
 app.include_router(stats_router, prefix="/v1")
 app.include_router(accounts_router, prefix="/v1")
 app.include_router(settings_router, prefix="/v1")
+app.include_router(keys_router, prefix="/v1")
 app.include_router(mcp_router)
 
 
 @app.exception_handler(HTTPException)
 async def anthropic_style_http_exception_handler(request: Request, exc: HTTPException):
     if request.url.path.startswith("/anthropic/"):
-        error_type = "authentication_error" if exc.status_code == 401 else "invalid_request_error"
+        error_type = (
+            "authentication_error"
+            if exc.status_code == 401
+            else "invalid_request_error"
+        )
         return JSONResponse(
             status_code=exc.status_code,
-            content={"type": "error", "error": {"type": error_type, "message": exc.detail}},
+            content={
+                "type": "error",
+                "error": {"type": error_type, "message": exc.detail},
+            },
         )
     return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
 
@@ -142,7 +153,9 @@ async def spa_fallback_handler(request: Request, exc):
     # React Router routes (e.g. /stats, /pool) have no matching file on disk --
     # StaticFiles 404s on those. Serve index.html so the client-side router can
     # take over, for any GET that isn't an API call.
-    if request.method == "GET" and not request.url.path.startswith(("/v1/", "/anthropic/", "/health")):
+    if request.method == "GET" and not request.url.path.startswith(
+        ("/v1/", "/anthropic/", "/health")
+    ):
         index_path = os.path.join(ui_dist, "index.html")
         if os.path.exists(index_path):
             return FileResponse(index_path)

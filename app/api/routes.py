@@ -1,30 +1,40 @@
-import os
-import time
-import uuid
 import io
 import json
-from typing import List, Optional, Tuple
-from fastapi import APIRouter, Depends, Request, BackgroundTasks, UploadFile, File, Form
-from fastapi.responses import StreamingResponse, Response, JSONResponse
+import logging
+import os
+import subprocess
+import time
+import uuid
+
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, Request, UploadFile
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
+
 from app.api.models import (
     ChatCompletionRequest,
     ChatCompletionResponse,
     Choice,
     ChoiceMessage,
-    Usage,
     ModelList,
-    Model,
     SpeechRequest,
+    Usage,
+)
+from app.core import pool_manager, stats_store
+from app.core.agy_runner import (
+    run_agy_prompt,
+    run_completion,
+    stream_agy_completion,
+    with_heartbeat,
+)
+from app.core.capcut_api import AsyncCapCutWrapper
+from app.core.file_handler import TempFileManager
+from app.core.key_manager import record_key_output_tokens
+from app.core.model_manager import (
+    get_available_models,
+    get_force_model,
+    resolve_backend_model,
 )
 from app.core.security import get_api_key
-from app.core.agy_runner import run_agy_prompt, run_completion, stream_agy_completion, with_heartbeat
-import logging
-from app.core.file_handler import TempFileManager
-from app.core.capcut_api import AsyncCapCutWrapper
-from app.core.model_manager import get_available_models, resolve_backend_model, get_force_model
-from app.core import stats_store
-from app.core import pool_manager
 
 logger = logging.getLogger(__name__)
 
@@ -37,12 +47,14 @@ class ImageGenerationRequest(BaseModel):
         ...,
         description="A text description of the desired image(s). (Tips: You can include desired aspect ratios here like 9:16 or 16:9)",
     )
-    n: Optional[int] = Field(1, description="The number of images to generate")
-    response_format: Optional[str] = Field(
-        "url", description="The format in which the generated images are returned. Must be one of url or b64_json"
+    n: int | None = Field(1, description="The number of images to generate")
+    response_format: str | None = Field(
+        "url",
+        description="The format in which the generated images are returned. Must be one of url or b64_json",
     )
-    reference_images: Optional[List[str]] = Field(
-        None, description="Optional list of base64 data URIs to use as reference images."
+    reference_images: list[str] | None = Field(
+        None,
+        description="Optional list of base64 data URIs to use as reference images.",
     )
 
     model_config = {
@@ -59,17 +71,20 @@ class ImageGenerationRequest(BaseModel):
 
 
 class ImageObject(BaseModel):
-    url: Optional[str] = None
-    b64_json: Optional[str] = None
+    url: str | None = None
+    b64_json: str | None = None
 
 
 class ImageGenerationResponse(BaseModel):
     created: int
-    data: List[ImageObject]
+    data: list[ImageObject]
 
 
 @router.get(
-    "/models", response_model=ModelList, summary="List Models", description="Returns a list of available AI models."
+    "/models",
+    response_model=ModelList,
+    summary="List Models",
+    description="Returns a list of available AI models.",
 )
 async def list_models(api_key: str = Depends(get_api_key)):
     models = await get_available_models()
@@ -78,7 +93,7 @@ async def list_models(api_key: str = Depends(get_api_key)):
 
 def _extract_message_content_and_images(
     msg, file_mgr: TempFileManager, files_to_attach: list
-) -> Tuple[str, List[dict]]:
+) -> tuple[str, list[dict]]:
     if isinstance(msg.content, str):
         return msg.content, []
     text_parts = []
@@ -127,13 +142,17 @@ def _extract_message_content_and_images(
     return " ".join(text_parts), images
 
 
-def _usage_from_agy(agy_usage: Optional[dict], fallback_prompt_len: int, fallback_completion_len: int) -> Usage:
+def _usage_from_agy(
+    agy_usage: dict | None, fallback_prompt_len: int, fallback_completion_len: int
+) -> Usage:
     # agy's own JSON payload carries real token usage (confirmed live: input_tokens,
     # output_tokens, thinking_tokens, cache_read_tokens, total_tokens). Fall back to a
     # character-count heuristic only if that field is ever missing.
     if isinstance(agy_usage, dict) and agy_usage:
         prompt_tokens = agy_usage.get("input_tokens", 0)
-        completion_tokens = agy_usage.get("output_tokens", 0) + agy_usage.get("thinking_tokens", 0)
+        completion_tokens = agy_usage.get("output_tokens", 0) + agy_usage.get(
+            "thinking_tokens", 0
+        )
         cache_tokens = agy_usage.get("cache_read_tokens", 0)
         total_tokens = agy_usage.get("total_tokens", prompt_tokens + completion_tokens)
     else:
@@ -150,13 +169,14 @@ def _usage_from_agy(agy_usage: Optional[dict], fallback_prompt_len: int, fallbac
 
 
 async def _openai_stream(
-    messages: List[dict],
+    messages: list[dict],
     agy_model: str,
     client_model: str,
     start_time: float,
     chat_id: str,
     chat_title: str,
     prompt_preview: str,
+    api_key: str | None = None,
 ):
     response_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
     created = int(time.time())
@@ -173,9 +193,11 @@ async def _openai_stream(
     yield f"data: {json.dumps(_chunk({'role': 'assistant'}))}\n\n"
 
     final_usage = {}
-    assistant_chunks: List[str] = []
+    assistant_chunks: list[str] = []
     try:
-        async for piece in with_heartbeat(stream_agy_completion(messages=messages, model=agy_model)):
+        async for piece in with_heartbeat(
+            stream_agy_completion(messages=messages, model=agy_model)
+        ):
             if piece is None:
                 yield ": ping\n\n"
                 continue
@@ -222,6 +244,7 @@ async def _openai_stream(
         prompt_preview=prompt_preview,
         response_preview=assistant_text[:1500],
     )
+    record_key_output_tokens(api_key, usage.completion_tokens)
     yield f"data: {json.dumps(_chunk({}, finish_reason='stop'))}\n\n"
     yield "data: [DONE]\n\n"
 
@@ -233,7 +256,10 @@ async def _openai_stream(
     description="Creates a model response for the given chat conversation. Supports multimodal inputs via base64 data URIs.",
 )
 async def chat_completions(
-    req: ChatCompletionRequest, background_tasks: BackgroundTasks, request: Request, api_key: str = Depends(get_api_key)
+    req: ChatCompletionRequest,
+    background_tasks: BackgroundTasks,
+    request: Request,
+    api_key: str = Depends(get_api_key),
 ):
     logger.info(f"Processing chat completions for model: {req.model}")
     start_time = time.time()
@@ -243,7 +269,9 @@ async def chat_completions(
     files_to_attach = []
     messages = []
     for msg in req.messages:
-        content_text, msg_images = _extract_message_content_and_images(msg, file_mgr, files_to_attach)
+        content_text, msg_images = _extract_message_content_and_images(
+            msg, file_mgr, files_to_attach
+        )
         m_entry = {"role": msg.role, "content": content_text}
         if msg_images:
             m_entry["images"] = msg_images
@@ -260,7 +288,16 @@ async def chat_completions(
 
     if req.stream:
         return StreamingResponse(
-            _openai_stream(messages, agy_model, req.model, start_time, chat_id, chat_title, prompt_preview),
+            _openai_stream(
+                messages,
+                agy_model,
+                req.model,
+                start_time,
+                chat_id,
+                chat_title,
+                prompt_preview,
+                api_key=api_key,
+            ),
             media_type="text/event-stream",
         )
 
@@ -287,7 +324,10 @@ async def chat_completions(
     assistant_text = ""
     if isinstance(agy_response, dict):
         assistant_text = (
-            agy_response.get("text") or agy_response.get("content") or agy_response.get("response") or str(agy_response)
+            agy_response.get("text")
+            or agy_response.get("content")
+            or agy_response.get("response")
+            or str(agy_response)
         )
     else:
         assistant_text = str(agy_response)
@@ -311,6 +351,7 @@ async def chat_completions(
         prompt_preview=prompt_preview,
         response_preview=assistant_text[:1500],
     )
+    record_key_output_tokens(api_key, usage.completion_tokens)
 
     response = ChatCompletionResponse(
         id=f"chatcmpl-{uuid.uuid4().hex[:12]}",
@@ -360,7 +401,10 @@ async def generate_image(
 
     import hashlib
 
-    img_chat_id = "img_" + hashlib.sha256(req.prompt.encode("utf-8", errors="replace")).hexdigest()[:12]
+    img_chat_id = (
+        "img_"
+        + hashlib.sha256(req.prompt.encode("utf-8", errors="replace")).hexdigest()[:12]
+    )
     img_title = f"Image: {req.prompt.strip().replace(chr(10), ' ')[:80]}"
 
     try:
@@ -386,7 +430,10 @@ async def generate_image(
     image_path = ""
     if isinstance(agy_response, dict):
         image_path = (
-            agy_response.get("text") or agy_response.get("content") or agy_response.get("response") or str(agy_response)
+            agy_response.get("text")
+            or agy_response.get("content")
+            or agy_response.get("response")
+            or str(agy_response)
         )
     else:
         image_path = str(agy_response)
@@ -438,9 +485,6 @@ async def verify_auth(api_key: str = Depends(get_api_key)):
     return {"status": "ok", "authenticated": True}
 
 
-import subprocess
-
-
 def _read_local_log_tail(lines: int) -> str:
     log_path = os.environ.get("AGY_LOG_FILE_PATH", "app/data/agy2api.log")
     try:
@@ -453,11 +497,23 @@ def _read_local_log_tail(lines: int) -> str:
         return "No log file found yet."
 
 
-@router.get("/logs", summary="Get System Logs", description="Read the latest system logs of the AGY Wrapper service.")
+@router.get(
+    "/logs",
+    summary="Get System Logs",
+    description="Read the latest system logs of the AGY Wrapper service.",
+)
 async def get_logs(lines: int = 100, api_key: str = Depends(get_api_key)):
     try:
         result = subprocess.run(
-            ["journalctl", "--user", "-u", "agy-wrapper.service", "-n", str(lines), "--no-pager"],
+            [
+                "journalctl",
+                "--user",
+                "-u",
+                "agy-wrapper.service",
+                "-n",
+                str(lines),
+                "--no-pager",
+            ],
             capture_output=True,
             text=True,
         )
@@ -477,17 +533,31 @@ async def get_logs(lines: int = 100, api_key: str = Depends(get_api_key)):
     summary="Text to Speech (Audio Generations)",
     description="Tạo tệp âm thanh từ văn bản dựa trên chuẩn OpenAI Audio API (engine CapCut).",
     response_class=StreamingResponse,
-    responses={200: {"description": "Binary stream của file MP3 (audio/mpeg)", "content": {"audio/mpeg": {}}}},
+    responses={
+        200: {
+            "description": "Binary stream của file MP3 (audio/mpeg)",
+            "content": {"audio/mpeg": {}},
+        }
+    },
 )
-async def audio_speech(req: SpeechRequest, request: Request, api_key: str = Depends(get_api_key)):
-    logger.info(f"Generating speech (voice={req.voice}, speed={req.speed}). Text: {req.input[:50]}...")
+async def audio_speech(
+    req: SpeechRequest, request: Request, api_key: str = Depends(get_api_key)
+):
+    logger.info(
+        f"Generating speech (voice={req.voice}, speed={req.speed}). Text: {req.input[:50]}..."
+    )
     start_time = time.time()
     import hashlib
 
-    tts_chat_id = "tts_" + hashlib.sha256(req.input.encode("utf-8", errors="replace")).hexdigest()[:12]
+    tts_chat_id = (
+        "tts_"
+        + hashlib.sha256(req.input.encode("utf-8", errors="replace")).hexdigest()[:12]
+    )
     tts_title = f"TTS: {req.input.strip().replace(chr(10), ' ')[:80]}"
     try:
-        audio_bytes = await capcut_wrapper.generate_speech(text=req.input, voice=req.voice, speed=req.speed)
+        audio_bytes = await capcut_wrapper.generate_speech(
+            text=req.input, voice=req.voice, speed=req.speed
+        )
         await stats_store.record_request(
             endpoint="audio-speech",
             model=req.model,
@@ -544,13 +614,21 @@ async def audio_voices(api_key: str = Depends(get_api_key)):
 async def audio_transcriptions(
     background_tasks: BackgroundTasks,
     request: Request,
-    file: UploadFile = File(..., description="Tệp âm thanh cần upload (mp3, mp4, wav, v.v...)"),
+    file: UploadFile = File(
+        ..., description="Tệp âm thanh cần upload (mp3, mp4, wav, v.v...)"
+    ),
     model: str = Form("whisper-1", description="ID của mô hình (vd: whisper-1)"),
-    language: str = Form(None, description="Mã ngôn ngữ (vd: en-US, vi-VN). Bỏ trống để tự nhận diện."),
-    response_format: str = Form("json", description="Định dạng trả về (json, text, srt, vtt)"),
+    language: str = Form(
+        None, description="Mã ngôn ngữ (vd: en-US, vi-VN). Bỏ trống để tự nhận diện."
+    ),
+    response_format: str = Form(
+        "json", description="Định dạng trả về (json, text, srt, vtt)"
+    ),
     api_key: str = Depends(get_api_key),
 ):
-    logger.info(f"Transcribing audio file: {file.filename}, language: {language}, format: {response_format}")
+    logger.info(
+        f"Transcribing audio file: {file.filename}, language: {language}, format: {response_format}"
+    )
     start_time = time.time()
     stt_chat_id = "stt_" + uuid.uuid4().hex[:12]
     stt_title = f"STT: {file.filename or 'Audio transcription'}"

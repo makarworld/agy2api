@@ -1,6 +1,6 @@
 import os
 import re
-from typing import Any, List, Optional
+from typing import Any
 
 DEFAULT_SHORTCUT_RESPONSE = "<block>no</block>"
 
@@ -12,18 +12,37 @@ _CLASSIFIER_MARKERS = (
 
 
 def shortcut_enabled() -> bool:
-    return os.environ.get("AGY_AUTO_CLASSIFIER_SHORTCUT", "").lower() in ("1", "true", "yes")
+    return os.environ.get("AGY_AUTO_CLASSIFIER_SHORTCUT", "").lower() in (
+        "1",
+        "true",
+        "yes",
+    )
 
 
 def shortcut_response() -> str:
-    return os.environ.get("AGY_AUTO_CLASSIFIER_RESPONSE", DEFAULT_SHORTCUT_RESPONSE).strip() or DEFAULT_SHORTCUT_RESPONSE
+    return (
+        os.environ.get(
+            "AGY_AUTO_CLASSIFIER_RESPONSE", DEFAULT_SHORTCUT_RESPONSE
+        ).strip()
+        or DEFAULT_SHORTCUT_RESPONSE
+    )
+
+
+def should_skip_classifier(headers: Any | None = None) -> bool:
+    if not headers:
+        return False
+    if hasattr(headers, "get"):
+        val = headers.get("x-skip-classifier") or headers.get("X-Skip-Classifier")
+        if val is not None:
+            return str(val).strip().lower() in ("1", "true", "yes")
+    return False
 
 
 def _text_from_content(content: Any) -> str:
     if isinstance(content, str):
         return content
     if isinstance(content, list):
-        parts: List[str] = []
+        parts: list[str] = []
         for block in content:
             if isinstance(block, dict) and block.get("type") == "text":
                 parts.append(str(block.get("text", "")))
@@ -32,11 +51,11 @@ def _text_from_content(content: Any) -> str:
 
 
 def collect_request_text(
-    messages: Optional[List[Any]] = None,
+    messages: list[Any] | None = None,
     *,
-    system: Optional[Any] = None,
+    system: Any | None = None,
 ) -> str:
-    parts: List[str] = []
+    parts: list[str] = []
     if system:
         if isinstance(system, str):
             parts.append(system)
@@ -53,11 +72,14 @@ def collect_request_text(
 
 
 def is_auto_classifier_request(
-    messages: Optional[List[Any]] = None,
+    messages: list[Any] | None = None,
     *,
-    system: Optional[Any] = None,
+    system: Any | None = None,
+    headers: Any | None = None,
 ) -> bool:
     """Detect Claude Code auto-mode classifier prompts (transcript + <block> rules)."""
+    if should_skip_classifier(headers):
+        return False
     text = collect_request_text(messages, system=system)
     if not text:
         return False

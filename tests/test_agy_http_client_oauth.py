@@ -1,11 +1,9 @@
 import asyncio
-import json
 import os
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from app.core import agy_http_client
-from app.core import oauth_refresh
 
 
 class TestAgyHttpClientOAuthRetry(unittest.TestCase):
@@ -13,7 +11,9 @@ class TestAgyHttpClientOAuthRetry(unittest.TestCase):
         async def _run():
             responses = [
                 MagicMock(status_code=401, text="Unauthorized"),
-                MagicMock(status_code=200, text='{"cloudaicompanionProject":"proj-123"}'),
+                MagicMock(
+                    status_code=200, text='{"cloudaicompanionProject":"proj-123"}'
+                ),
             ]
             responses[1].json = lambda: {"cloudaicompanionProject": "proj-123"}
 
@@ -31,7 +31,9 @@ class TestAgyHttpClientOAuthRetry(unittest.TestCase):
                 ) as mock_refresh:
                     project = await agy_http_client._get_project_id("old-token")
                     self.assertEqual(project, "proj-123")
-                    mock_refresh.assert_called_once_with("old-token", proxy=None)
+                    mock_refresh.assert_called_once_with(
+                        "old-token", account_id=None, proxy=None
+                    )
                     self.assertEqual(mock_client.post.call_count, 2)
 
         asyncio.run(_run())
@@ -74,11 +76,15 @@ class TestAgyHttpClientOAuthRetry(unittest.TestCase):
                             return_value="token-b",
                         ) as mock_refresh:
                             chunks = []
-                            async for item in agy_http_client.stream_completion([{"role": "user", "content": "hello"}]):
+                            async for item in agy_http_client.stream_completion(
+                                [{"role": "user", "content": "hello"}]
+                            ):
                                 chunks.append(item)
 
             mock_refresh.assert_called_once()
-            self.assertTrue(any(c.get("delta") == "hi" for c in chunks if isinstance(c, dict)))
+            self.assertTrue(
+                any(c.get("delta") == "hi" for c in chunks if isinstance(c, dict))
+            )
 
         asyncio.run(_run())
 
@@ -86,12 +92,16 @@ class TestAgyHttpClientOAuthRetry(unittest.TestCase):
         async def _run():
             empty_response = MagicMock(status_code=200)
             empty_response.aiter_lines = lambda: _async_lines(
-                ['data: {"candidates":[{"content":{"parts":[]},"finishReason":"MAX_TOKENS"}]}']
+                [
+                    'data: {"candidates":[{"content":{"parts":[]},"finishReason":"MAX_TOKENS"}]}'
+                ]
             )
 
             ok_response = MagicMock(status_code=200)
             ok_response.aiter_lines = lambda: _async_lines(
-                ['data: {"response":{"candidates":[{"content":{"parts":[{"text":"retry ok"}]}}]}}']
+                [
+                    'data: {"response":{"candidates":[{"content":{"parts":[{"text":"retry ok"}]}}]}}'
+                ]
             )
 
             stream_ctxs = []
@@ -119,7 +129,9 @@ class TestAgyHttpClientOAuthRetry(unittest.TestCase):
                         return_value="proj-1",
                     ):
                         chunks = []
-                        async for item in agy_http_client.stream_completion([{"role": "user", "content": "hello"}]):
+                        async for item in agy_http_client.stream_completion(
+                            [{"role": "user", "content": "hello"}]
+                        ):
                             chunks.append(item)
 
             self.assertEqual(mock_client.stream.call_count, 2)
@@ -133,7 +145,9 @@ class TestAgyHttpClientOAuthRetry(unittest.TestCase):
         async def _run():
             empty_response = MagicMock(status_code=200)
             empty_response.aiter_lines = lambda: _async_lines(
-                ['data: {"candidates":[{"content":{"parts":[]},"finishReason":"STOP"}]}']
+                [
+                    'data: {"candidates":[{"content":{"parts":[]},"finishReason":"STOP"}]}'
+                ]
             )
 
             stream_ctx = AsyncMock()
@@ -159,7 +173,9 @@ class TestAgyHttpClientOAuthRetry(unittest.TestCase):
                             return_value="proj-1",
                         ):
                             chunks = []
-                            async for item in agy_http_client.stream_completion([{"role": "user", "content": "hello"}]):
+                            async for item in agy_http_client.stream_completion(
+                                [{"role": "user", "content": "hello"}]
+                            ):
                                 chunks.append(item)
 
             self.assertEqual(mock_client.stream.call_count, 2)
@@ -169,11 +185,15 @@ class TestAgyHttpClientOAuthRetry(unittest.TestCase):
 
         asyncio.run(_run())
 
-    def test_stream_completion_empty_stop_reason_returns_end_turn_when_flag_enabled(self):
+    def test_stream_completion_empty_stop_reason_returns_end_turn_when_flag_enabled(
+        self,
+    ):
         async def _run():
             empty_response = MagicMock(status_code=200)
             empty_response.aiter_lines = lambda: _async_lines(
-                ['data: {"candidates":[{"content":{"parts":[]},"finishReason":"STOP"}]}']
+                [
+                    'data: {"candidates":[{"content":{"parts":[]},"finishReason":"STOP"}]}'
+                ]
             )
 
             stream_ctx = AsyncMock()
@@ -199,7 +219,9 @@ class TestAgyHttpClientOAuthRetry(unittest.TestCase):
                             return_value="proj-1",
                         ):
                             chunks = []
-                            async for item in agy_http_client.stream_completion([{"role": "user", "content": "hello"}]):
+                            async for item in agy_http_client.stream_completion(
+                                [{"role": "user", "content": "hello"}]
+                            ):
                                 chunks.append(item)
 
             self.assertEqual(mock_client.stream.call_count, 2)

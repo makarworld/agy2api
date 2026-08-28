@@ -11,6 +11,7 @@ from app.core.token_stats import request_total_tokens
 
 logger = logging.getLogger(__name__)
 
+
 def extract_chat_metadata(
     headers: Optional[Dict[str, str]] = None,
     messages: Optional[List[Dict[str, Any]]] = None,
@@ -22,7 +23,14 @@ def extract_chat_metadata(
     """
     chat_id = None
     if headers:
-        for key in ("x-session-id", "x-conversation-id", "x-chat-id", "session-id", "conversation-id", "x-request-id"):
+        for key in (
+            "x-session-id",
+            "x-conversation-id",
+            "x-chat-id",
+            "session-id",
+            "conversation-id",
+            "x-request-id",
+        ):
             val = headers.get(key)
             if val and val.strip():
                 chat_id = val.strip()
@@ -40,23 +48,44 @@ def extract_chat_metadata(
             first_user_text = m.get("content", "")
             break
     if not first_user_text and messages:
-        first_user_text = messages[0].get("content", "") if isinstance(messages[0], dict) else str(messages[0])
+        first_user_text = (
+            messages[0].get("content", "")
+            if isinstance(messages[0], dict)
+            else str(messages[0])
+        )
 
     for m in reversed(messages):
         if isinstance(m, dict) and m.get("role") == "user":
             last_user_text = m.get("content", "")
             break
     if not last_user_text and messages:
-        last_user_text = messages[-1].get("content", "") if isinstance(messages[-1], dict) else str(messages[-1])
+        last_user_text = (
+            messages[-1].get("content", "")
+            if isinstance(messages[-1], dict)
+            else str(messages[-1])
+        )
 
     if not chat_id:
         seed = first_user_text or system_text or ""
         if seed:
-            chat_id = "chat_" + hashlib.sha256(seed.encode("utf-8", errors="replace")).hexdigest()[:12]
+            chat_id = (
+                "chat_"
+                + hashlib.sha256(seed.encode("utf-8", errors="replace")).hexdigest()[
+                    :12
+                ]
+            )
         else:
             chat_id = "chat_" + uuid.uuid4().hex[:12]
 
-    chat_title = first_user_text.strip().replace("\n", " ")[:150] if first_user_text else (system_text.strip().replace("\n", " ")[:150] if system_text else "Chat Session")
+    chat_title = (
+        first_user_text.strip().replace("\n", " ")[:150]
+        if first_user_text
+        else (
+            system_text.strip().replace("\n", " ")[:150]
+            if system_text
+            else "Chat Session"
+        )
+    )
     prompt_preview = last_user_text.strip()[:1000] if last_user_text else ""
 
     return chat_id, chat_title, prompt_preview
@@ -106,6 +135,18 @@ CREATE TABLE IF NOT EXISTS pool_runtime (
     id INTEGER PRIMARY KEY CHECK (id = 1),
     active_account_id TEXT
 );
+
+CREATE TABLE IF NOT EXISTS api_keys (
+    key TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    is_active INTEGER NOT NULL DEFAULT 1,
+    created_at REAL NOT NULL,
+    expires_at REAL,
+    daily_output_limit INTEGER,
+    used_output_today INTEGER NOT NULL DEFAULT 0,
+    last_reset_day TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_api_keys_active ON api_keys(is_active);
 """
 
 
@@ -118,7 +159,9 @@ def init_db(db_path: str = None) -> None:
     try:
         conn.executescript(_DDL)
         # Migrate existing table if columns are missing
-        existing_cols = {row[1] for row in conn.execute("PRAGMA table_info(requests)").fetchall()}
+        existing_cols = {
+            row[1] for row in conn.execute("PRAGMA table_info(requests)").fetchall()
+        }
         for col_name, col_type in [
             ("chat_id", "TEXT"),
             ("chat_title", "TEXT"),
@@ -128,9 +171,13 @@ def init_db(db_path: str = None) -> None:
             if col_name not in existing_cols:
                 conn.execute(f"ALTER TABLE requests ADD COLUMN {col_name} {col_type}")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_requests_ts ON requests(ts)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_requests_account ON requests(pool_account)")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_requests_account ON requests(pool_account)"
+        )
         conn.execute("CREATE INDEX IF NOT EXISTS idx_requests_model ON requests(model)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_requests_chat_id ON requests(chat_id)")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_requests_chat_id ON requests(chat_id)"
+        )
         conn.commit()
     finally:
         conn.close()
@@ -138,12 +185,19 @@ def init_db(db_path: str = None) -> None:
 
 
 def _conn() -> sqlite3.Connection:
+    os.makedirs(os.path.dirname(_DB_PATH) or ".", exist_ok=True)
     conn = sqlite3.connect(_DB_PATH)
     conn.row_factory = sqlite3.Row
+    try:
+        conn.execute("SELECT 1 FROM pool_account_state LIMIT 1")
+    except sqlite3.OperationalError:
+        conn.executescript(_DDL)
+        conn.commit()
     return conn
 
 
 # ---- requests / availability -------------------------------------------------
+
 
 def _record_request_sync(
     endpoint: str,
@@ -167,9 +221,22 @@ def _record_request_sync(
             "completion_tokens, cache_tokens, success, latency_ms, error_type, "
             "chat_id, chat_title, prompt_preview, response_preview) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (time.time(), endpoint, model, pool_account, prompt_tokens, completion_tokens,
-             cache_tokens, 1 if success else 0, latency_ms, error_type,
-             chat_id, chat_title, prompt_preview, response_preview),
+            (
+                time.time(),
+                endpoint,
+                model,
+                pool_account,
+                prompt_tokens,
+                completion_tokens,
+                cache_tokens,
+                1 if success else 0,
+                latency_ms,
+                error_type,
+                chat_id,
+                chat_title,
+                prompt_preview,
+                response_preview,
+            ),
         )
         if pool_account:
             conn.execute(
@@ -205,9 +272,20 @@ async def record_request(
 ) -> None:
     try:
         await asyncio.to_thread(
-            _record_request_sync, endpoint, model, pool_account, prompt_tokens,
-            completion_tokens, cache_tokens, success, latency_ms, error_type,
-            chat_id, chat_title, prompt_preview, response_preview,
+            _record_request_sync,
+            endpoint,
+            model,
+            pool_account,
+            prompt_tokens,
+            completion_tokens,
+            cache_tokens,
+            success,
+            latency_ms,
+            error_type,
+            chat_id,
+            chat_title,
+            prompt_preview,
+            response_preview,
         )
     except Exception as e:
         logger.error(f"Failed to record stats: {e}")
@@ -225,7 +303,9 @@ def _record_availability_event_sync(event_type, reason):
         conn.close()
 
 
-async def record_availability_event(event_type: str, reason: Optional[str] = None) -> None:
+async def record_availability_event(
+    event_type: str, reason: Optional[str] = None
+) -> None:
     try:
         await asyncio.to_thread(_record_availability_event_sync, event_type, reason)
     except Exception as e:
@@ -233,6 +313,7 @@ async def record_availability_event(event_type: str, reason: Optional[str] = Non
 
 
 # ---- summary / timeseries -----------------------------------------------------
+
 
 def _get_summary_sync(window_seconds: Optional[int]) -> dict:
     conn = _conn()
@@ -245,7 +326,8 @@ def _get_summary_sync(window_seconds: Optional[int]) -> dict:
             "COALESCE(SUM(prompt_tokens),0) AS prompt_tokens, "
             "COALESCE(SUM(completion_tokens),0) AS completion_tokens, "
             "COALESCE(SUM(cache_tokens),0) AS cache_tokens "
-            "FROM requests WHERE ts >= ?", (since,)
+            "FROM requests WHERE ts >= ?",
+            (since,),
         ).fetchone()
 
         by_model = conn.execute(
@@ -254,7 +336,8 @@ def _get_summary_sync(window_seconds: Optional[int]) -> dict:
             "COALESCE(SUM(completion_tokens),0) AS completion_tokens, "
             "COALESCE(SUM(cache_tokens),0) AS cache_tokens "
             "FROM requests WHERE ts >= ? AND model IS NOT NULL "
-            "GROUP BY model ORDER BY requests DESC", (since,)
+            "GROUP BY model ORDER BY requests DESC",
+            (since,),
         ).fetchall()
 
         by_account = conn.execute(
@@ -262,7 +345,8 @@ def _get_summary_sync(window_seconds: Optional[int]) -> dict:
             "COALESCE(SUM(prompt_tokens),0) AS prompt_tokens, "
             "COALESCE(SUM(completion_tokens),0) AS completion_tokens "
             "FROM requests WHERE ts >= ? AND pool_account IS NOT NULL "
-            "GROUP BY pool_account ORDER BY requests DESC", (since,)
+            "GROUP BY pool_account ORDER BY requests DESC",
+            (since,),
         ).fetchall()
 
         recent_events = conn.execute(
@@ -315,11 +399,14 @@ def _get_timeseries_sync(bucket_seconds: int, window_seconds: int) -> list:
         conn.close()
 
 
-async def get_timeseries(bucket_seconds: int = 3600, window_seconds: int = 24 * 3600) -> list:
+async def get_timeseries(
+    bucket_seconds: int = 3600, window_seconds: int = 24 * 3600
+) -> list:
     return await asyncio.to_thread(_get_timeseries_sync, bucket_seconds, window_seconds)
 
 
 # ---- chats / requests queries -------------------------------------------------
+
 
 def _get_chats_grouped_sync(
     limit: int = 50,
@@ -397,24 +484,26 @@ def _get_chats_grouped_sync(
             models = [m for m in (r["models_str"] or "").split(",") if m]
             accounts = [a for a in (r["accounts_str"] or "").split(",") if a]
             endpoints = [e for e in (r["endpoints_str"] or "").split(",") if e]
-            chats.append({
-                "chat_id": r["chat_id"],
-                "title": r["title"],
-                "total_requests": r["total_requests"],
-                "successful_requests": r["successful_requests"],
-                "failed_requests": r["failed_requests"],
-                "prompt_tokens": r["prompt_tokens"],
-                "completion_tokens": r["completion_tokens"],
-                "cache_tokens": r["cache_tokens"],
-                "total_tokens": r["total_tokens"],
-                "avg_latency_ms": int(r["avg_latency_ms"]),
-                "first_ts": r["first_ts"],
-                "last_ts": r["last_ts"],
-                "models": models,
-                "accounts": accounts,
-                "endpoints": endpoints,
-                "last_error": r["last_error"],
-            })
+            chats.append(
+                {
+                    "chat_id": r["chat_id"],
+                    "title": r["title"],
+                    "total_requests": r["total_requests"],
+                    "successful_requests": r["successful_requests"],
+                    "failed_requests": r["failed_requests"],
+                    "prompt_tokens": r["prompt_tokens"],
+                    "completion_tokens": r["completion_tokens"],
+                    "cache_tokens": r["cache_tokens"],
+                    "total_tokens": r["total_tokens"],
+                    "avg_latency_ms": int(r["avg_latency_ms"]),
+                    "first_ts": r["first_ts"],
+                    "last_ts": r["last_ts"],
+                    "models": models,
+                    "accounts": accounts,
+                    "endpoints": endpoints,
+                    "last_error": r["last_error"],
+                }
+            )
 
         return {"total": total, "chats": chats}
     finally:
@@ -431,7 +520,14 @@ async def get_chats_grouped(
     window_seconds: Optional[int] = None,
 ) -> dict:
     return await asyncio.to_thread(
-        _get_chats_grouped_sync, limit, offset, search, model, endpoint, status, window_seconds
+        _get_chats_grouped_sync,
+        limit,
+        offset,
+        search,
+        model,
+        endpoint,
+        status,
+        window_seconds,
     )
 
 
@@ -469,7 +565,9 @@ def _get_requests_list_sync(
         params = []
 
         if chat_id:
-            conditions.append("(chat_id = ? OR (chat_id IS NULL AND ('legacy_' || id) = ?))")
+            conditions.append(
+                "(chat_id = ? OR (chat_id IS NULL AND ('legacy_' || id) = ?))"
+            )
             params.extend([chat_id, chat_id])
 
         if window_seconds:
@@ -500,7 +598,9 @@ def _get_requests_list_sync(
 
         where_clause = ("WHERE " + " AND ".join(conditions)) if conditions else ""
 
-        total = conn.execute(f"SELECT COUNT(*) AS cnt FROM requests {where_clause}", params).fetchone()["cnt"]
+        total = conn.execute(
+            f"SELECT COUNT(*) AS cnt FROM requests {where_clause}", params
+        ).fetchone()["cnt"]
 
         rows = conn.execute(
             f"SELECT * FROM requests {where_clause} ORDER BY ts DESC LIMIT ? OFFSET ?",
@@ -523,7 +623,15 @@ async def get_requests_list(
     window_seconds: Optional[int] = None,
 ) -> dict:
     return await asyncio.to_thread(
-        _get_requests_list_sync, limit, offset, chat_id, search, model, endpoint, status, window_seconds
+        _get_requests_list_sync,
+        limit,
+        offset,
+        chat_id,
+        search,
+        model,
+        endpoint,
+        status,
+        window_seconds,
     )
 
 
@@ -616,12 +724,14 @@ async def clear_requests(window_seconds: Optional[int] = None) -> int:
 
 # ---- pool account state --------------------------------------------------------
 
+
 def _upsert_pool_account_state_sync(account_id: str, **fields):
     conn = _conn()
     try:
         conn.execute(
             "INSERT INTO pool_account_state (account_id) VALUES (?) "
-            "ON CONFLICT(account_id) DO NOTHING", (account_id,)
+            "ON CONFLICT(account_id) DO NOTHING",
+            (account_id,),
         )
         if fields:
             set_clause = ", ".join(f"{k}=?" for k in fields)
@@ -669,7 +779,9 @@ async def list_pool_account_states() -> list:
 def _get_active_account_id_sync() -> Optional[str]:
     conn = _conn()
     try:
-        row = conn.execute("SELECT active_account_id FROM pool_runtime WHERE id=1").fetchone()
+        row = conn.execute(
+            "SELECT active_account_id FROM pool_runtime WHERE id=1"
+        ).fetchone()
         return row["active_account_id"] if row else None
     finally:
         conn.close()
