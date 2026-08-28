@@ -31,7 +31,9 @@ def _encode_proxy_credentials(proxy: str) -> str:
     username, password = userinfo.split(":", 1)
     if "%" in username or "%" in password:
         return proxy
-    return f"{scheme}://{quote(username, safe='')}:{quote(password, safe='')}@{hostport}"
+    return (
+        f"{scheme}://{quote(username, safe='')}:{quote(password, safe='')}@{hostport}"
+    )
 
 
 def env_google_proxy() -> Optional[str]:
@@ -43,12 +45,14 @@ def env_google_proxy() -> Optional[str]:
 
 
 def get_google_proxy(account_proxy: Optional[str] = None) -> Optional[str]:
-    """Env proxy wins; otherwise per-account pool proxy."""
+    """Per-account pool proxy wins; otherwise default fallback to AGY_GOOGLE_PROXY from env."""
+    if account_proxy and str(account_proxy).strip():
+        return _encode_proxy_credentials(
+            _normalize_proxy_url(str(account_proxy).strip())
+        )
     env_proxy = env_google_proxy()
     if env_proxy:
         return env_proxy
-    if account_proxy and str(account_proxy).strip():
-        return _encode_proxy_credentials(_normalize_proxy_url(str(account_proxy).strip()))
     return None
 
 

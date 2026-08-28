@@ -23,9 +23,11 @@ class TestProxyConfig(unittest.TestCase):
         os.environ["AGY_GOOGLE_PROXY"] = "user:pass@1.2.3.4:8080"
         self.assertEqual(env_google_proxy(), "http://user:pass@1.2.3.4:8080")
 
-    def test_env_proxy_overrides_account_proxy(self):
+    def test_account_proxy_overrides_env_proxy(self):
         os.environ["AGY_GOOGLE_PROXY"] = "http://env-proxy:3128"
-        self.assertEqual(get_google_proxy("http://account-proxy:3128"), "http://env-proxy:3128")
+        self.assertEqual(
+            get_google_proxy("http://account-proxy:3128"), "http://account-proxy:3128"
+        )
 
     def test_account_proxy_used_when_env_missing(self):
         self.assertEqual(get_google_proxy("socks5://acc:1080"), "socks5://acc:1080")
