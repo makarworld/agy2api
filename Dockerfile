@@ -13,7 +13,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
-COPY --from=ui-builder /ui/dist ./ui/dist
+COPY --from=ui-builder /ui/dist /app/ui/dist
 
 EXPOSE 8008
 

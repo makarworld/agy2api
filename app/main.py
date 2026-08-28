@@ -142,10 +142,13 @@ async def health_check():
 
 # Serve UI if dist folder exists
 base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-ui_dist = os.path.join(base_dir, "ui", "dist")
-if not os.path.exists(ui_dist):
-    # fallback to local app sibling
-    ui_dist = os.path.join(os.path.dirname(__file__), "..", "ui", "dist")
+ui_candidates = [
+    os.path.join(base_dir, "ui", "dist"),
+    os.path.join(base_dir, "dist"),
+    os.path.join(os.path.dirname(__file__), "..", "ui", "dist"),
+    "/app/ui/dist",
+]
+ui_dist = next((p for p in ui_candidates if os.path.exists(p)), ui_candidates[0])
 
 
 @app.get("/")
@@ -154,7 +157,7 @@ async def root_index():
     if os.path.exists(index_path):
         return FileResponse(index_path)
     return JSONResponse(
-        status_code=404, content={"detail": f"UI not built, missing {index_path}"}
+        status_code=404, content={"detail": f"UI not built, checked: {ui_candidates}"}
     )
 
 
