@@ -141,11 +141,21 @@ async def health_check():
 
 
 # Serve UI if dist folder exists
-base_dir = getattr(sys, "_MEIPASS", os.path.dirname(os.path.dirname(__file__)))
+base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ui_dist = os.path.join(base_dir, "ui", "dist")
 if not os.path.exists(ui_dist):
     # fallback to local app sibling
     ui_dist = os.path.join(os.path.dirname(__file__), "..", "ui", "dist")
+
+
+@app.get("/")
+async def root_index():
+    index_path = os.path.join(ui_dist, "index.html")
+    if os.path.exists(index_path):
+        return FileResponse(index_path)
+    return JSONResponse(
+        status_code=404, content={"detail": f"UI not built, missing {index_path}"}
+    )
 
 
 @app.exception_handler(404)
