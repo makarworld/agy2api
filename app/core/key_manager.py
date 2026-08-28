@@ -3,7 +3,7 @@ import secrets
 import sqlite3
 import time
 from dataclasses import asdict, dataclass
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import HTTPException, status
@@ -90,7 +90,7 @@ def create_key(
         if (expires_in_days is not None and expires_in_days > 0)
         else None
     )
-    today_utc = datetime.now(UTC).strftime("%Y-%m-%d")
+    today_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     limit = (
         int(daily_output_limit)
         if (daily_output_limit is not None and daily_output_limit > 0)
@@ -128,7 +128,7 @@ def list_keys() -> list[dict[str, Any]]:
         rows = conn.execute(
             "SELECT * FROM api_keys ORDER BY created_at DESC"
         ).fetchall()
-        today_utc = datetime.now(UTC).strftime("%Y-%m-%d")
+        today_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         result = []
         for r in rows:
             d = dict(r)
@@ -226,7 +226,7 @@ def validate_and_consume_key(key: str | None) -> KeyInfo:
                 headers={"WWW-Authenticate": "Bearer"},
             )
 
-        today_utc = datetime.now(UTC).strftime("%Y-%m-%d")
+        today_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         used_today = row["used_output_today"] or 0
         last_day = row["last_reset_day"]
 
@@ -270,7 +270,7 @@ def record_key_output_tokens(key: str | None, output_tokens: int) -> None:
     init_keys_db()
     conn = stats_store._conn()
     try:
-        today_utc = datetime.now(UTC).strftime("%Y-%m-%d")
+        today_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         row = conn.execute(
             "SELECT used_output_today, last_reset_day FROM api_keys WHERE key = ?",
             (clean_key,),
