@@ -38,8 +38,8 @@ AGY_TRANSPORT=http
 
 # 5. Google OAuth параметры Antigravity (нужны для обновления токенов и добавления аккаунтов)
 AGY_OAUTH_REFRESH_ENABLED=true
-ANTIGRAVITY_CLIENT_ID=your-google-client-id-here.apps.googleusercontent.com
-ANTIGRAVITY_CLIENT_SECRET=your-google-client-secret-here
+ANTIGRAVITY_CLIENT_ID=1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com
+ANTIGRAVITY_CLIENT_SECRET=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
 
 # 6. Модель по умолчанию (Gemini 3.7 Flash Thinking)
 AGY_FORCE_MODEL=max-gem
