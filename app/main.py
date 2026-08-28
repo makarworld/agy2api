@@ -29,9 +29,13 @@ logger = logging.getLogger(__name__)
 async def agy_garbage_collector():
     brain_dir = os.path.expanduser("~/.gemini/antigravity-cli/brain")
     max_age_seconds = 24 * 3600  # 24 hours
+    stats_retention_seconds = int(
+        os.environ.get("AGY_STATS_TEXT_RETENTION_SECONDS", 30 * 86400)
+    )
 
     while True:
         try:
+            # 1. Clean old disk brain logs
             if os.path.exists(brain_dir):
                 now = time.time()
                 for folder in os.listdir(brain_dir):
@@ -44,6 +48,8 @@ async def agy_garbage_collector():
                         print(
                             f"[Garbage Collector] Deleted old conversation log: {folder}"
                         )
+            # 2. Prune old prompt/response text in stats DB (> 30 days), preserving count/tokens/status/errors
+            await stats_store.prune_old_request_previews(stats_retention_seconds)
         except Exception as e:
             print(f"[Garbage Collector] Error cleaning up: {e}")
 

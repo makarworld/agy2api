@@ -722,6 +722,35 @@ async def clear_requests(window_seconds: Optional[int] = None) -> int:
     return await asyncio.to_thread(_clear_requests_sync, window_seconds)
 
 
+def _prune_old_request_previews_sync(retention_seconds: int = 30 * 86400) -> int:
+    """
+    Clears prompt_preview and response_preview text for requests older than retention_seconds (default 30 days),
+    keeping metadata (count, tokens, error_type, latency, success) intact for lightweight stats and history.
+    Also runs VACUUM occasionally if rows were modified.
+    """
+    threshold = time.time() - retention_seconds
+    conn = _conn()
+    try:
+        cur = conn.execute(
+            "UPDATE requests SET prompt_preview = NULL, response_preview = NULL "
+            "WHERE ts < ? AND (prompt_preview IS NOT NULL OR response_preview IS NOT NULL)",
+            (threshold,),
+        )
+        conn.commit()
+        pruned_count = cur.rowcount
+        if pruned_count > 0:
+            logger.info(
+                f"[Stats GC] Pruned preview details for {pruned_count} requests older than {retention_seconds // 86400} days"
+            )
+        return pruned_count
+    finally:
+        conn.close()
+
+
+async def prune_old_request_previews(retention_seconds: int = 30 * 86400) -> int:
+    return await asyncio.to_thread(_prune_old_request_previews_sync, retention_seconds)
+
+
 # ---- pool account state --------------------------------------------------------
 
 
