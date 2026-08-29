@@ -24,9 +24,8 @@ import {
 function IntegrationGuide() {
   const [open, setOpen] = useState(true);
 
-  const origin = window.location.origin;
-  const isHttps = window.location.protocol === 'https:';
-  const defaultHost = isHttps ? origin : 'https://grindai.site';
+  const defaultHost = typeof window !== 'undefined' ? window.location.origin : 'http://localhost:8000';
+  const displayHost = typeof window !== 'undefined' ? window.location.host : 'localhost:8000';
 
   const CopyBtn = ({ text, label }: { text: string; label?: string }) => {
     const [copied, setCopied] = useState(false);
@@ -57,7 +56,7 @@ function IntegrationGuide() {
           <Terminal className="w-4 h-4 text-primary" />
           <span className="text-sm font-semibold">Гайд по подключению API (OpenAI & Anthropic)</span>
           <span className="text-[11px] px-2 py-0.5 rounded-full bg-primary/10 text-primary font-mono font-medium">
-            grindai.site
+            {displayHost}
           </span>
         </div>
         <Button variant="ghost" size="sm" className="h-7 w-7 p-0 text-muted-foreground">
@@ -75,10 +74,10 @@ function IntegrationGuide() {
                   <span className="w-2 h-2 rounded-full bg-emerald-500" />
                   OpenAI Compatible (Cursor, Continue, LibreChat)
                 </span>
-                <CopyBtn text={`${defaultHost}/llm/openai/v1`} label="Base URL" />
+                <CopyBtn text={`${defaultHost}/openai/v1`} label="Base URL" />
               </div>
               <div className="font-mono text-[11px] bg-muted/60 p-2.5 rounded border space-y-1.5 text-muted-foreground">
-                <div><span className="text-foreground font-semibold">Base URL:</span> {defaultHost}/llm/openai/v1</div>
+                <div><span className="text-foreground font-semibold">Base URL:</span> {defaultHost}/openai/v1 (или {defaultHost}/v1)</div>
                 <div><span className="text-foreground font-semibold">API Key:</span> Ключ из списка ниже (sk-agy-...) или Master Key</div>
                 <div><span className="text-foreground font-semibold">Model:</span> gemini-2.5-pro, gemini-2.5-flash, claude-3-7-sonnet</div>
               </div>
@@ -91,10 +90,10 @@ function IntegrationGuide() {
                   <span className="w-2 h-2 rounded-full bg-amber-500" />
                   Anthropic Native (Claude Code, Cline, Roo Code)
                 </span>
-                <CopyBtn text={`${defaultHost}/llm/anthropic/v1`} label="Base URL" />
+                <CopyBtn text={`${defaultHost}/anthropic/v1`} label="Base URL" />
               </div>
               <div className="font-mono text-[11px] bg-muted/60 p-2.5 rounded border space-y-1.5 text-muted-foreground">
-                <div><span className="text-foreground font-semibold">Base URL:</span> {defaultHost}/llm/anthropic/v1</div>
+                <div><span className="text-foreground font-semibold">Base URL:</span> {defaultHost}/anthropic/v1</div>
                 <div><span className="text-foreground font-semibold">Header:</span> x-api-key: sk-agy-... или Authorization: Bearer sk-...</div>
                 <div><span className="text-foreground font-semibold">Model:</span> claude-3-7-sonnet-20250219, claude-3-5-sonnet-20241022</div>
               </div>
