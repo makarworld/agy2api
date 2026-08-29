@@ -53,6 +53,7 @@ export interface PoolAccount {
   total_requests: number;
   total_prompt_tokens: number;
   total_completion_tokens: number;
+  model_cooldowns?: Record<string, number>;
   quota?: AccountQuota;
 }
 

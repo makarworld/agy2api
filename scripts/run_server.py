@@ -1,4 +1,5 @@
 """Start uvicorn with Windows console colors enabled."""
+
 import os
 import sys
 
@@ -15,12 +16,14 @@ if __name__ == "__main__":
 
     host = os.environ.get("AGY_HOST", "127.0.0.1")
     port = int(os.environ.get("AGY_PORT", "26767"))
-    reload = os.environ.get("AGY_RELOAD", "").lower() in ("1", "true", "yes")
+    reload_env = os.environ.get("AGY_RELOAD", "1").lower()
+    reload = reload_env in ("1", "true", "yes")
 
     uvicorn.run(
         "app.main:app",
         host=host,
         port=port,
         reload=reload,
+        reload_dirs=[os.path.join(ROOT, "app"), os.path.join(ROOT, "scripts")] if reload else None,
         use_colors=console_colors_enabled(),
     )

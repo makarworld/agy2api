@@ -80,6 +80,7 @@ async def list_accounts(api_key: str = Depends(get_api_key)):
                 "total_requests": state.get("total_requests", 0),
                 "total_prompt_tokens": state.get("total_prompt_tokens", 0),
                 "total_completion_tokens": state.get("total_completion_tokens", 0),
+                "model_cooldowns": pool_manager.get_account_model_cooldowns(acc_id),
                 "quota": quota_data,
             }
         )
@@ -147,6 +148,41 @@ async def activate_account(account_id: str, api_key: str = Depends(get_api_key))
         return {"active_account_id": account_id}
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
+
+
+@router.post("/accounts/refresh-quotas", summary="Force refresh quotas for all accounts (clears quota cache)")
+async def refresh_all_quotas(api_key: str = Depends(get_api_key)):
+    oauth_refresh.clear_quota_summary_cache()
+    accounts = pool_manager.list_accounts()
+    results = {}
+    for acc in accounts:
+        acc_id = acc["id"]
+        token, proxy, account_dir = pool_manager.get_account_token_and_proxy(acc_id)
+        if token or account_dir:
+            try:
+                q = await oauth_refresh.retrieve_account_quota(
+                    account_dir=account_dir,
+                    access_token=token,
+                    proxy=proxy,
+                    pool_account_id=acc_id,
+                    force=True,
+                )
+                results[acc_id] = q
+            except Exception as e:
+                results[acc_id] = {"error": str(e)}
+    return {"status": "ok", "quotas": results}
+
+
+@router.get("/accounts/{account_id}/errors", summary="Get recent request errors for a specific pool account")
+async def get_account_errors(account_id: str, limit: int = 20, api_key: str = Depends(get_api_key)):
+    errors = await stats_store.get_account_recent_errors(account_id, limit=limit)
+    return {"account_id": account_id, "errors": errors}
+
+
+@router.post("/accounts/{account_id}/healthcheck", summary="Check quota and recover account from cooldown/unhealthy")
+async def healthcheck_account(account_id: str, api_key: str = Depends(get_api_key)):
+    res = await pool_manager.check_and_recover_account_health(account_id)
+    return res
 
 
 @router.post("/accounts/dedupe", summary="Remove duplicate accounts that share the same email")

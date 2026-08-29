@@ -32,11 +32,7 @@ def _extract_system_text(system) -> str | None:
         return None
     if isinstance(system, str):
         return system
-    text_parts = [
-        b.get("text", "")
-        for b in system
-        if isinstance(b, dict) and b.get("type") == "text"
-    ]
+    text_parts = [b.get("text", "") for b in system if isinstance(b, dict) and b.get("type") == "text"]
     return " ".join(text_parts) if text_parts else None
 
 
@@ -149,10 +145,7 @@ def _build_messages(system, messages, file_mgr: TempFileManager):
 def _extract_text(agy_response) -> str:
     if isinstance(agy_response, dict):
         return (
-            agy_response.get("text")
-            or agy_response.get("content")
-            or agy_response.get("response")
-            or str(agy_response)
+            agy_response.get("text") or agy_response.get("content") or agy_response.get("response") or str(agy_response)
         )
     return str(agy_response)
 
@@ -392,12 +385,13 @@ async def _stream_response(
                         tool_calls_collected.append(tc)
     except Exception as e:
         logger.error(f"[anthropic] Stream exception ({type(e).__name__}): {e}")
+        err_str = str(e)
         await stats_store.record_request(
             endpoint="anthropic-chat",
             model=client_model,
             pool_account=pool_manager.get_active_account_id(),
             prompt_tokens=0,
-            completion_tokens=0,
+            completion_tokens=max(1, len(err_str) // 4),
             cache_tokens=0,
             success=False,
             latency_ms=int((time.time() - start_time) * 1000),
@@ -405,35 +399,38 @@ async def _stream_response(
             chat_id=chat_id,
             chat_title=chat_title,
             prompt_preview=prompt_preview,
-            response_preview=f"Error: {str(e)}",
+            response_preview=f"Error: {err_str}",
         )
+        if not assistant_chunks and not tool_calls_collected:
+            if not text_block_open:
+                yield _sse(
+                    "content_block_start",
+                    {
+                        "type": "content_block_start",
+                        "index": 0,
+                        "content_block": {"type": "text", "text": ""},
+                    },
+                )
+                text_block_open = True
+            yield _sse(
+                "content_block_delta",
+                {
+                    "type": "content_block_delta",
+                    "index": 0,
+                    "delta": {"type": "text_delta", "text": f"Error: {err_str}"},
+                },
+            )
         if text_block_open:
             yield _sse("content_block_stop", {"type": "content_block_stop", "index": 0})
 
-        empty_on_error = os.environ.get(
-            "AGY_HTTP_EMPTY_AS_EMPTY_CONTENT", "true"
-        ).lower() in ("true", "1", "yes")
-        if empty_on_error and not assistant_chunks and not tool_calls_collected:
-            logger.info(
-                f"[anthropic] Returning empty content [] on stream {type(e).__name__} for client auto-retry"
-            )
-            yield _sse(
-                "message_delta",
-                {
-                    "type": "message_delta",
-                    "delta": {"stop_reason": "end_turn", "stop_sequence": None},
-                    "usage": {"output_tokens": 0},
-                },
-            )
-        else:
-            yield _sse(
-                "message_delta",
-                {
-                    "type": "message_delta",
-                    "delta": {"stop_reason": "error", "stop_sequence": None},
-                    "usage": {"output_tokens": 0},
-                },
-            )
+        yield _sse(
+            "message_delta",
+            {
+                "type": "message_delta",
+                "delta": {"stop_reason": "end_turn", "stop_sequence": None},
+                "usage": {"output_tokens": max(1, len(err_str) // 4)},
+            },
+        )
         yield _sse("message_stop", {"type": "message_stop"})
         return
 
@@ -469,9 +466,7 @@ async def _stream_response(
         stop_reason = "error"
 
     prompt_tokens = final_usage.get("input_tokens", fallback_prompt_tokens)
-    completion_tokens = final_usage.get("output_tokens", 0) + final_usage.get(
-        "thinking_tokens", 0
-    )
+    completion_tokens = final_usage.get("output_tokens", 0) + final_usage.get("thinking_tokens", 0)
     if completion_tokens == 0 and assistant_text:
         completion_tokens = max(1, len(assistant_text) // 4)
     if completion_tokens == 0 and tool_calls_collected:
@@ -479,11 +474,7 @@ async def _stream_response(
     cache_tokens = final_usage.get("cache_read_tokens", 0)
 
     is_error = stop_reason == "error"
-    preview = (
-        assistant_text[:1500]
-        if assistant_text
-        else json.dumps(tool_calls_collected)[:1500]
-    )
+    preview = assistant_text[:1500] if assistant_text else json.dumps(tool_calls_collected)[:1500]
     await stats_store.record_request(
         endpoint="anthropic-chat",
         model=client_model,
@@ -529,16 +520,12 @@ async def create_message(
     messages, system, files = _build_messages(req.system, req.messages, file_mgr)
     agy_model = await resolve_backend_model(req.model)
     if get_force_model():
-        logger.info(
-            f"[anthropic] Force model: requested={req.model} backend={agy_model}"
-        )
+        logger.info(f"[anthropic] Force model: requested={req.model} backend={agy_model}")
 
     user_identifier = None
     if req.metadata and isinstance(req.metadata, dict):
         user_identifier = (
-            req.metadata.get("user_id")
-            or req.metadata.get("session_id")
-            or req.metadata.get("conversation_id")
+            req.metadata.get("user_id") or req.metadata.get("session_id") or req.metadata.get("conversation_id")
         )
 
     chat_id, chat_title, prompt_preview = stats_store.extract_chat_metadata(
@@ -548,9 +535,7 @@ async def create_message(
         system_text=system,
     )
 
-    if shortcut_enabled() and is_auto_classifier_request(
-        messages, system=system, headers=dict(request.headers)
-    ):
+    if shortcut_enabled() and is_auto_classifier_request(messages, system=system, headers=dict(request.headers)):
         response_text = shortcut_response()
         prompt_tokens = max(1, sum(_message_char_len(m) for m in messages) // 4)
         logger.info("[anthropic] auto-classifier shortcut -> %s", response_text)
@@ -631,12 +616,14 @@ async def create_message(
         )
     except Exception as e:
         logger.error(f"[anthropic] Message request exception ({type(e).__name__}): {e}")
+        err_str = str(e)
+        out_tokens = max(1, len(err_str) // 4)
         await stats_store.record_request(
             endpoint="anthropic-chat",
             model=req.model,
             pool_account=pool_manager.get_active_account_id(),
             prompt_tokens=0,
-            completion_tokens=0,
+            completion_tokens=out_tokens,
             cache_tokens=0,
             success=False,
             latency_ms=int((time.time() - start_time) * 1000),
@@ -644,42 +631,28 @@ async def create_message(
             chat_id=chat_id,
             chat_title=chat_title,
             prompt_preview=prompt_preview,
-            response_preview=f"Error: {str(e)}",
+            response_preview=f"Error: {err_str}",
         )
-        empty_on_error = os.environ.get(
-            "AGY_HTTP_EMPTY_AS_EMPTY_CONTENT", "true"
-        ).lower() in ("true", "1", "yes")
-        if empty_on_error:
-            logger.info(
-                f"[anthropic] Returning empty content [] on non-stream {type(e).__name__} for client auto-retry"
-            )
-            return JSONResponse(
-                content={
-                    "id": f"msg_{uuid.uuid4().hex[:24]}",
-                    "type": "message",
-                    "role": "assistant",
-                    "model": req.model,
-                    "content": [],
-                    "stop_reason": "end_turn",
-                    "stop_sequence": None,
-                    "usage": {
-                        "input_tokens": 0,
-                        "output_tokens": 0,
-                        "cache_read_input_tokens": 0,
-                    },
-                }
-            )
-        raise
+        return JSONResponse(
+            content={
+                "id": f"msg_{uuid.uuid4().hex[:24]}",
+                "type": "message",
+                "role": "assistant",
+                "model": req.model,
+                "content": [{"type": "text", "text": f"Error: {err_str}"}],
+                "stop_reason": "end_turn",
+                "stop_sequence": None,
+                "usage": {
+                    "input_tokens": 0,
+                    "output_tokens": out_tokens,
+                    "cache_read_input_tokens": 0,
+                },
+            }
+        )
 
     assistant_text = _extract_text(agy_response)
-    tool_calls = (
-        agy_response.get("tool_calls", []) if isinstance(agy_response, dict) else []
-    )
-    stop_reason = (
-        agy_response.get("stop_reason", "end_turn")
-        if isinstance(agy_response, dict)
-        else "end_turn"
-    )
+    tool_calls = agy_response.get("tool_calls", []) if isinstance(agy_response, dict) else []
+    stop_reason = agy_response.get("stop_reason", "end_turn") if isinstance(agy_response, dict) else "end_turn"
 
     content_blocks: list[dict] = []
     if assistant_text:
@@ -698,16 +671,12 @@ async def create_message(
     agy_usage = agy_response.get("usage") if isinstance(agy_response, dict) else None
     if isinstance(agy_usage, dict) and agy_usage:
         prompt_tokens = agy_usage.get("input_tokens", 0)
-        completion_tokens = agy_usage.get("output_tokens", 0) + agy_usage.get(
-            "thinking_tokens", 0
-        )
+        completion_tokens = agy_usage.get("output_tokens", 0) + agy_usage.get("thinking_tokens", 0)
         cache_tokens = agy_usage.get("cache_read_tokens", 0)
     else:
         prompt_tokens = max(1, sum(_message_char_len(m) for m in messages) // 4)
         completion_tokens = (
-            max(1, len(assistant_text) // 4)
-            if assistant_text
-            else max(1, len(json.dumps(tool_calls)) // 4)
+            max(1, len(assistant_text) // 4) if assistant_text else max(1, len(json.dumps(tool_calls)) // 4)
         )
         cache_tokens = 0
 
@@ -747,9 +716,7 @@ async def create_message(
     )
 
 
-@router.post(
-    "/messages/count_tokens", summary="Count tokens (Anthropic-compatible stub)"
-)
+@router.post("/messages/count_tokens", summary="Count tokens (Anthropic-compatible stub)")
 async def count_message_tokens(
     req: AnthropicMessagesRequest,
     api_key: str = Depends(get_anthropic_api_key),

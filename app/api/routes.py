@@ -5,6 +5,7 @@ import os
 import subprocess
 import time
 import uuid
+from typing import Any, List, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, Request, UploadFile
 from fastapi.responses import JSONResponse, Response, StreamingResponse
@@ -34,6 +35,7 @@ from app.core.model_manager import (
     get_force_model,
     resolve_backend_model,
 )
+from app.core.response_cache import get_cached_response, put_cached_response
 from app.core.security import get_api_key
 
 logger = logging.getLogger(__name__)
@@ -142,17 +144,13 @@ def _extract_message_content_and_images(
     return " ".join(text_parts), images
 
 
-def _usage_from_agy(
-    agy_usage: dict | None, fallback_prompt_len: int, fallback_completion_len: int
-) -> Usage:
+def _usage_from_agy(agy_usage: dict | None, fallback_prompt_len: int, fallback_completion_len: int) -> Usage:
     # agy's own JSON payload carries real token usage (confirmed live: input_tokens,
     # output_tokens, thinking_tokens, cache_read_tokens, total_tokens). Fall back to a
     # character-count heuristic only if that field is ever missing.
     if isinstance(agy_usage, dict) and agy_usage:
         prompt_tokens = agy_usage.get("input_tokens", 0)
-        completion_tokens = agy_usage.get("output_tokens", 0) + agy_usage.get(
-            "thinking_tokens", 0
-        )
+        completion_tokens = agy_usage.get("output_tokens", 0) + agy_usage.get("thinking_tokens", 0)
         cache_tokens = agy_usage.get("cache_read_tokens", 0)
         total_tokens = agy_usage.get("total_tokens", prompt_tokens + completion_tokens)
     else:
@@ -168,8 +166,15 @@ def _usage_from_agy(
     )
 
 
+def _tool_dedupe_key(tc: dict) -> str:
+    name = (tc.get("name") or "").strip()
+    tc_id = (tc.get("id") or "").strip()
+    return f"{name}:{tc_id}" if tc_id else name
+
+
 async def _openai_stream(
-    messages: list[dict],
+    messages: List[dict],
+    system: Optional[str],
     agy_model: str,
     client_model: str,
     start_time: float,
@@ -177,6 +182,8 @@ async def _openai_stream(
     chat_title: str,
     prompt_preview: str,
     api_key: str | None = None,
+    tools: Optional[List[dict]] = None,
+    tool_choice: Optional[Any] = None,
 ):
     response_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
     created = int(time.time())
@@ -193,26 +200,98 @@ async def _openai_stream(
     yield f"data: {json.dumps(_chunk({'role': 'assistant'}))}\n\n"
 
     final_usage = {}
-    assistant_chunks: list[str] = []
+    assistant_chunks: List[str] = []
+    emitted_tool_keys: set[str] = set()
+    tool_call_idx = 0
+    finish_reason = "stop"
+
     try:
         async for piece in with_heartbeat(
-            stream_agy_completion(messages=messages, model=agy_model)
+            stream_agy_completion(
+                messages=messages,
+                system=system,
+                model=agy_model,
+                tools=tools,
+                tool_choice=tool_choice,
+            )
         ):
             if piece is None:
                 yield ": ping\n\n"
                 continue
+            if "tool_calls" in piece and "usage" not in piece:
+                for tc in piece["tool_calls"]:
+                    tool_key = _tool_dedupe_key(tc)
+                    if tool_key in emitted_tool_keys:
+                        continue
+                    emitted_tool_keys.add(tool_key)
+                    finish_reason = "tool_calls"
+                    call_id = tc.get("id") or f"call_{uuid.uuid4().hex[:12]}"
+                    tool_name = tc.get("name", "")
+                    tool_input = (
+                        json.dumps(tc.get("input", {}))
+                        if isinstance(tc.get("input"), dict)
+                        else str(tc.get("input") or "{}")
+                    )
+
+                    delta_tool = {
+                        "tool_calls": [
+                            {
+                                "index": tool_call_idx,
+                                "id": call_id,
+                                "type": "function",
+                                "function": {
+                                    "name": tool_name,
+                                    "arguments": tool_input,
+                                },
+                            }
+                        ]
+                    }
+                    tool_call_idx += 1
+                    yield f"data: {json.dumps(_chunk(delta_tool))}\n\n"
             if "delta" in piece:
                 assistant_chunks.append(piece["delta"])
                 yield f"data: {json.dumps(_chunk({'content': piece['delta']}))}\n\n"
             if "usage" in piece:
                 final_usage = piece.get("usage", {})
+                if piece.get("tool_calls"):
+                    for tc in piece["tool_calls"]:
+                        tool_key = _tool_dedupe_key(tc)
+                        if tool_key in emitted_tool_keys:
+                            continue
+                        emitted_tool_keys.add(tool_key)
+                        finish_reason = "tool_calls"
+                        call_id = tc.get("id") or f"call_{uuid.uuid4().hex[:12]}"
+                        tool_name = tc.get("name", "")
+                        tool_input = (
+                            json.dumps(tc.get("input", {}))
+                            if isinstance(tc.get("input"), dict)
+                            else str(tc.get("input") or "{}")
+                        )
+
+                        delta_tool = {
+                            "tool_calls": [
+                                {
+                                    "index": tool_call_idx,
+                                    "id": call_id,
+                                    "type": "function",
+                                    "function": {
+                                        "name": tool_name,
+                                        "arguments": tool_input,
+                                    },
+                                }
+                            ]
+                        }
+                        tool_call_idx += 1
+                        yield f"data: {json.dumps(_chunk(delta_tool))}\n\n"
     except Exception as e:
+        err_str = str(e)
+        out_tokens = max(1, len(err_str) // 4)
         await stats_store.record_request(
             endpoint="openai-chat",
             model=client_model,
             pool_account=pool_manager.get_active_account_id(),
             prompt_tokens=0,
-            completion_tokens=0,
+            completion_tokens=out_tokens,
             cache_tokens=0,
             success=False,
             latency_ms=int((time.time() - start_time) * 1000),
@@ -220,14 +299,15 @@ async def _openai_stream(
             chat_id=chat_id,
             chat_title=chat_title,
             prompt_preview=prompt_preview,
-            response_preview=f"Error: {str(e)}",
+            response_preview=f"Error: {err_str}",
         )
-        yield f"data: {json.dumps(_chunk({}, finish_reason='error'))}\n\n"
+        yield f"data: {json.dumps(_chunk({'content': f'Error: {err_str}'}))}\n\n"
+        yield f"data: {json.dumps(_chunk({}, finish_reason='stop'))}\n\n"
         yield "data: [DONE]\n\n"
         return
 
     assistant_text = "".join(assistant_chunks)
-    final_prompt_len = sum(len(m["content"]) for m in messages)
+    final_prompt_len = sum(len(m.get("content") or "") for m in messages)
     usage = _usage_from_agy(final_usage, final_prompt_len, len(assistant_text))
     await stats_store.record_request(
         endpoint="openai-chat",
@@ -242,10 +322,10 @@ async def _openai_stream(
         chat_id=chat_id,
         chat_title=chat_title,
         prompt_preview=prompt_preview,
-        response_preview=assistant_text[:1500],
+        response_preview=assistant_text[:1500] if assistant_text else f"[{len(emitted_tool_keys)} tool calls]",
     )
     record_key_output_tokens(api_key, usage.completion_tokens)
-    yield f"data: {json.dumps(_chunk({}, finish_reason='stop'))}\n\n"
+    yield f"data: {json.dumps(_chunk({}, finish_reason=finish_reason))}\n\n"
     yield "data: [DONE]\n\n"
 
 
@@ -268,14 +348,22 @@ async def chat_completions(
 
     files_to_attach = []
     messages = []
+    system_parts: List[str] = []
     for msg in req.messages:
-        content_text, msg_images = _extract_message_content_and_images(
-            msg, file_mgr, files_to_attach
-        )
+        if msg.role == "system":
+            if isinstance(msg.content, str):
+                system_parts.append(msg.content)
+            elif isinstance(msg.content, list):
+                system_parts.append(" ".join(p.get("text", "") for p in msg.content if p.get("type") == "text"))
+            continue
+
+        content_text, msg_images = _extract_message_content_and_images(msg, file_mgr, files_to_attach)
         m_entry = {"role": msg.role, "content": content_text}
         if msg_images:
             m_entry["images"] = msg_images
         messages.append(m_entry)
+
+    system_text = "\n\n".join(system_parts) if system_parts else None
 
     chat_id, chat_title, prompt_preview = stats_store.extract_chat_metadata(
         headers=dict(request.headers),
@@ -286,23 +374,54 @@ async def chat_completions(
     if get_force_model():
         logger.info(f"Force model: requested={req.model} backend={agy_model}")
 
+    # Convert OpenAI tools format to Anthropic/internal format if provided
+    converted_tools = None
+    if req.tools:
+        converted_tools = []
+        for t in req.tools:
+            if t.get("type") == "function" and "function" in t:
+                fn = t["function"]
+                converted_tools.append(
+                    {
+                        "name": fn.get("name"),
+                        "description": fn.get("description", ""),
+                        "input_schema": fn.get("parameters", {}),
+                    }
+                )
+            elif "name" in t:
+                converted_tools.append(t)
+
     if req.stream:
         return StreamingResponse(
             _openai_stream(
-                messages,
-                agy_model,
-                req.model,
-                start_time,
-                chat_id,
-                chat_title,
-                prompt_preview,
+                messages=messages,
+                system=system_text,
+                agy_model=agy_model,
+                client_model=req.model,
+                start_time=start_time,
+                chat_id=chat_id,
+                chat_title=chat_title,
+                prompt_preview=prompt_preview,
                 api_key=api_key,
+                tools=converted_tools,
+                tool_choice=req.tool_choice,
             ),
             media_type="text/event-stream",
         )
 
+    if not req.stream:
+        cached = get_cached_response(req.model, messages, req.temperature)
+        if cached:
+            return JSONResponse(content=cached)
+
     try:
-        agy_response = await run_completion(messages=messages, model=agy_model)
+        agy_response = await run_completion(
+            messages=messages,
+            system=system_text,
+            model=agy_model,
+            tools=converted_tools,
+            tool_choice=req.tool_choice,
+        )
     except Exception as e:
         await stats_store.record_request(
             endpoint="openai-chat",
@@ -322,18 +441,35 @@ async def chat_completions(
         raise
 
     assistant_text = ""
+    tool_calls = None
+    finish_reason = "stop"
+
     if isinstance(agy_response, dict):
-        assistant_text = (
-            agy_response.get("text")
-            or agy_response.get("content")
-            or agy_response.get("response")
-            or str(agy_response)
-        )
+        assistant_text = agy_response.get("text") or agy_response.get("content") or agy_response.get("response") or ""
+        if agy_response.get("tool_calls"):
+            finish_reason = "tool_calls"
+            tool_calls = []
+            for tc in agy_response["tool_calls"]:
+                tool_input = (
+                    json.dumps(tc.get("input", {}))
+                    if isinstance(tc.get("input"), dict)
+                    else str(tc.get("input") or "{}")
+                )
+                tool_calls.append(
+                    {
+                        "id": tc.get("id") or f"call_{uuid.uuid4().hex[:12]}",
+                        "type": "function",
+                        "function": {
+                            "name": tc.get("name", ""),
+                            "arguments": tool_input,
+                        },
+                    }
+                )
     else:
         assistant_text = str(agy_response)
 
     agy_usage = agy_response.get("usage") if isinstance(agy_response, dict) else None
-    final_prompt_len = sum(len(m["content"]) for m in messages)
+    final_prompt_len = sum(len(m.get("content") or "") for m in messages)
     usage = _usage_from_agy(agy_usage, final_prompt_len, len(assistant_text))
 
     await stats_store.record_request(
@@ -349,17 +485,20 @@ async def chat_completions(
         chat_id=chat_id,
         chat_title=chat_title,
         prompt_preview=prompt_preview,
-        response_preview=assistant_text[:1500],
+        response_preview=assistant_text[:1500] if assistant_text else f"[{len(tool_calls or [])} tool calls]",
     )
     record_key_output_tokens(api_key, usage.completion_tokens)
 
+    choice_msg = ChoiceMessage(content=assistant_text or None, tool_calls=tool_calls)
     response = ChatCompletionResponse(
         id=f"chatcmpl-{uuid.uuid4().hex[:12]}",
         created=int(time.time()),
         model=req.model,
-        choices=[Choice(message=ChoiceMessage(content=assistant_text))],
+        choices=[Choice(message=choice_msg, finish_reason=finish_reason)],
         usage=usage,
     )
+    resp_dict = response.model_dump()
+    put_cached_response(req.model, messages, resp_dict, req.temperature)
     return response
 
 
@@ -401,10 +540,7 @@ async def generate_image(
 
     import hashlib
 
-    img_chat_id = (
-        "img_"
-        + hashlib.sha256(req.prompt.encode("utf-8", errors="replace")).hexdigest()[:12]
-    )
+    img_chat_id = "img_" + hashlib.sha256(req.prompt.encode("utf-8", errors="replace")).hexdigest()[:12]
     img_title = f"Image: {req.prompt.strip().replace(chr(10), ' ')[:80]}"
 
     try:
@@ -430,10 +566,7 @@ async def generate_image(
     image_path = ""
     if isinstance(agy_response, dict):
         image_path = (
-            agy_response.get("text")
-            or agy_response.get("content")
-            or agy_response.get("response")
-            or str(agy_response)
+            agy_response.get("text") or agy_response.get("content") or agy_response.get("response") or str(agy_response)
         )
     else:
         image_path = str(agy_response)
@@ -540,24 +673,15 @@ async def get_logs(lines: int = 100, api_key: str = Depends(get_api_key)):
         }
     },
 )
-async def audio_speech(
-    req: SpeechRequest, request: Request, api_key: str = Depends(get_api_key)
-):
-    logger.info(
-        f"Generating speech (voice={req.voice}, speed={req.speed}). Text: {req.input[:50]}..."
-    )
+async def audio_speech(req: SpeechRequest, request: Request, api_key: str = Depends(get_api_key)):
+    logger.info(f"Generating speech (voice={req.voice}, speed={req.speed}). Text: {req.input[:50]}...")
     start_time = time.time()
     import hashlib
 
-    tts_chat_id = (
-        "tts_"
-        + hashlib.sha256(req.input.encode("utf-8", errors="replace")).hexdigest()[:12]
-    )
+    tts_chat_id = "tts_" + hashlib.sha256(req.input.encode("utf-8", errors="replace")).hexdigest()[:12]
     tts_title = f"TTS: {req.input.strip().replace(chr(10), ' ')[:80]}"
     try:
-        audio_bytes = await capcut_wrapper.generate_speech(
-            text=req.input, voice=req.voice, speed=req.speed
-        )
+        audio_bytes = await capcut_wrapper.generate_speech(text=req.input, voice=req.voice, speed=req.speed)
         await stats_store.record_request(
             endpoint="audio-speech",
             model=req.model,
@@ -614,21 +738,13 @@ async def audio_voices(api_key: str = Depends(get_api_key)):
 async def audio_transcriptions(
     background_tasks: BackgroundTasks,
     request: Request,
-    file: UploadFile = File(
-        ..., description="Tệp âm thanh cần upload (mp3, mp4, wav, v.v...)"
-    ),
+    file: UploadFile = File(..., description="Tệp âm thanh cần upload (mp3, mp4, wav, v.v...)"),
     model: str = Form("whisper-1", description="ID của mô hình (vd: whisper-1)"),
-    language: str = Form(
-        None, description="Mã ngôn ngữ (vd: en-US, vi-VN). Bỏ trống để tự nhận diện."
-    ),
-    response_format: str = Form(
-        "json", description="Định dạng trả về (json, text, srt, vtt)"
-    ),
+    language: str = Form(None, description="Mã ngôn ngữ (vd: en-US, vi-VN). Bỏ trống để tự nhận diện."),
+    response_format: str = Form("json", description="Định dạng trả về (json, text, srt, vtt)"),
     api_key: str = Depends(get_api_key),
 ):
-    logger.info(
-        f"Transcribing audio file: {file.filename}, language: {language}, format: {response_format}"
-    )
+    logger.info(f"Transcribing audio file: {file.filename}, language: {language}, format: {response_format}")
     start_time = time.time()
     stt_chat_id = "stt_" + uuid.uuid4().hex[:12]
     stt_title = f"STT: {file.filename or 'Audio transcription'}"

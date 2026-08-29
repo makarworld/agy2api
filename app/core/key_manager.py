@@ -2,13 +2,21 @@ import os
 import secrets
 import sqlite3
 import time
+from collections import deque
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Dict
 
 from fastapi import HTTPException, status
 
 from app.core import stats_store
+
+# In-memory sliding window rate limits: key -> deque of timestamps
+_KEY_REQUEST_TIMESTAMPS: Dict[str, deque] = {}
+_KEY_TOKEN_TIMESTAMPS: Dict[str, deque] = {}
+
+DEFAULT_RPM_LIMIT = 60
+DEFAULT_TPM_LIMIT = 200_000
 
 _KEYS_DDL = """
 CREATE TABLE IF NOT EXISTS api_keys (
@@ -85,17 +93,9 @@ def create_key(
     init_keys_db()
     key_str = f"sk-agy-{secrets.token_urlsafe(24)}"
     now = time.time()
-    expires_at = (
-        now + (expires_in_days * 86400)
-        if (expires_in_days is not None and expires_in_days > 0)
-        else None
-    )
+    expires_at = now + (expires_in_days * 86400) if (expires_in_days is not None and expires_in_days > 0) else None
     today_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    limit = (
-        int(daily_output_limit)
-        if (daily_output_limit is not None and daily_output_limit > 0)
-        else None
-    )
+    limit = int(daily_output_limit) if (daily_output_limit is not None and daily_output_limit > 0) else None
 
     conn = stats_store._conn()
     try:
@@ -125,9 +125,7 @@ def list_keys() -> list[dict[str, Any]]:
     init_keys_db()
     conn = stats_store._conn()
     try:
-        rows = conn.execute(
-            "SELECT * FROM api_keys ORDER BY created_at DESC"
-        ).fetchall()
+        rows = conn.execute("SELECT * FROM api_keys ORDER BY created_at DESC").fetchall()
         today_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         result = []
         for r in rows:
@@ -159,18 +157,10 @@ def toggle_key(key: str, is_active: bool | None = None) -> dict[str, Any] | None
         row = conn.execute("SELECT * FROM api_keys WHERE key = ?", (key,)).fetchone()
         if not row:
             return None
-        new_status = (
-            (1 if is_active else 0)
-            if is_active is not None
-            else (0 if row["is_active"] else 1)
-        )
-        conn.execute(
-            "UPDATE api_keys SET is_active = ? WHERE key = ?", (new_status, key)
-        )
+        new_status = (1 if is_active else 0) if is_active is not None else (0 if row["is_active"] else 1)
+        conn.execute("UPDATE api_keys SET is_active = ? WHERE key = ?", (new_status, key))
         conn.commit()
-        updated = conn.execute(
-            "SELECT * FROM api_keys WHERE key = ?", (key,)
-        ).fetchone()
+        updated = conn.execute("SELECT * FROM api_keys WHERE key = ?", (key,)).fetchone()
         if updated:
             d = dict(updated)
             d["is_active"] = bool(d["is_active"])
@@ -201,9 +191,7 @@ def validate_and_consume_key(key: str | None) -> KeyInfo:
     init_keys_db()
     conn = stats_store._conn()
     try:
-        row = conn.execute(
-            "SELECT * FROM api_keys WHERE key = ?", (clean_key,)
-        ).fetchone()
+        row = conn.execute("SELECT * FROM api_keys WHERE key = ?", (clean_key,)).fetchone()
         if not row:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
@@ -245,6 +233,9 @@ def validate_and_consume_key(key: str | None) -> KeyInfo:
                 detail=f"Daily output token limit of {daily_limit} exceeded (used: {used_today})",
             )
 
+        # Sliding window RPM & TPM check
+        _check_sliding_window_rate_limits(clean_key)
+
         return KeyInfo(
             key=row["key"],
             name=row["name"],
@@ -258,6 +249,43 @@ def validate_and_consume_key(key: str | None) -> KeyInfo:
         )
     finally:
         conn.close()
+
+
+def _check_sliding_window_rate_limits(
+    key_str: str,
+    estimated_tokens: int = 1000,
+    rpm_limit: int = DEFAULT_RPM_LIMIT,
+    tpm_limit: int = DEFAULT_TPM_LIMIT,
+) -> None:
+    now = time.time()
+    one_min_ago = now - 60.0
+
+    # 1. RPM check
+    req_queue = _KEY_REQUEST_TIMESTAMPS.setdefault(key_str, deque())
+    while req_queue and req_queue[0] < one_min_ago:
+        req_queue.popleft()
+
+    if len(req_queue) >= rpm_limit:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=f"Rate limit exceeded: {rpm_limit} requests per minute limit reached. Retry in a few seconds.",
+        )
+
+    # 2. TPM check
+    tok_queue = _KEY_TOKEN_TIMESTAMPS.setdefault(key_str, deque())
+    while tok_queue and tok_queue[0][0] < one_min_ago:
+        tok_queue.popleft()
+
+    current_tpm = sum(tokens for _, tokens in tok_queue)
+    if current_tpm + estimated_tokens > tpm_limit:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=f"Rate limit exceeded: {tpm_limit} tokens per minute limit reached. Retry shortly.",
+        )
+
+    # Record usage
+    req_queue.append(now)
+    tok_queue.append((now, estimated_tokens))
 
 
 def record_key_output_tokens(key: str | None, output_tokens: int) -> None:

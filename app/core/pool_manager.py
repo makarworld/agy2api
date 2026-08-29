@@ -50,6 +50,9 @@ RATE_LIMIT_SIGNALS: List[str] = [
 
 _LOCK = asyncio.Lock()
 _active_account_id: Optional[str] = None
+_MODEL_COOLDOWNS: Dict[str, Dict[str, float]] = {}
+_SESSION_AFFINITY: Dict[str, Tuple[str, float]] = {}
+_AFFINITY_TTL = 300.0  # 5 minutes
 
 
 def pool_enabled() -> bool:
@@ -415,7 +418,7 @@ async def complete_oauth_flow(
     expires_in = int(payload.get("expires_in", 3600))
     expiry_date = int((time.time() + expires_in) * 1000)
 
-    # Parse email from id_token if present
+    # Parse email from id_token or userinfo if missing
     email = None
     if id_token:
         try:
@@ -426,6 +429,18 @@ async def complete_oauth_flow(
                 email = decoded_jwt.get("email")
         except Exception as e:
             logger.warning(f"[pool] Failed decoding email from id_token: {e}")
+
+    if not email and access_token:
+        try:
+            async with httpx.AsyncClient(**httpx_client_kwargs(proxy=req_proxy, timeout=10.0)) as client:
+                ui_resp = await client.get(
+                    "https://www.googleapis.com/oauth2/v3/userinfo",
+                    headers={"Authorization": f"Bearer {access_token}"},
+                )
+                if ui_resp.status_code == 200:
+                    email = ui_resp.json().get("email")
+        except Exception as e:
+            logger.warning(f"[pool] Failed fetching email from userinfo: {e}")
 
     # Check if account with same email already exists for deduplication
     existing_acc = _find_account_by_email(email) if email else None
@@ -501,7 +516,7 @@ async def complete_oauth_flow(
     _save_manifest(manifest)
 
     # Clear quota cache for this account
-    # oauth_refresh.clear_account_quota_cache(account_id)
+    oauth_refresh.clear_quota_summary_cache(access_token)
 
     # If this is the currently active account in ~/.gemini, sync updated credentials to ~/.gemini immediately
     if account_id == get_active_account_id():
@@ -720,13 +735,54 @@ async def dedupe_accounts_by_email() -> List[str]:
     return removed
 
 
-async def select_next_healthy_account(exclude: Set[str] = frozenset()) -> Optional[dict]:
+def pin_session_account(session_hash: str, account_id: str) -> None:
+    if not session_hash:
+        return
+    _SESSION_AFFINITY[session_hash] = (account_id, time.time() + _AFFINITY_TTL)
+
+
+def get_pinned_account(session_hash: str) -> Optional[str]:
+    if not session_hash:
+        return None
+    entry = _SESSION_AFFINITY.get(session_hash)
+    if not entry:
+        return None
+    acc_id, expire_at = entry
+    if time.time() > expire_at:
+        _SESSION_AFFINITY.pop(session_hash, None)
+        return None
+    return acc_id
+
+
+def compute_prompt_prefix_hash(system: Optional[str] = None, messages: Optional[List[dict]] = None) -> str:
+    seed = system or ""
+    if messages and len(messages) > 0:
+        first_msg = messages[0].get("content", "") if isinstance(messages[0], dict) else str(messages[0])
+        seed += f"|{first_msg}"[:2000]
+    if not seed:
+        return ""
+    return hashlib.sha256(seed.encode("utf-8", errors="replace")).hexdigest()[:16]
+
+
+def get_account_model_cooldowns(account_id: str) -> Dict[str, float]:
+    now = time.time()
+    cooldowns = _MODEL_COOLDOWNS.get(account_id, {})
+    return {m: t for m, t in cooldowns.items() if t > now}
+
+
+async def select_next_healthy_account(
+    exclude: Set[str] = frozenset(),
+    model: Optional[str] = None,
+    session_hash: Optional[str] = None,
+) -> Optional[dict]:
     accounts = [a for a in list_accounts() if a["id"] not in exclude]
     if not accounts:
         return None
 
     now = time.time()
-    candidates: List[Tuple[dict, float]] = []
+    candidates: List[dict] = []
+    active_id = get_active_account_id()
+
     for acc in accounts:
         state = await stats_store.get_pool_account_state(acc["id"]) or {}
         status = state.get("status", "healthy")
@@ -738,25 +794,51 @@ async def select_next_healthy_account(exclude: Set[str] = frozenset()) -> Option
             )
             status = "healthy"
 
+        # Check per-model cooldown
+        if model and acc["id"] in _MODEL_COOLDOWNS:
+            if _MODEL_COOLDOWNS[acc["id"]].get(model, 0) > now:
+                continue
+
         if status == "healthy":
-            candidates.append((acc, state.get("last_used_ts") or 0))
+            candidates.append(acc)
 
     if not candidates:
         return None
 
-    # Least-recently-used first -- a simple, effective round-robin.
-    candidates.sort(key=lambda pair: pair[1])
-    return candidates[0][0]
+    # Check Session Affinity first
+    if session_hash:
+        pinned_acc_id = get_pinned_account(session_hash)
+        if pinned_acc_id and pinned_acc_id not in exclude:
+            for acc in candidates:
+                if acc["id"] == pinned_acc_id:
+                    return acc
+
+    # Sticky account preference: if currently active account is healthy and not excluded
+    if active_id and active_id not in exclude:
+        for acc in candidates:
+            if acc["id"] == active_id:
+                return acc
+
+    return candidates[0]
 
 
-async def mark_success(account_id: str) -> None:
+async def mark_success(account_id: str, session_hash: Optional[str] = None) -> None:
+    if session_hash:
+        pin_session_account(session_hash, account_id)
     await stats_store.upsert_pool_account_state(account_id, status="healthy", consecutive_failures=0)
 
 
-async def mark_rate_limited(account_id: str, cooldown_seconds: int) -> None:
-    await stats_store.upsert_pool_account_state(
-        account_id, status="cooldown", cooldown_until=time.time() + cooldown_seconds
-    )
+async def mark_rate_limited(account_id: str, cooldown_seconds: int = 60, model: Optional[str] = None) -> None:
+    now = time.time()
+    if model:
+        if account_id not in _MODEL_COOLDOWNS:
+            _MODEL_COOLDOWNS[account_id] = {}
+        _MODEL_COOLDOWNS[account_id][model] = now + cooldown_seconds
+        logger.info(f"[pool] Account {account_id} model {model} in cooldown for {cooldown_seconds}s")
+    else:
+        await stats_store.upsert_pool_account_state(
+            account_id, status="cooldown", cooldown_until=now + cooldown_seconds
+        )
 
 
 async def mark_failure(account_id: str) -> None:
@@ -764,6 +846,57 @@ async def mark_failure(account_id: str) -> None:
     failures = (state.get("consecutive_failures") or 0) + 1
     status = "unhealthy" if failures >= 3 else state.get("status", "healthy")
     await stats_store.upsert_pool_account_state(account_id, consecutive_failures=failures, status=status)
+
+
+async def check_and_recover_account_health(account_id: str) -> dict:
+    """Active healthcheck: queries Google Quota API with force=True for this account.
+    If the quota check succeeds and quotas have remaining headroom (or check passed 200),
+    resets cooldown/unhealthy status to healthy.
+    """
+    token, proxy, account_dir = get_account_token_and_proxy(account_id)
+    if not token and not account_dir:
+        return {"account_id": account_id, "status": "unknown", "recovered": False, "reason": "No credentials found"}
+
+    try:
+        quota_data = await oauth_refresh.retrieve_account_quota(
+            account_dir=account_dir,
+            access_token=token,
+            proxy=proxy,
+            pool_account_id=account_id,
+            force=True,
+        )
+        gemini_5h = quota_data.get("gemini_5h")
+        claude_5h = quota_data.get("claude_5h")
+        has_quota = (gemini_5h is None or gemini_5h > 0.0) and (claude_5h is None or claude_5h > 0.0)
+
+        if has_quota:
+            await stats_store.upsert_pool_account_state(
+                account_id, status="healthy", cooldown_until=None, consecutive_failures=0
+            )
+            return {
+                "account_id": account_id,
+                "status": "healthy",
+                "recovered": True,
+                "quota": quota_data,
+                "message": "Account is healthy and ready for requests",
+            }
+        else:
+            return {
+                "account_id": account_id,
+                "status": "cooldown",
+                "recovered": False,
+                "quota": quota_data,
+                "message": "Quota limit still exhausted (5h remaining is 0%)",
+            }
+    except Exception as e:
+        logger.warning(f"[pool] check_and_recover_account_health failed for {account_id}: {e}")
+        return {
+            "account_id": account_id,
+            "status": "unhealthy",
+            "recovered": False,
+            "error": str(e),
+            "message": f"Health check failed: {e}",
+        }
 
 
 async def _run_subprocess(

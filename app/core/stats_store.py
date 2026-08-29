@@ -48,43 +48,26 @@ def extract_chat_metadata(
             first_user_text = m.get("content", "")
             break
     if not first_user_text and messages:
-        first_user_text = (
-            messages[0].get("content", "")
-            if isinstance(messages[0], dict)
-            else str(messages[0])
-        )
+        first_user_text = messages[0].get("content", "") if isinstance(messages[0], dict) else str(messages[0])
 
     for m in reversed(messages):
         if isinstance(m, dict) and m.get("role") == "user":
             last_user_text = m.get("content", "")
             break
     if not last_user_text and messages:
-        last_user_text = (
-            messages[-1].get("content", "")
-            if isinstance(messages[-1], dict)
-            else str(messages[-1])
-        )
+        last_user_text = messages[-1].get("content", "") if isinstance(messages[-1], dict) else str(messages[-1])
 
     if not chat_id:
         seed = first_user_text or system_text or ""
         if seed:
-            chat_id = (
-                "chat_"
-                + hashlib.sha256(seed.encode("utf-8", errors="replace")).hexdigest()[
-                    :12
-                ]
-            )
+            chat_id = "chat_" + hashlib.sha256(seed.encode("utf-8", errors="replace")).hexdigest()[:12]
         else:
             chat_id = "chat_" + uuid.uuid4().hex[:12]
 
     chat_title = (
         first_user_text.strip().replace("\n", " ")[:150]
         if first_user_text
-        else (
-            system_text.strip().replace("\n", " ")[:150]
-            if system_text
-            else "Chat Session"
-        )
+        else (system_text.strip().replace("\n", " ")[:150] if system_text else "Chat Session")
     )
     prompt_preview = last_user_text.strip()[:1000] if last_user_text else ""
 
@@ -159,9 +142,7 @@ def init_db(db_path: str = None) -> None:
     try:
         conn.executescript(_DDL)
         # Migrate existing table if columns are missing
-        existing_cols = {
-            row[1] for row in conn.execute("PRAGMA table_info(requests)").fetchall()
-        }
+        existing_cols = {row[1] for row in conn.execute("PRAGMA table_info(requests)").fetchall()}
         for col_name, col_type in [
             ("chat_id", "TEXT"),
             ("chat_title", "TEXT"),
@@ -171,13 +152,9 @@ def init_db(db_path: str = None) -> None:
             if col_name not in existing_cols:
                 conn.execute(f"ALTER TABLE requests ADD COLUMN {col_name} {col_type}")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_requests_ts ON requests(ts)")
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_requests_account ON requests(pool_account)"
-        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_requests_account ON requests(pool_account)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_requests_model ON requests(model)")
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_requests_chat_id ON requests(chat_id)"
-        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_requests_chat_id ON requests(chat_id)")
         conn.commit()
     finally:
         conn.close()
@@ -303,9 +280,7 @@ def _record_availability_event_sync(event_type, reason):
         conn.close()
 
 
-async def record_availability_event(
-    event_type: str, reason: Optional[str] = None
-) -> None:
+async def record_availability_event(event_type: str, reason: Optional[str] = None) -> None:
     try:
         await asyncio.to_thread(_record_availability_event_sync, event_type, reason)
     except Exception as e:
@@ -350,8 +325,7 @@ def _get_summary_sync(window_seconds: Optional[int]) -> dict:
         ).fetchall()
 
         recent_events = conn.execute(
-            "SELECT ts, event_type, reason FROM availability_events "
-            "ORDER BY ts DESC LIMIT 20"
+            "SELECT ts, event_type, reason FROM availability_events ORDER BY ts DESC LIMIT 20"
         ).fetchall()
 
         return {
@@ -399,9 +373,7 @@ def _get_timeseries_sync(bucket_seconds: int, window_seconds: int) -> list:
         conn.close()
 
 
-async def get_timeseries(
-    bucket_seconds: int = 3600, window_seconds: int = 24 * 3600
-) -> list:
+async def get_timeseries(bucket_seconds: int = 3600, window_seconds: int = 24 * 3600) -> list:
     return await asyncio.to_thread(_get_timeseries_sync, bucket_seconds, window_seconds)
 
 
@@ -535,9 +507,7 @@ def _get_chat_requests_sync(chat_id: str) -> list:
     conn = _conn()
     try:
         rows = conn.execute(
-            "SELECT * FROM requests "
-            "WHERE chat_id = ? OR (chat_id IS NULL AND ('legacy_' || id) = ?) "
-            "ORDER BY ts ASC",
+            "SELECT * FROM requests WHERE chat_id = ? OR (chat_id IS NULL AND ('legacy_' || id) = ?) ORDER BY ts ASC",
             (chat_id, chat_id),
         ).fetchall()
         return [dict(r) for r in rows]
@@ -565,9 +535,7 @@ def _get_requests_list_sync(
         params = []
 
         if chat_id:
-            conditions.append(
-                "(chat_id = ? OR (chat_id IS NULL AND ('legacy_' || id) = ?))"
-            )
+            conditions.append("(chat_id = ? OR (chat_id IS NULL AND ('legacy_' || id) = ?))")
             params.extend([chat_id, chat_id])
 
         if window_seconds:
@@ -598,9 +566,7 @@ def _get_requests_list_sync(
 
         where_clause = ("WHERE " + " AND ".join(conditions)) if conditions else ""
 
-        total = conn.execute(
-            f"SELECT COUNT(*) AS cnt FROM requests {where_clause}", params
-        ).fetchone()["cnt"]
+        total = conn.execute(f"SELECT COUNT(*) AS cnt FROM requests {where_clause}", params).fetchone()["cnt"]
 
         rows = conn.execute(
             f"SELECT * FROM requests {where_clause} ORDER BY ts DESC LIMIT ? OFFSET ?",
@@ -633,6 +599,25 @@ async def get_requests_list(
         status,
         window_seconds,
     )
+
+
+def _get_account_recent_errors_sync(account_id: str, limit: int = 20) -> list:
+    conn = _conn()
+    try:
+        rows = conn.execute(
+            "SELECT id, ts, endpoint, model, pool_account, latency_ms, error_type, prompt_preview, response_preview "
+            "FROM requests "
+            "WHERE pool_account = ? AND (success = 0 OR error_type IS NOT NULL) "
+            "ORDER BY ts DESC LIMIT ?",
+            (account_id, limit),
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+async def get_account_recent_errors(account_id: str, limit: int = 20) -> list:
+    return await asyncio.to_thread(_get_account_recent_errors_sync, account_id, limit)
 
 
 def _get_requests_overview_sync(window_seconds: Optional[int] = None) -> dict:
@@ -758,8 +743,7 @@ def _upsert_pool_account_state_sync(account_id: str, **fields):
     conn = _conn()
     try:
         conn.execute(
-            "INSERT INTO pool_account_state (account_id) VALUES (?) "
-            "ON CONFLICT(account_id) DO NOTHING",
+            "INSERT INTO pool_account_state (account_id) VALUES (?) ON CONFLICT(account_id) DO NOTHING",
             (account_id,),
         )
         if fields:
@@ -780,9 +764,7 @@ async def upsert_pool_account_state(account_id: str, **fields) -> None:
 def _get_pool_account_state_sync(account_id: str) -> Optional[dict]:
     conn = _conn()
     try:
-        row = conn.execute(
-            "SELECT * FROM pool_account_state WHERE account_id=?", (account_id,)
-        ).fetchone()
+        row = conn.execute("SELECT * FROM pool_account_state WHERE account_id=?", (account_id,)).fetchone()
         return dict(row) if row else None
     finally:
         conn.close()
@@ -808,9 +790,7 @@ async def list_pool_account_states() -> list:
 def _get_active_account_id_sync() -> Optional[str]:
     conn = _conn()
     try:
-        row = conn.execute(
-            "SELECT active_account_id FROM pool_runtime WHERE id=1"
-        ).fetchone()
+        row = conn.execute("SELECT active_account_id FROM pool_runtime WHERE id=1").fetchone()
         return row["active_account_id"] if row else None
     finally:
         conn.close()

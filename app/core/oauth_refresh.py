@@ -407,6 +407,17 @@ _QUOTA_CACHE_TTL_SECONDS = 300.0  # 5 minutes cache to avoid frequent requests t
 _quota_fetch_lock = asyncio.Lock()
 
 
+def clear_quota_summary_cache(access_token: Optional[str] = None) -> None:
+    """Drop cached quota summary results (all tokens, or one access token)."""
+    if access_token:
+        token = access_token.strip()
+        if token.lower().startswith("bearer "):
+            token = token[7:].strip()
+        _quota_summary_cache.pop(_access_token_suffix(token), None)
+    else:
+        _quota_summary_cache.clear()
+
+
 def _parse_quota_buckets(payload: dict) -> dict:
     """Parse retrieveUserQuotaSummary response into structured limits for UI/MCP."""
     res = {
@@ -457,6 +468,7 @@ async def retrieve_account_quota(
     access_token: Optional[str] = None,
     proxy: Optional[str] = None,
     pool_account_id: Optional[str] = None,
+    force: bool = False,
 ) -> dict:
     """Fetch quota for an account or token, auto-refreshing on 401 if needed."""
     target_token = access_token
@@ -474,13 +486,13 @@ async def retrieve_account_quota(
 
     cache_key = _access_token_suffix(target_token)
     now = time.time()
-    if cache_key in _quota_summary_cache:
+    if not force and cache_key in _quota_summary_cache:
         exp, cached_data = _quota_summary_cache[cache_key]
         if exp > now:
             return cached_data
 
     async with _quota_fetch_lock:
-        if cache_key in _quota_summary_cache:
+        if not force and cache_key in _quota_summary_cache:
             exp, cached_data = _quota_summary_cache[cache_key]
             if exp > time.time():
                 return cached_data
@@ -546,9 +558,10 @@ async def retrieve_user_quota(
     *,
     project: Optional[str] = None,
     proxy: Optional[str] = None,
+    force: bool = False,
 ) -> dict:
     """Fetch and parse quota summary (Gemini 5h/7d and Claude 5h/7d) with caching."""
-    return await retrieve_account_quota(access_token=access_token, proxy=proxy)
+    return await retrieve_account_quota(access_token=access_token, proxy=proxy, force=force)
 
 
 async def verify_access_token(
