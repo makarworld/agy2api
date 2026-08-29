@@ -308,6 +308,18 @@ function ChatCard({
   onInspectRequest: (req: RequestItem) => void;
 }) {
   const hasErrors = chat.failed_requests > 0;
+  const [showAll, setShowAll] = useState(false);
+
+  // Show newest requests at the top (reversed chronological: bottom to top)
+  const orderedRequests = useMemo(() => {
+    if (!requests) return [];
+    return [...requests].reverse();
+  }, [requests]);
+
+  const displayedRequests = useMemo(() => {
+    if (showAll || orderedRequests.length <= 10) return orderedRequests;
+    return orderedRequests.slice(0, 10);
+  }, [orderedRequests, showAll]);
 
   return (
     <div
@@ -415,7 +427,7 @@ function ChatCard({
             <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
               Conversation Turns ({requests?.length || 0})
             </span>
-            <span className="text-xs text-muted-foreground">Chronological order</span>
+            <span className="text-xs text-muted-foreground">Newest first</span>
           </div>
 
           {loadingRequests && !requests ? (
@@ -424,92 +436,110 @@ function ChatCard({
             </div>
           ) : requests && requests.length > 0 ? (
             <div className="space-y-3">
-              {requests.map((req, idx) => (
-                <div
-                  key={req.id}
-                  className={`border rounded-xl p-4 bg-card transition-all ${
-                    !Boolean(req.success) ? 'border-destructive/40 bg-destructive/5' : 'hover:border-border'
-                  }`}
-                >
-                  {/* Turn Header */}
-                  <div className="flex items-center justify-between flex-wrap gap-2 pb-3 border-b border-border/60">
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <span className="px-2 py-0.5 rounded-md text-xs font-bold bg-primary/15 text-primary">
-                        Turn #{idx + 1}
-                      </span>
-                      <span className="text-xs font-mono text-muted-foreground">
-                        {formatExactTime(req.ts)}
-                      </span>
-                      <EndpointBadge endpoint={req.endpoint} />
-                      {req.model && (
-                        <span className="text-xs font-mono font-medium px-2 py-0.5 rounded bg-muted">
-                          {req.model}
+              {displayedRequests.map((req) => {
+                const turnIndex = requests ? requests.findIndex((r) => r.id === req.id) + 1 : 0;
+                return (
+                  <div
+                    key={req.id}
+                    className={`border rounded-xl p-4 bg-card transition-all ${
+                      !Boolean(req.success) ? 'border-destructive/40 bg-destructive/5' : 'hover:border-border'
+                    }`}
+                  >
+                    {/* Turn Header */}
+                    <div className="flex items-center justify-between flex-wrap gap-2 pb-3 border-b border-border/60">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="px-2 py-0.5 rounded-md text-xs font-bold bg-primary/15 text-primary">
+                          Turn #{turnIndex}
                         </span>
-                      )}
-                      {req.pool_account && (
-                        <span className="text-xs font-mono text-primary flex items-center gap-1">
-                          <Shield className="w-3 h-3" />
-                          {req.pool_account}
+                        <span className="text-xs font-mono text-muted-foreground">
+                          {formatExactTime(req.ts)}
                         </span>
-                      )}
-                    </div>
-
-                    <div className="flex items-center gap-3">
-                      <div className="text-xs text-muted-foreground flex items-center gap-2 font-mono">
-                        <span>{formatLatency(req.latency_ms)}</span>
-                        <span>•</span>
-                        <span>
-                          {req.prompt_tokens + req.completion_tokens} tok
-                        </span>
+                        <EndpointBadge endpoint={req.endpoint} />
+                        {req.model && (
+                          <span className="text-xs font-mono font-medium px-2 py-0.5 rounded bg-muted">
+                            {req.model}
+                          </span>
+                        )}
+                        {req.pool_account && (
+                          <span className="text-xs font-mono text-primary flex items-center gap-1">
+                            <Shield className="w-3 h-3" />
+                            {req.pool_account}
+                          </span>
+                        )}
                       </div>
 
-                      <Button
-                        variant="ghost"
-                        size="xs"
-                        onClick={() => onInspectRequest(req)}
-                        className="gap-1 text-xs text-muted-foreground hover:text-foreground"
-                      >
-                        <Eye className="w-3.5 h-3.5" /> Inspect
-                      </Button>
+                      <div className="flex items-center gap-3">
+                        <div className="text-xs text-muted-foreground flex items-center gap-2 font-mono">
+                          <span>{formatLatency(req.latency_ms)}</span>
+                          <span>•</span>
+                          <span>
+                            {req.prompt_tokens + req.completion_tokens} tok
+                          </span>
+                        </div>
+
+                        <Button
+                          variant="ghost"
+                          size="xs"
+                          onClick={() => onInspectRequest(req)}
+                          className="gap-1 text-xs text-muted-foreground hover:text-foreground"
+                        >
+                          <Eye className="w-3.5 h-3.5" /> Inspect
+                        </Button>
+                      </div>
+                    </div>
+
+                    {/* Prompt & Response Preview */}
+                    <div className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
+                      {/* User Prompt */}
+                      <div className="space-y-1">
+                        <div className="flex items-center justify-between text-muted-foreground font-medium">
+                          <span className="flex items-center gap-1 text-primary">
+                            <User className="w-3 h-3" /> Prompt
+                          </span>
+                          {req.prompt_preview && <CopyButton text={req.prompt_preview} />}
+                        </div>
+                        <div className="p-2.5 rounded-lg bg-muted/40 border border-border/50 text-foreground font-sans line-clamp-4 select-text">
+                          {req.prompt_preview || <span className="italic text-muted-foreground">No prompt text</span>}
+                        </div>
+                      </div>
+
+                      {/* Assistant Response */}
+                      <div className="space-y-1">
+                        <div className="flex items-center justify-between text-muted-foreground font-medium">
+                          <span className="flex items-center gap-1 text-emerald-500">
+                            <Bot className="w-3 h-3" /> Response
+                          </span>
+                          {req.response_preview && <CopyButton text={req.response_preview} />}
+                        </div>
+                        {Boolean(req.success) ? (
+                          <div className="p-2.5 rounded-lg bg-muted/20 border border-border/50 text-foreground font-sans line-clamp-4 select-text">
+                            {req.response_preview || <span className="italic text-muted-foreground">No response text</span>}
+                          </div>
+                        ) : (
+                          <div className="p-2.5 rounded-lg bg-destructive/10 border border-destructive/30 text-destructive font-mono line-clamp-4 select-text">
+                            {req.error_type ? `[${req.error_type}] ` : ''}{req.response_preview || 'Error'}
+                          </div>
+                        )}
+                      </div>
                     </div>
                   </div>
+                );
+              })}
 
-                  {/* Prompt & Response Preview */}
-                  <div className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
-                    {/* User Prompt */}
-                    <div className="space-y-1">
-                      <div className="flex items-center justify-between text-muted-foreground font-medium">
-                        <span className="flex items-center gap-1 text-primary">
-                          <User className="w-3 h-3" /> Prompt
-                        </span>
-                        {req.prompt_preview && <CopyButton text={req.prompt_preview} />}
-                      </div>
-                      <div className="p-2.5 rounded-lg bg-muted/40 border border-border/50 text-foreground font-sans line-clamp-4 select-text">
-                        {req.prompt_preview || <span className="italic text-muted-foreground">No prompt text</span>}
-                      </div>
-                    </div>
-
-                    {/* Assistant Response */}
-                    <div className="space-y-1">
-                      <div className="flex items-center justify-between text-muted-foreground font-medium">
-                        <span className="flex items-center gap-1 text-emerald-500">
-                          <Bot className="w-3 h-3" /> Response
-                        </span>
-                        {req.response_preview && <CopyButton text={req.response_preview} />}
-                      </div>
-                      {Boolean(req.success) ? (
-                        <div className="p-2.5 rounded-lg bg-muted/20 border border-border/50 text-foreground font-sans line-clamp-4 select-text">
-                          {req.response_preview || <span className="italic text-muted-foreground">No response text</span>}
-                        </div>
-                      ) : (
-                        <div className="p-2.5 rounded-lg bg-destructive/10 border border-destructive/30 text-destructive font-mono line-clamp-4 select-text">
-                          {req.error_type ? `[${req.error_type}] ` : ''}{req.response_preview || 'Error'}
-                        </div>
-                      )}
-                    </div>
-                  </div>
+              {orderedRequests.length > 10 && (
+                <div className="flex justify-center pt-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setShowAll((prev) => !prev)}
+                    className="text-xs"
+                  >
+                    {showAll
+                      ? 'Show only last 10 turns'
+                      : `Load remaining turns (${orderedRequests.length - 10} more)`}
+                  </Button>
                 </div>
-              ))}
+              )}
             </div>
           ) : (
             <div className="text-xs text-muted-foreground py-4 text-center">

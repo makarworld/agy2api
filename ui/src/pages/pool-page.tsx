@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { RefreshCw, UserPlus, ExternalLink, Check, Copy, AlertCircle } from 'lucide-react';
+import { RefreshCw, UserPlus, ExternalLink, Check, Copy, AlertCircle, Gauge } from 'lucide-react';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { AccountsTable } from '../components/accounts-table';
@@ -18,10 +18,27 @@ export function PoolPage() {
   const [authCode, setAuthCode] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [generatingUrl, setGeneratingUrl] = useState(false);
+  const [refreshingQuotas, setRefreshingQuotas] = useState(false);
   const [copied, setCopied] = useState(false);
   const [statusMsg, setStatusMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
   const authHeaders = { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` };
+
+  const refreshAllQuotas = async () => {
+    setRefreshingQuotas(true);
+    try {
+      await fetch(apiUrl('/v1/accounts/refresh-quotas'), {
+        method: 'POST',
+        headers: authHeaders,
+      });
+      await refresh();
+      setStatusMsg({ type: 'success', text: 'Quotas refreshed successfully for all accounts.' });
+    } catch (err: any) {
+      setStatusMsg({ type: 'error', text: err.message || 'Failed to refresh quotas' });
+    } finally {
+      setRefreshingQuotas(false);
+    }
+  };
 
   const startOAuth = async (overrideProxy?: string) => {
     setGeneratingUrl(true);
@@ -113,10 +130,23 @@ export function PoolPage() {
             Google Antigravity accounts connected for automatic rotation and quota sharing.
           </p>
         </div>
-        <Button onClick={refresh} disabled={loading} variant="outline" size="sm" className="gap-2">
-          <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
-          Refresh
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button
+            onClick={refreshAllQuotas}
+            disabled={loading || refreshingQuotas}
+            variant="outline"
+            size="sm"
+            className="gap-2"
+            title="Force query Google API to refresh remaining quota limits for all accounts"
+          >
+            <Gauge className={`w-4 h-4 ${refreshingQuotas ? 'animate-spin' : ''}`} />
+            Refresh Quotas
+          </Button>
+          <Button onClick={refresh} disabled={loading} variant="outline" size="sm" className="gap-2">
+            <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
+            Refresh
+          </Button>
+        </div>
       </div>
 
       <div className="border rounded-xl p-5 bg-card mb-6 space-y-4">
@@ -125,41 +155,41 @@ export function PoolPage() {
           Add Account via Google OAuth
         </h2>
 
-        {!authUrl ? (
-          <div className="grid grid-cols-1 md:grid-cols-12 gap-3 items-end">
-            <div className="md:col-span-4">
-              <label className="text-xs text-muted-foreground uppercase tracking-wide">
-                Account Label (optional)
-              </label>
-              <Input
-                value={label}
-                onChange={(e) => setLabel(e.target.value)}
-                placeholder="e.g. personal, work-2"
-                className="mt-1"
-              />
-            </div>
-            <div className="md:col-span-5">
-              <label className="text-xs text-muted-foreground uppercase tracking-wide">
-                Proxy (optional)
-              </label>
-              <Input
-                value={proxy}
-                onChange={(e) => setProxy(e.target.value)}
-                placeholder="http://user:pass@host:port"
-                className="mt-1"
-              />
-            </div>
-            <div className="md:col-span-3">
-              <Button
-                onClick={() => startOAuth()}
-                disabled={generatingUrl}
-                className="w-full gap-2"
-              >
-                {generatingUrl ? 'Generating...' : 'Generate Login Link'}
-              </Button>
-            </div>
+        <div className="grid grid-cols-1 md:grid-cols-12 gap-3 items-end">
+          <div className="md:col-span-4">
+            <label className="text-xs text-muted-foreground uppercase tracking-wide">
+              Account Label (optional)
+            </label>
+            <Input
+              value={label}
+              onChange={(e) => setLabel(e.target.value)}
+              placeholder="e.g. personal, work-2"
+              className="mt-1"
+            />
           </div>
-        ) : (
+          <div className="md:col-span-5">
+            <label className="text-xs text-muted-foreground uppercase tracking-wide">
+              Proxy (optional)
+            </label>
+            <Input
+              value={proxy}
+              onChange={(e) => setProxy(e.target.value)}
+              placeholder="http://user:pass@host:port"
+              className="mt-1"
+            />
+          </div>
+          <div className="md:col-span-3">
+            <Button
+              onClick={() => startOAuth()}
+              disabled={generatingUrl}
+              className="w-full gap-2"
+            >
+              {generatingUrl ? 'Generating...' : authUrl ? 'Regenerate Link' : 'Generate Login Link'}
+            </Button>
+          </div>
+        </div>
+
+        {authUrl && (
           <div className="space-y-4 border-t pt-4">
             <div className="bg-muted/40 p-3 rounded-lg flex flex-col md:flex-row items-center justify-between gap-3">
               <div className="text-xs text-muted-foreground break-all flex-1 font-mono">
@@ -202,7 +232,7 @@ export function PoolPage() {
                 </Button>
               </div>
               <p className="text-xs text-muted-foreground">
-                Sign in with the Google account in your browser, then copy the code displayed on page (or from the URL) and paste it above.
+                Sign in with the Google account in your browser (make sure to select/switch to the <b>target</b> Google account if multiple profiles exist), then copy the code displayed on page (or from the URL) and paste it above.
               </p>
             </div>
           </div>

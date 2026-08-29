@@ -121,7 +121,7 @@ def thought_as_text_enabled(*, tools_present: bool = False) -> bool:
     env = os.environ.get("AGY_THOUGHT_AS_TEXT")
     if env is not None and str(env).strip() != "":
         return str(env).strip().lower() in ("1", "true", "yes")
-    return tools_present
+    return True
 
 
 def tool_result_trim_enabled() -> bool:
@@ -219,15 +219,34 @@ def tool_choice_to_gemini_mode(tool_choice: Any) -> Optional[str]:
     return None
 
 
+def _to_urlsafe_sig(sig: str) -> str:
+    if not sig:
+        return ""
+    return sig.replace("+", "-").replace("/", "_").rstrip("=")
+
+
+def _from_urlsafe_sig(sig: str) -> str:
+    if not sig:
+        return ""
+    std = sig.replace("-", "+").replace("_", "/")
+    return std + "=" * ((4 - len(std) % 4) % 4)
+
+
 def encode_tool_id(fc_id: str = "", thought_sig: str = "") -> str:
-    """Anthropic tool_use id envelope around Gemini functionCall.id (+ optional thoughtSignature)."""
+    """Anthropic tool_use id envelope around Gemini functionCall.id (+ optional thoughtSignature).
+    Must strictly match Anthropic's schema regex: ^[a-zA-Z0-9_-]+$
+    """
     fc_id = (fc_id or "").strip()
     thought_sig = (thought_sig or "").strip()
     if not fc_id and not thought_sig:
         return ""
+    import re
+
+    clean_fc = re.sub(r"[^a-zA-Z0-9_-]", "_", fc_id)
     if thought_sig:
-        return f"call_{fc_id}|{thought_sig}"
-    return f"call_{fc_id}"
+        safe_sig = _to_urlsafe_sig(thought_sig)
+        return f"call_{clean_fc}__sig_{safe_sig}"
+    return f"call_{clean_fc}"
 
 
 def stream_tool_call_key(tc: dict) -> str:
@@ -312,6 +331,9 @@ def decode_tool_id(tool_use_id: str) -> Tuple[str, str]:
         return "", ""
     if tool_use_id.startswith("call_"):
         raw = tool_use_id[5:]
+        if "__sig_" in raw:
+            fc_id, safe_sig = raw.split("__sig_", 1)
+            return fc_id, _from_urlsafe_sig(safe_sig)
         if "|" in raw:
             fc_id, sig = raw.split("|", 1)
             return fc_id, sig
