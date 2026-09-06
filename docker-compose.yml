@@ -1,12 +1,24 @@
 version: "3.8"
 
 services:
-  api:
+  agy2api:
     build: .
-    ports:
-      - "8000:8000"
+    container_name: agy2api
+    restart: unless-stopped
+    env_file:
+      - .env
     environment:
-      - AGY_API_KEY=sk-dummy
-    # Mount local gemini config if agy is running inside docker
+      PORT: "8008"
+      HOST: "0.0.0.0"
     volumes:
+      - ./app/data:/app/app/data
       - ~/.gemini:/root/.gemini
+    ports:
+      - "127.0.0.1:${AGY2API_PORT:-8008}:8008"
+    networks:
+      - default
+
+networks:
+  default:
+    name: voicebot_network
+    external: true
