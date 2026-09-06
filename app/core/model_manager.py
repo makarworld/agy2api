@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 # subscription instead of hitting the configured custom base URL). Add more
 # pairs here as needed.
 MODEL_ALIASES = {
-    "max-gem": "gemini-3.7-flash-high",
+    "max-gem": "gemini-3.8-flash-high",
 }
 
 
@@ -71,6 +71,10 @@ async def resolve_backend_model(requested: str) -> str:
 
 # Cloud Code Assist HTTP API uses different backend IDs than agy CLI slugs for some models.
 _HTTP_MODEL_MAP: dict[str, Tuple[str, Optional[str]]] = {
+    "gemini-3.8-flash-high": ("gemini-3.8-flash", "high"),
+    "gemini-3.8-flash": ("gemini-3.8-flash", "high"),
+    "gemini-3.7-flash-high": ("gemini-3.7-flash-low", "high"),
+    "gemini-3.7-flash": ("gemini-3.7-flash-low", "high"),
     "gemini-3.1-pro-high": ("gemini-3.1-pro-low", "high"),
     "gemini-3.1-pro": ("gemini-3.1-pro-low", "low"),
 }
@@ -104,7 +108,7 @@ FALLBACK_MODELS = [
     "claude-sonnet-4-6",
     "Claude Sonnet 4.6 (Thinking)",
     "gpt-oss-120b-medium",
-    "GPT-OSS 120B (Medium)"
+    "GPT-OSS 120B (Medium)",
 ]
 
 
@@ -118,9 +122,15 @@ async def fetch_models_from_cli() -> List[Model]:
 
     try:
         if pool_manager.pool_enabled():
-            returncode, stdout, stderr = await pool_manager.run_agy_subprocess_without_pool(cmd, timeout=10.0)
+            (
+                returncode,
+                stdout,
+                stderr,
+            ) = await pool_manager.run_agy_subprocess_without_pool(cmd, timeout=10.0)
         else:
-            returncode, stdout, stderr = await pool_manager.execute_agy(cmd, timeout=10.0)
+            returncode, stdout, stderr = await pool_manager.execute_agy(
+                cmd, timeout=10.0
+            )
     except asyncio.TimeoutError:
         logger.error("Timeout fetching models from `agy models` CLI")
         return []
@@ -149,7 +159,7 @@ async def fetch_models_from_cli() -> List[Model]:
         if slug_id and slug_id not in seen_ids:
             models.append(Model(id=slug_id, created=created_ts))
             seen_ids.add(slug_id)
-            
+
         # Add display name if different from slug
         if display_name and display_name != slug_id and display_name not in seen_ids:
             models.append(Model(id=display_name, created=created_ts))
@@ -167,7 +177,11 @@ async def get_available_models(force_refresh: bool = False) -> List[Model]:
     models = await _get_available_models_cached(force_refresh)
     existing_ids = {m.id for m in models}
     created_ts = int(time.time())
-    alias_models = [Model(id=alias, created=created_ts) for alias in MODEL_ALIASES if alias not in existing_ids]
+    alias_models = [
+        Model(id=alias, created=created_ts)
+        for alias in MODEL_ALIASES
+        if alias not in existing_ids
+    ]
     return models + alias_models
 
 
@@ -175,13 +189,21 @@ async def _get_available_models_cached(force_refresh: bool = False) -> List[Mode
     global _CACHED_MODELS, _LAST_FETCH_TIME
 
     now = time.time()
-    if not force_refresh and _CACHED_MODELS and (now - _LAST_FETCH_TIME < _CACHE_TTL_SECONDS):
+    if (
+        not force_refresh
+        and _CACHED_MODELS
+        and (now - _LAST_FETCH_TIME < _CACHE_TTL_SECONDS)
+    ):
         return _CACHED_MODELS
 
     async with _LOCK:
         # Double check after acquiring lock
         now = time.time()
-        if not force_refresh and _CACHED_MODELS and (now - _LAST_FETCH_TIME < _CACHE_TTL_SECONDS):
+        if (
+            not force_refresh
+            and _CACHED_MODELS
+            and (now - _LAST_FETCH_TIME < _CACHE_TTL_SECONDS)
+        ):
             return _CACHED_MODELS
 
         models = await fetch_models_from_cli()
