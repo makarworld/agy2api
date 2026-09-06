@@ -17,6 +17,8 @@ class ChatCompletionRequest(BaseModel):
     stream: Optional[bool] = Field(False, description="Whether to stream back partial progress")
     tools: Optional[List[Dict[str, Any]]] = Field(None, description="A list of tools the model may call")
     tool_choice: Optional[Any] = Field(None, description="Controls which (if any) tool is called by the model")
+    thought_as_text: Optional[bool] = Field(None, description="Whether to include thought text in message content")
+    include_thoughts: Optional[bool] = Field(None, description="Alias for thought_as_text")
 
     model_config = {
         "json_schema_extra": {

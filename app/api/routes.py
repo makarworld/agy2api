@@ -184,6 +184,7 @@ async def _openai_stream(
     api_key: str | None = None,
     tools: Optional[List[dict]] = None,
     tool_choice: Optional[Any] = None,
+    thought_as_text: Optional[bool] = None,
 ):
     response_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
     created = int(time.time())
@@ -213,6 +214,7 @@ async def _openai_stream(
                 model=agy_model,
                 tools=tools,
                 tool_choice=tool_choice,
+                thought_as_text=thought_as_text,
             )
         ):
             if piece is None:
@@ -391,6 +393,8 @@ async def chat_completions(
             elif "name" in t:
                 converted_tools.append(t)
 
+    thought_param = req.thought_as_text if req.thought_as_text is not None else req.include_thoughts
+
     if req.stream:
         return StreamingResponse(
             _openai_stream(
@@ -405,6 +409,7 @@ async def chat_completions(
                 api_key=api_key,
                 tools=converted_tools,
                 tool_choice=req.tool_choice,
+                thought_as_text=thought_param,
             ),
             media_type="text/event-stream",
         )
@@ -421,6 +426,7 @@ async def chat_completions(
             model=agy_model,
             tools=converted_tools,
             tool_choice=req.tool_choice,
+            thought_as_text=thought_param,
         )
     except Exception as e:
         await stats_store.record_request(

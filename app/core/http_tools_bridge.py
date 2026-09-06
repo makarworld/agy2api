@@ -1,77 +1,107 @@
-"""Bridge and helpers for Cloud Code Assist HTTP transport tools passthrough."""
+"""Anthropic tools <-> Gemini functionDeclarations conversion for HTTP transport."""
 
-from __future__ import annotations
-
-import base64
 import json
 import logging
 import os
-from typing import Any, Optional, Tuple
-
-from src.bot.utils import logger if False else logging.getLogger(__name__)
+from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
+# Gemini functionDeclarations.parameters accept a small OpenAPI subset only.
+_SCHEMA_ALLOWED_KEYS = frozenset(
+    {
+        "type",
+        "properties",
+        "required",
+        "items",
+        "description",
+        "enum",
+    }
+)
 
-_GENERIC_CONTAINER_SCHEMA = {
-    "type": "OBJECT",
-    "properties": {},
+_TYPE_MAP = {
+    "object": "OBJECT",
+    "string": "STRING",
+    "integer": "INTEGER",
+    "number": "NUMBER",
+    "boolean": "BOOLEAN",
+    "array": "ARRAY",
+    "null": "NULL",
 }
+
+
+def _normalize_schema_type(value: Any) -> Any:
+    if isinstance(value, list):
+        for item in value:
+            if isinstance(item, str) and item.lower() != "null":
+                mapped = _TYPE_MAP.get(item.lower())
+                return mapped if mapped else item.upper()
+        return "STRING"
+    if isinstance(value, str):
+        mapped = _TYPE_MAP.get(value.lower())
+        return mapped if mapped else value.upper()
+    return value
 
 
 def _coerce_items_schema(value: Any) -> Optional[dict]:
     """Gemini Schema.items is a single object, not a JSON Schema tuple list."""
     if isinstance(value, dict):
         return _sanitize_json_schema_for_gemini(value)
-    if isinstance(value, list) and value:
-        first = value[0]
-        if isinstance(first, dict):
-            return _sanitize_json_schema_for_gemini(first)
+    if isinstance(value, list):
+        for entry in value:
+            if isinstance(entry, dict):
+                return _sanitize_json_schema_for_gemini(entry)
+        return {"type": "STRING"}
     return None
 
 
-def _sanitize_json_schema_for_gemini(schema: Any) -> dict:
+def _sanitize_json_schema_for_gemini(schema: Any) -> Any:
+    """Keep only Gemini-compatible schema fields; drop JSON Schema validation keywords."""
     if not isinstance(schema, dict):
-        return dict(_GENERIC_CONTAINER_SCHEMA)
+        return schema
 
-    out: dict[str, Any] = {}
-    raw_type = schema.get("type")
-    if isinstance(raw_type, str):
-        norm_type = raw_type.upper()
-        if norm_type in ("STRING", "INTEGER", "NUMBER", "BOOLEAN", "ARRAY", "OBJECT"):
-            out["type"] = norm_type
-        elif norm_type == "NULL":
-            out["type"] = "STRING"
-    elif isinstance(raw_type, list) and raw_type:
-        first_scalar = next(
-            (
-                str(t).upper()
-                for t in raw_type
-                if str(t).upper() in ("STRING", "INTEGER", "NUMBER", "BOOLEAN", "ARRAY", "OBJECT")
-            ),
-            None,
-        )
-        out["type"] = first_scalar or "STRING"
+    for combiner in ("anyOf", "oneOf", "allOf"):
+        options = schema.get(combiner)
+        if isinstance(options, list) and options:
+            candidates = [item for item in options if isinstance(item, dict)]
+            if candidates:
+                preferred = next(
+                    (
+                        item
+                        for item in candidates
+                        if item.get("type") not in (None, "null", "NULL") or item.get("properties")
+                    ),
+                    candidates[0],
+                )
+                return _sanitize_json_schema_for_gemini(preferred)
 
+    out: dict = {}
     for key, value in schema.items():
-        if key == "properties" and isinstance(value, dict):
-            props = {}
-            for prop_name, prop_schema in value.items():
-                props[prop_name] = _sanitize_json_schema_for_gemini(prop_schema)
-            out["properties"] = props
+        if key not in _SCHEMA_ALLOWED_KEYS:
+            continue
+        if key == "type":
+            out[key] = _normalize_schema_type(value)
+        elif key == "properties" and isinstance(value, dict):
+            out[key] = {
+                prop_name: _sanitize_json_schema_for_gemini(prop_schema)
+                for prop_name, prop_schema in value.items()
+                if isinstance(prop_schema, dict)
+            }
         elif key == "required" and isinstance(value, list):
-            out["required"] = [str(item) for item in value if isinstance(item, str)]
+            out[key] = [item for item in value if isinstance(item, str)]
         elif key == "items":
             coerced = _coerce_items_schema(value)
             if coerced is not None:
                 out[key] = coerced
-        elif key in ("description", "enum") and isinstance(value, (str, list)):
+        elif key == "description" and isinstance(value, str):
+            out[key] = value
+        elif key == "enum" and isinstance(value, list):
             out[key] = value
 
     if "type" not in out and "properties" in out:
         out["type"] = "OBJECT"
-    if out.get("type") == "ARRAY" and "items" not in out:
-        out["items"] = {"type": "STRING"}
-    if "items" in out and "type" not in out:
+    elif "type" not in out and "enum" in out:
+        out.setdefault("type", "STRING")
+    elif "type" not in out and "items" in out:
         out["type"] = "ARRAY"
 
     # Gemini rejects `items` unless the field type is ARRAY.
@@ -87,11 +117,13 @@ def http_debug_enabled() -> bool:
     return os.environ.get("AGY_HTTP_DEBUG", "").lower() in ("1", "true", "yes")
 
 
-def thought_as_text_enabled(*, tools_present: bool = False) -> bool:
+def thought_as_text_enabled(*, tools_present: bool = False, param_override: Optional[bool] = None) -> bool:
+    if param_override is not None:
+        return bool(param_override)
     env = os.environ.get("AGY_THOUGHT_AS_TEXT")
     if env is not None and str(env).strip() != "":
         return str(env).strip().lower() in ("1", "true", "yes")
-    return False
+    return True
 
 
 def tool_result_trim_enabled() -> bool:
@@ -102,9 +134,7 @@ def tool_result_trim_enabled() -> bool:
     return str(env).strip().lower() in ("1", "true", "yes")
 
 
-def _max_tool_result_chars(
-    *, aggressive: bool = False, is_recent: bool = True
-) -> Optional[int]:
+def _max_tool_result_chars(*, aggressive: bool = False, is_recent: bool = True) -> Optional[int]:
     if not tool_result_trim_enabled():
         return None
     if aggressive:
@@ -136,234 +166,310 @@ def summarize_sse_parts(obj: dict) -> str:
         if part.get("thought"):
             bits.append("thought")
         if part.get("text"):
-            bits.append(f"text({len(part['text'])})")
+            bits.append("text")
         if part.get("functionCall"):
-            fc = part["functionCall"]
-            bits.append(f"call:{fc.get('name') or 'unnamed'}")
-        if bits:
-            flags.append("+".join(bits))
-    return f"cand0[{','.join(flags)}]" if flags else "cand0[empty]"
+            bits.append("functionCall")
+        flags.append("+".join(bits) or "empty")
+    finish = cand.get("finishReason") or cand.get("finish_reason") or "?"
+    return f"parts={len(parts)} [{', '.join(flags)}] finishReason={finish}"
 
 
-def finalize_pending_tool_calls(pending: dict[str, dict]) -> list[dict]:
+def finalize_pending_tool_calls(pending: dict[str, dict]) -> List[dict]:
     """Emit any pending tool calls that accumulated a name during streaming."""
-    finalized: list[dict] = []
+    finalized: List[dict] = []
     for key, tc in list(pending.items()):
         if not tc.get("name"):
-            logger.warning("[http] dropping unnamed tool call key=%s", key)
+            if http_debug_enabled() and tc.get("input"):
+                logger.warning("[http] dropping unnamed pending tool call key=%s", key)
             continue
-        finalized.append(tc)
-    pending.clear()
+        finalized.append({k: v for k, v in tc.items() if not k.startswith("_")})
     return finalized
 
 
-def anthropic_tools_to_gemini(tools: Optional[list[dict]]) -> Optional[list[dict]]:
+def anthropic_tools_to_gemini(tools: Optional[List[dict]]) -> Optional[List[dict]]:
     if not tools:
         return None
-    decls: list[dict] = []
+    decls: List[dict] = []
     for tool in tools:
         if not isinstance(tool, dict):
             continue
         name = tool.get("name")
         if not name:
             continue
-        schema = tool.get("input_schema") or tool.get("parameters") or {}
-        decl = {
-            "name": str(name),
-            "description": str(tool.get("description") or ""),
-            "parameters": _sanitize_json_schema_for_gemini(schema),
+        decl: dict = {
+            "name": name,
+            "description": tool.get("description", ""),
         }
+        schema = tool.get("input_schema") or tool.get("parameters")
+        if isinstance(schema, dict) and schema:
+            decl["parameters"] = _sanitize_json_schema_for_gemini(schema)
         decls.append(decl)
-    return [{"functionDeclarations": decls}] if decls else None
+    if not decls:
+        return None
+    return [{"functionDeclarations": decls}]
 
 
-def tool_choice_to_gemini_mode(tool_choice: Any) -> Optional[dict]:
-    if not tool_choice:
-        return None
-    if isinstance(tool_choice, str):
-        choice_type = tool_choice.lower()
-        if choice_type in ("auto", "none"):
-            return {"mode": choice_type.upper()}
-        if choice_type in ("any", "required"):
-            return {"mode": "ANY"}
-        return None
-    if isinstance(tool_choice, dict):
-        ctype = str(tool_choice.get("type", "auto")).lower()
-        if ctype == "tool":
-            name = tool_choice.get("name")
-            if name:
-                return {
-                    "mode": "ANY",
-                    "allowedFunctionNames": [str(name)],
-                }
-            return {"mode": "ANY"}
-        if ctype in ("any", "required"):
-            return {"mode": "ANY"}
-        if ctype == "none":
-            return {"mode": "NONE"}
+def tool_choice_to_gemini_mode(tool_choice: Any) -> Optional[str]:
+    if tool_choice is None or tool_choice == "auto":
+        return "AUTO"
+    if tool_choice == "none":
+        return "NONE"
+    if tool_choice == "any":
+        return "ANY"
+    if isinstance(tool_choice, dict) and tool_choice.get("type") == "tool":
+        return "ANY"
     return None
 
 
-def encode_tool_id(call_id: str, thought_signature: str = "") -> str:
-    """Pack call_id and thoughtSignature into tool_use.id for lossless passthrough."""
-    cid = (call_id or "").strip()
-    sig = (thought_signature or "").strip()
+def _to_urlsafe_sig(sig: str) -> str:
     if not sig:
-        return cid or f"call_{os.urandom(8).hex()}"
-    packed = json.dumps({"c": cid, "s": sig}, separators=(",", ":"))
-    b64 = base64.urlsafe_b64encode(packed.encode()).decode().rstrip("=")
-    return f"ccas_{b64}"
+        return ""
+    return sig.replace("+", "-").replace("/", "_").rstrip("=")
+
+
+def _from_urlsafe_sig(sig: str) -> str:
+    if not sig:
+        return ""
+    std = sig.replace("-", "+").replace("_", "/")
+    return std + "=" * ((4 - len(std) % 4) % 4)
+
+
+def encode_tool_id(fc_id: str = "", thought_sig: str = "") -> str:
+    """Anthropic tool_use id envelope around Gemini functionCall.id (+ optional thoughtSignature).
+    Must strictly match Anthropic's schema regex: ^[a-zA-Z0-9_-]+$
+    """
+    fc_id = (fc_id or "").strip()
+    thought_sig = (thought_sig or "").strip()
+    if not fc_id and not thought_sig:
+        return ""
+    import re
+
+    clean_fc = re.sub(r"[^a-zA-Z0-9_-]", "_", fc_id)
+    if thought_sig:
+        safe_sig = _to_urlsafe_sig(thought_sig)
+        return f"call_{clean_fc}__sig_{safe_sig}"
+    return f"call_{clean_fc}"
 
 
 def stream_tool_call_key(tc: dict) -> str:
-    """Stable per-call aggregation key across SSE chunks."""
-    fc_id, sig = decode_tool_id(tc.get("id", ""))
-    if fc_id:
-        return f"id:{fc_id}"
-    idx = tc.get("_stream_index")
-    if idx is not None:
-        return f"idx:{idx}"
+    """Stable dedupe key for Gemini SSE chunks (backend ids may arrive late)."""
     name = (tc.get("name") or "").strip()
+    idx = int(tc.get("_stream_index", 0))
     if name:
-        return f"name:{name}"
-    return f"raw:{tc.get('id', '')}"
+        return f"{name}@{idx}"
+    tc_id = (tc.get("id") or "").strip()
+    if tc_id and not tc_id.startswith("toolu_"):
+        raw_fc, _ = decode_tool_id(tc_id)
+        if raw_fc:
+            return f"fc:{raw_fc}"
+        return f"fc:{tc_id}"
+    return f"idx:{idx}"
 
 
-def merge_stream_tool_call(target: dict, incoming: dict) -> None:
-    """Accumulate incoming delta chunks into target tool call object."""
-    if incoming.get("name") and not target.get("name"):
-        target["name"] = incoming["name"]
-    raw_id = incoming.get("id", "")
-    fc_id, sig = decode_tool_id(raw_id)
-    if fc_id or sig:
-        cur_fc_id, cur_sig = decode_tool_id(target.get("id", ""))
-        merged_fc_id = fc_id or cur_fc_id
-        merged_sig = sig or cur_sig
-        target["id"] = encode_tool_id(merged_fc_id, merged_sig)
-    elif raw_id and not target.get("id"):
-        target["id"] = raw_id
-
-    new_input = incoming.get("input")
-    if isinstance(new_input, dict) and new_input:
-        cur_input = target.get("input")
-        if not isinstance(cur_input, dict):
-            target["input"] = {}
-        target["input"].update(new_input)
+def merge_stream_tool_call(previous: dict, current: dict) -> dict:
+    """Keep the richer of two snapshots of the same streamed functionCall."""
+    prev_input = previous.get("input") if isinstance(previous.get("input"), dict) else {}
+    curr_input = current.get("input") if isinstance(current.get("input"), dict) else {}
+    merged = dict(previous)
+    merged.update(current)
+    if len(json.dumps(curr_input, sort_keys=True)) >= len(json.dumps(prev_input, sort_keys=True)):
+        merged["input"] = curr_input
+    else:
+        merged["input"] = prev_input
+    if not merged.get("name") and previous.get("name"):
+        merged["name"] = previous["name"]
+    if not merged.get("id") and previous.get("id"):
+        merged["id"] = previous["id"]
+    return merged
 
 
 def ingest_stream_tool_calls(
-    tool_calls: list[dict],
-    pending_tool_calls: dict[str, dict],
-) -> list[dict]:
-    """Merge newly extracted tool calls into pending accumulator and return completed calls."""
-    ready: list[dict] = []
+    tool_calls: List[dict],
+    pending: dict[str, dict],
+) -> List[dict]:
+    """Merge streamed functionCall snapshots; return new calls ready to emit."""
+    new_calls: List[dict] = []
     for tc in tool_calls:
+        name = (tc.get("name") or "").strip()
+        idx = int(tc.get("_stream_index", 0))
+
+        if not name:
+            match_key = None
+            for pk, pv in pending.items():
+                if pv.get("_stream_index") == idx:
+                    match_key = pk
+                    break
+            if match_key is None:
+                match_key = f"partial@{idx}"
+            had_name = bool((pending.get(match_key) or {}).get("name"))
+            merged = merge_stream_tool_call(pending.get(match_key, {}), tc) if match_key in pending else tc
+            pending[match_key] = merged
+            if merged.get("name"):
+                proper_key = stream_tool_call_key(merged)
+                if proper_key != match_key:
+                    pending.pop(match_key, None)
+                    pending[proper_key] = merged
+                if not had_name:
+                    new_calls.append({k: v for k, v in merged.items() if not k.startswith("_")})
+            continue
+
         key = stream_tool_call_key(tc)
-        target = pending_tool_calls.get(key)
-        if target is None:
-            target = {
-                "id": tc.get("id", ""),
-                "name": tc.get("name", ""),
-                "input": tc.get("input", {}) if isinstance(tc.get("input"), dict) else {},
-            }
-            pending_tool_calls[key] = target
-        else:
-            merge_stream_tool_call(target, tc)
+        previous = pending.get(key)
+        if previous is not None:
+            had_name = bool(previous.get("name"))
+            merged = merge_stream_tool_call(previous, tc)
+            pending[key] = merged
+            if not had_name and merged.get("name"):
+                new_calls.append({k: v for k, v in merged.items() if not k.startswith("_")})
+            continue
 
-        # If name is resolved, we consider this tool call formed and can emit it
-        if target.get("name") and key in pending_tool_calls:
-            ready.append(dict(target))
-            del pending_tool_calls[key]
-
-    return ready
+        pending[key] = tc
+        new_calls.append({k: v for k, v in tc.items() if not k.startswith("_")})
+    return new_calls
 
 
-def decode_tool_id(packed_id: str) -> Tuple[str, str]:
-    """Unpack call_id and thoughtSignature from encoded tool_use.id."""
-    if not packed_id or not packed_id.startswith("ccas_"):
-        return packed_id or "", ""
-    raw = packed_id[len("ccas_") :]
-    rem = len(raw) % 4
-    if rem:
-        raw += "=" * (4 - rem)
-    try:
-        decoded = base64.urlsafe_b64decode(raw.encode()).decode()
-        data = json.loads(decoded)
-        return str(data.get("c") or ""), str(data.get("s") or "")
-    except Exception:
-        return packed_id, ""
+def decode_tool_id(tool_use_id: str) -> Tuple[str, str]:
+    if not tool_use_id:
+        return "", ""
+    if tool_use_id.startswith("call_"):
+        raw = tool_use_id[5:]
+        if "__sig_" in raw:
+            fc_id, safe_sig = raw.split("__sig_", 1)
+            return fc_id, _from_urlsafe_sig(safe_sig)
+        if "|" in raw:
+            fc_id, sig = raw.split("|", 1)
+            return fc_id, sig
+        return raw, ""
+    return "", ""
 
 
-def _tool_result_content_to_response(content: Any) -> Any:
-    if isinstance(content, str):
-        try:
-            return json.loads(content)
-        except Exception:
-            return content
-    if isinstance(content, (dict, list)):
-        return content
-    return str(content)
+def _build_tool_name_map(messages: List[dict]) -> Dict[str, str]:
+    mapping: Dict[str, str] = {}
+    for msg in messages:
+        if msg.get("role") != "assistant":
+            continue
+        for tc in msg.get("tool_calls") or []:
+            if not isinstance(tc, dict):
+                continue
+            tool_id = tc.get("id", "")
+            name = tc.get("name", "")
+            if tool_id and name:
+                mapping[tool_id] = name
+    return mapping
+
+
+def _tool_result_text_blob(content: Any) -> str:
+    if isinstance(content, list):
+        texts = []
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "text":
+                texts.append(block.get("text", ""))
+        return "\n".join(t for t in texts if t)
+    if isinstance(content, dict):
+        return json.dumps(content, ensure_ascii=False)
+    return str(content) if content is not None else ""
+
+
+def _tool_result_content_to_response(content: Any, *, max_chars: Optional[int] = None) -> dict:
+    """Gemini functionResponse.response must stay simple — wrap MCP payloads as text."""
+    text = _tool_result_text_blob(content)
+    if not text:
+        return {"result": ""}
+    limit = max_chars if max_chars is not None else _max_tool_result_chars(is_recent=True)
+    if limit is not None and len(text) > limit:
+        text = _trim_tool_result_text(text, limit)
+    return {"result": text}
 
 
 def messages_to_gemini_contents(
-    messages: list[dict],
+    messages: List[dict],
     *,
     trim_aggressive: bool = False,
-) -> list[dict]:
-    """Convert OpenAI/Anthropic messages list into Gemini contents structure."""
-    contents: list[dict] = []
-    total_msgs = len(messages)
+) -> List[dict]:
+    name_map = _build_tool_name_map(messages)
+    contents: List[dict] = []
 
-    for idx, msg in enumerate(messages):
+    tool_result_indices = [
+        idx for idx, msg in enumerate(messages) if msg.get("role") == "user" and msg.get("tool_results")
+    ]
+    last_tool_result_idx = tool_result_indices[-1] if tool_result_indices else -1
+
+    for msg_idx, msg in enumerate(messages):
         role = msg.get("role", "user")
-        is_recent = (total_msgs - idx) <= 3
-        api_role = "model" if role in ("assistant", "model") else "user"
+        if role == "system":
+            continue
 
-        parts: list[dict] = []
-
-        # Tool calls from assistant
-        tool_calls = msg.get("tool_calls") or []
-        for tc in tool_calls:
-            if not isinstance(tc, dict):
-                continue
-            name = tc.get("name") or (tc.get("function") or {}).get("name")
-            args = tc.get("input") or (tc.get("function") or {}).get("arguments")
-            if isinstance(args, str):
-                try:
-                    args = json.loads(args)
-                except Exception:
-                    args = {}
-            if name:
-                fc_part: dict[str, Any] = {
-                    "functionCall": {
-                        "name": str(name),
-                        "args": args if isinstance(args, dict) else {},
-                    }
-                }
-                parts.append(fc_part)
-
-        # Tool result from tool role
-        if role == "tool":
-            name = msg.get("name", "tool")
-            content = msg.get("content", "")
-            resp_val = _tool_result_content_to_response(content)
-            if isinstance(resp_val, str):
-                limit = _max_tool_result_chars(aggressive=trim_aggressive, is_recent=is_recent)
-                if limit:
-                    resp_val = _trim_tool_result_text(resp_val, limit)
-            parts.append(
-                {
-                    "functionResponse": {
-                        "name": str(name),
-                        "response": {"result": resp_val},
-                    }
-                }
+        tool_results = msg.get("tool_results")
+        if tool_results and role == "user":
+            is_recent = msg_idx == last_tool_result_idx
+            max_chars = (
+                _max_tool_result_chars(aggressive=trim_aggressive, is_recent=is_recent)
+                if tool_result_trim_enabled()
+                else None
             )
+            response_parts: List[dict] = []
+            for tr in tool_results:
+                tool_use_id = tr.get("tool_use_id", "")
+                fc_id, _ = decode_tool_id(tool_use_id)
+                name = tr.get("name") or name_map.get(tool_use_id) or "tool_result"
+                func_resp: dict = {
+                    "name": name,
+                    "response": _tool_result_content_to_response(tr.get("content"), max_chars=max_chars),
+                }
+                if fc_id:
+                    func_resp["id"] = fc_id
+                response_parts.append({"functionResponse": func_resp})
 
-        # Multimodal image parts
+            user_parts: List[dict] = list(response_parts)
+            images = msg.get("images") or []
+            for img in images:
+                if isinstance(img, dict) and img.get("data"):
+                    user_parts.append(
+                        {
+                            "inlineData": {
+                                "mimeType": img.get("mime_type", "image/png"),
+                                "data": img["data"],
+                            }
+                        }
+                    )
+            text = msg.get("content")
+            if text:
+                user_parts.append({"text": text})
+            if user_parts:
+                contents.append({"role": "user", "parts": user_parts})
+            continue
+
+        if role == "assistant":
+            parts: List[dict] = []
+            text = msg.get("content")
+            if text:
+                parts.append({"text": text})
+            for tc in msg.get("tool_calls") or []:
+                if not isinstance(tc, dict):
+                    continue
+                name = tc.get("name", "")
+                if not name:
+                    continue
+                args = tc.get("input", {})
+                if not isinstance(args, dict):
+                    args = {}
+                fc_id, thought_sig = decode_tool_id(tc.get("id", ""))
+                fc_part: dict = {"name": name, "args": args}
+                if fc_id:
+                    fc_part["id"] = fc_id
+                part: dict = {"functionCall": fc_part}
+                if thought_sig:
+                    part["thoughtSignature"] = thought_sig
+                parts.append(part)
+            if parts:
+                contents.append({"role": "model", "parts": parts})
+            continue
+
+        api_role = "model" if role == "assistant" else "user"
+        parts: List[dict] = []
         images = msg.get("images") or []
         for img in images:
-            if isinstance(img, dict) and "data" in img:
+            if isinstance(img, dict) and img.get("data"):
                 parts.append(
                     {
                         "inlineData": {
@@ -372,14 +478,11 @@ def messages_to_gemini_contents(
                         }
                     }
                 )
-
         text = msg.get("content", "")
-        if isinstance(text, str) and text:
+        if text:
             parts.append({"text": text})
-
         if parts:
             contents.append({"role": api_role, "parts": parts})
-
     return contents
 
 
@@ -387,7 +490,7 @@ def extract_parts_from_response(
     obj: dict,
     *,
     allow_thought_text: bool = False,
-) -> Tuple[str, list[dict], Optional[str]]:
+) -> Tuple[str, List[dict], Optional[str]]:
     """Extract visible text and tool_calls from a streamGenerateContent SSE object."""
     response = obj.get("response") or obj
     candidates = response.get("candidates") or []
@@ -396,9 +499,9 @@ def extract_parts_from_response(
 
     parts = candidates[0].get("content", {}).get("parts") or []
     finish_reason = candidates[0].get("finishReason") or candidates[0].get("finish_reason")
-    text_chunks: list[str] = []
-    thought_chunks: list[str] = []
-    tool_calls: list[dict] = []
+    text_chunks: List[str] = []
+    thought_chunks: List[str] = []
+    tool_calls: List[dict] = []
     seen_call_keys: set[str] = set()
 
     for part_idx, part in enumerate(parts):

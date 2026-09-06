@@ -18,6 +18,8 @@ class AnthropicMessagesRequest(BaseModel):
     metadata: Optional[Dict[str, Any]] = None
     tools: Optional[List[Dict[str, Any]]] = None
     tool_choice: Optional[Union[str, Dict[str, Any]]] = None
+    thought_as_text: Optional[bool] = None
+    include_thoughts: Optional[bool] = None
 
     model_config = {
         "json_schema_extra": {
@@ -25,9 +27,7 @@ class AnthropicMessagesRequest(BaseModel):
                 {
                     "model": "claude-sonnet-5",
                     "max_tokens": 1024,
-                    "messages": [
-                        {"role": "user", "content": "Hello, Claude"}
-                    ]
+                    "messages": [{"role": "user", "content": "Hello, Claude"}],
                 }
             ]
         }

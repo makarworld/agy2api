@@ -38,7 +38,7 @@ async def fake_chunk_text(text: str, chunk_size: int = 24, delay: float = 0.005)
     """Splits an already-complete response into small pieces for a simulated stream.
     Used by CLI transport, which has no real incremental output to relay."""
     for i in range(0, len(text), chunk_size):
-        yield text[i:i + chunk_size]
+        yield text[i : i + chunk_size]
         await asyncio.sleep(delay)
 
 
@@ -76,18 +76,14 @@ async def with_heartbeat(
                 pass
 
 
-async def _stream_warm(
-    messages: List[dict], system: Optional[str], model: Optional[str]
-) -> AsyncIterator[dict]:
+async def _stream_warm(messages: List[dict], system: Optional[str], model: Optional[str]) -> AsyncIterator[dict]:
     async for chunk in agy_session_pool.send_turn(
         model, messages, flatten_messages(system, messages), _pick_pool_account
     ):
         yield chunk
 
 
-async def _stream_cli(
-    messages: List[dict], system: Optional[str], model: Optional[str]
-) -> AsyncIterator[dict]:
+async def _stream_cli(messages: List[dict], system: Optional[str], model: Optional[str]) -> AsyncIterator[dict]:
     result = await run_agy_prompt(prompt=flatten_messages(system, messages), model=model)
     text = ""
     if isinstance(result, dict):
@@ -103,6 +99,7 @@ async def _stream_http(
     model: Optional[str],
     tools: Optional[List[dict]] = None,
     tool_choice: Optional[Any] = None,
+    thought_as_text: Optional[bool] = None,
 ) -> AsyncIterator[dict]:
     async for chunk in agy_http_client.stream_completion(
         messages=messages,
@@ -110,6 +107,7 @@ async def _stream_http(
         model=model,
         tools=tools,
         tool_choice=tool_choice,
+        thought_as_text=thought_as_text,
     ):
         yield chunk
 
@@ -120,6 +118,7 @@ async def _run_http_completion(
     model: Optional[str],
     tools: Optional[List[dict]] = None,
     tool_choice: Optional[Any] = None,
+    thought_as_text: Optional[bool] = None,
 ) -> dict:
     final: dict = {"text": "", "usage": {}, "tool_calls": [], "stop_reason": "end_turn"}
     async for chunk in agy_http_client.stream_completion(
@@ -128,6 +127,7 @@ async def _run_http_completion(
         model=model,
         tools=tools,
         tool_choice=tool_choice,
+        thought_as_text=thought_as_text,
     ):
         if "delta" in chunk:
             final["text"] += chunk["delta"]
@@ -213,11 +213,14 @@ async def run_agy_prompt(prompt: str, model: str = None, files: list[str] = None
     """
     cmd = [
         "agy",
-        "--input-format", "stream-json",
-        "--output-format", "stream-json",
+        "--input-format",
+        "stream-json",
+        "--output-format",
+        "stream-json",
         "--print=",
         "--dangerously-skip-permissions",
-        "--print-timeout", "10m",
+        "--print-timeout",
+        "10m",
     ]
 
     if model:
@@ -228,12 +231,17 @@ async def run_agy_prompt(prompt: str, model: str = None, files: list[str] = None
             # File paths are already injected into the prompt text by the caller.
             pass
 
-    stdin_message = json.dumps({
-        "event": "user",
-        "message": {"role": "user", "content": [{"type": "text", "text": prompt}]},
-    }) + "\n"
+    stdin_message = (
+        json.dumps(
+            {
+                "event": "user",
+                "message": {"role": "user", "content": [{"type": "text", "text": prompt}]},
+            }
+        )
+        + "\n"
+    )
 
-    safe_cmd_log = ' '.join(cmd)
+    safe_cmd_log = " ".join(cmd)
     logger.info(f"Executing AGY command: {safe_cmd_log}")
 
     returncode, stdout, stderr = await pool_manager.execute_agy(
@@ -260,12 +268,20 @@ async def run_completion(
     model: str = None,
     tools: Optional[List[dict]] = None,
     tool_choice: Optional[Any] = None,
+    thought_as_text: Optional[bool] = None,
 ) -> dict:
     """Structured-message entrypoint shared by /v1/chat/completions and /anthropic/v1/messages
     for non-streaming requests."""
     mode = transport()
     if mode == "http":
-        return await _run_http_completion(messages, system, model, tools=tools, tool_choice=tool_choice)
+        return await _run_http_completion(
+            messages,
+            system,
+            model,
+            tools=tools,
+            tool_choice=tool_choice,
+            thought_as_text=thought_as_text,
+        )
 
     if mode == "warm":
         cold_prompt = flatten_messages(system, messages)
@@ -284,11 +300,19 @@ async def stream_agy_completion(
     model: str = None,
     tools: Optional[List[dict]] = None,
     tool_choice: Optional[Any] = None,
+    thought_as_text: Optional[bool] = None,
 ) -> AsyncIterator[dict]:
     """Real streaming for warm/http transport; simulated streaming for cli."""
     mode = transport()
     if mode == "http":
-        async for chunk in _stream_http(messages, system, model, tools=tools, tool_choice=tool_choice):
+        async for chunk in _stream_http(
+            messages,
+            system,
+            model,
+            tools=tools,
+            tool_choice=tool_choice,
+            thought_as_text=thought_as_text,
+        ):
             yield chunk
         return
 

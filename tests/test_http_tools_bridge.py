@@ -240,7 +240,7 @@ class TestHttpToolsBridge(unittest.TestCase):
         self.assertEqual(len(tool_calls), 1)
         self.assertEqual(tool_calls[0]["name"], "Bash")
         self.assertEqual(tool_calls[0]["input"]["command"], "pwd")
-        self.assertTrue(tool_calls[0]["id"].startswith("call_fc1|"))
+        self.assertTrue(tool_calls[0]["id"].startswith("call_fc1__sig_") or tool_calls[0]["id"].startswith("call_fc1|"))
 
     def test_encode_without_backend_id_returns_empty(self):
         self.assertEqual(encode_tool_id(), "")
@@ -252,7 +252,7 @@ class TestHttpToolsBridge(unittest.TestCase):
 
     def test_stream_tool_call_key_stable_when_id_arrives_later(self):
         early = {"id": "", "name": "Read", "_stream_index": 0}
-        late = {"id": "call_call_3506260|sig", "name": "Read", "_stream_index": 0}
+        late = {"id": "call_call_3506260__sig_sig", "name": "Read", "_stream_index": 0}
         self.assertEqual(stream_tool_call_key(early), stream_tool_call_key(late))
 
     def test_extract_dedupes_duplicate_function_calls_in_one_chunk(self):
@@ -362,11 +362,11 @@ class TestHttpToolsBridge(unittest.TestCase):
         self.assertEqual(tool_calls[0]["name"], "Bash")
 
     def test_encode_decode_gemini_prefixed_id(self):
-        encoded = encode_tool_id("call_2235145", "sig")
-        self.assertEqual(encoded, "call_call_2235145|sig")
+        encoded = encode_tool_id("call_2235145", "sig1")
+        self.assertEqual(encoded, "call_call_2235145__sig_sig1")
         fc_id, sig = decode_tool_id(encoded)
         self.assertEqual(fc_id, "call_2235145")
-        self.assertEqual(sig, "sig")
+        self.assertEqual(sig, "sig1")
 
     def test_tool_result_resolves_name_from_assistant_history(self):
         messages = [

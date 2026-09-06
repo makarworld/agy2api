@@ -252,6 +252,7 @@ async def _stream_response(
     tools: list[dict] | None = None,
     tool_choice: Any | None = None,
     api_key: str | None = None,
+    thought_as_text: bool | None = None,
 ):
     msg_id = f"msg_{uuid.uuid4().hex[:24]}"
     fallback_prompt_tokens = max(1, sum(_message_char_len(m) for m in messages) // 4)
@@ -294,6 +295,7 @@ async def _stream_response(
                 model=agy_model,
                 tools=tools,
                 tool_choice=tool_choice,
+                thought_as_text=thought_as_text,
             )
         ):
             if piece is None:
@@ -588,6 +590,8 @@ async def create_message(
             }
         )
 
+    thought_param = req.thought_as_text if req.thought_as_text is not None else req.include_thoughts
+
     if req.stream:
         return StreamingResponse(
             _stream_response(
@@ -602,6 +606,7 @@ async def create_message(
                 tools=req.tools,
                 tool_choice=req.tool_choice,
                 api_key=api_key,
+                thought_as_text=thought_param,
             ),
             media_type="text/event-stream",
         )
@@ -613,6 +618,7 @@ async def create_message(
             model=agy_model,
             tools=req.tools,
             tool_choice=req.tool_choice,
+            thought_as_text=thought_param,
         )
     except Exception as e:
         logger.error(f"[anthropic] Message request exception ({type(e).__name__}): {e}")

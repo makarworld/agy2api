@@ -71,9 +71,10 @@ async def resolve_backend_model(requested: str) -> str:
 
 # Cloud Code Assist HTTP API uses different backend IDs than agy CLI slugs for some models.
 _HTTP_MODEL_MAP: dict[str, Tuple[str, Optional[str]]] = {
-    "gemini-3.8-flash-high": ("gemini-3.8-flash", "high"),
-    "gemini-3.8-flash": ("gemini-3.8-flash", "high"),
+    "gemini-3.8-flash": ("gemini-3.8-flash-high", None),
     "gemini-3.7-flash-high": ("gemini-3.7-flash-low", "high"),
+    "gemini-3.7-flash-medium": ("gemini-3.7-flash-low", "medium"),
+    "gemini-3.7-flash-low": ("gemini-3.7-flash-low", "low"),
     "gemini-3.7-flash": ("gemini-3.7-flash-low", "high"),
     "gemini-3.1-pro-high": ("gemini-3.1-pro-low", "high"),
     "gemini-3.1-pro": ("gemini-3.1-pro-low", "low"),
@@ -97,6 +98,12 @@ _LOCK = asyncio.Lock()
 
 # Safe fallback models if agy CLI fails or is unreachable
 FALLBACK_MODELS = [
+    "gemini-3.8-flash-high",
+    "Gemini 3.8 Flash (High)",
+    "gemini-3.8-flash-medium",
+    "Gemini 3.8 Flash (Medium)",
+    "gemini-3.8-flash-low",
+    "Gemini 3.8 Flash (Low)",
     "gemini-3.7-flash-high",
     "Gemini 3.7 Flash (High)",
     "gemini-3.7-flash-medium",
@@ -122,15 +129,9 @@ async def fetch_models_from_cli() -> List[Model]:
 
     try:
         if pool_manager.pool_enabled():
-            (
-                returncode,
-                stdout,
-                stderr,
-            ) = await pool_manager.run_agy_subprocess_without_pool(cmd, timeout=10.0)
+            returncode, stdout, stderr = await pool_manager.run_agy_subprocess_without_pool(cmd, timeout=10.0)
         else:
-            returncode, stdout, stderr = await pool_manager.execute_agy(
-                cmd, timeout=10.0
-            )
+            returncode, stdout, stderr = await pool_manager.execute_agy(cmd, timeout=10.0)
     except asyncio.TimeoutError:
         logger.error("Timeout fetching models from `agy models` CLI")
         return []
@@ -177,11 +178,7 @@ async def get_available_models(force_refresh: bool = False) -> List[Model]:
     models = await _get_available_models_cached(force_refresh)
     existing_ids = {m.id for m in models}
     created_ts = int(time.time())
-    alias_models = [
-        Model(id=alias, created=created_ts)
-        for alias in MODEL_ALIASES
-        if alias not in existing_ids
-    ]
+    alias_models = [Model(id=alias, created=created_ts) for alias in MODEL_ALIASES if alias not in existing_ids]
     return models + alias_models
 
 
@@ -189,21 +186,13 @@ async def _get_available_models_cached(force_refresh: bool = False) -> List[Mode
     global _CACHED_MODELS, _LAST_FETCH_TIME
 
     now = time.time()
-    if (
-        not force_refresh
-        and _CACHED_MODELS
-        and (now - _LAST_FETCH_TIME < _CACHE_TTL_SECONDS)
-    ):
+    if not force_refresh and _CACHED_MODELS and (now - _LAST_FETCH_TIME < _CACHE_TTL_SECONDS):
         return _CACHED_MODELS
 
     async with _LOCK:
         # Double check after acquiring lock
         now = time.time()
-        if (
-            not force_refresh
-            and _CACHED_MODELS
-            and (now - _LAST_FETCH_TIME < _CACHE_TTL_SECONDS)
-        ):
+        if not force_refresh and _CACHED_MODELS and (now - _LAST_FETCH_TIME < _CACHE_TTL_SECONDS):
             return _CACHED_MODELS
 
         models = await fetch_models_from_cli()
