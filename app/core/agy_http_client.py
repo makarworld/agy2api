@@ -10,7 +10,11 @@ import httpx
 from app.core.proxy_config import httpx_client_kwargs
 from app.core import oauth_refresh
 from app.core import pool_manager
-from app.core.cloudcode_common import LOAD_CODEASSIST_URL, STREAM_GENERATE_URL, cloudcode_headers
+from app.core.cloudcode_common import (
+    LOAD_CODEASSIST_URL,
+    STREAM_GENERATE_URL,
+    cloudcode_headers,
+)
 from app.core.http_tools_bridge import (
     anthropic_tools_to_gemini,
     extract_parts_from_response,
@@ -119,7 +123,9 @@ async def _get_project_id(
     if cached:
         return cached
 
-    async with httpx.AsyncClient(**httpx_client_kwargs(proxy=proxy, timeout=60.0)) as client:
+    async with httpx.AsyncClient(
+        **httpx_client_kwargs(proxy=proxy, timeout=60.0)
+    ) as client:
         response = await client.post(
             LOAD_CODEASSIST_URL,
             headers=cloudcode_headers(access_token),
@@ -127,13 +133,21 @@ async def _get_project_id(
         )
     if response.status_code == 401 and not _auth_retried:
         logger.warning("[http] loadCodeAssist 401 — forcing OAuth refresh and retrying")
-        access_token = await _refresh_after_401(access_token, account_id=account_id, proxy=proxy)
-        return await _get_project_id(access_token, account_id=account_id, proxy=proxy, _auth_retried=True)
+        access_token = await _refresh_after_401(
+            access_token, account_id=account_id, proxy=proxy
+        )
+        return await _get_project_id(
+            access_token, account_id=account_id, proxy=proxy, _auth_retried=True
+        )
     if response.status_code != 200:
-        raise RuntimeError(f"loadCodeAssist failed (HTTP {response.status_code}): {response.text[:500]}")
+        raise RuntimeError(
+            f"loadCodeAssist failed (HTTP {response.status_code}): {response.text[:500]}"
+        )
 
     payload = response.json()
-    project_raw = payload.get("cloudaicompanionProject") or _deep_find(payload, "cloudaicompanionProject")
+    project_raw = payload.get("cloudaicompanionProject") or _deep_find(
+        payload, "cloudaicompanionProject"
+    )
     project = _normalize_project_id(project_raw)
     _cached_project_ids[cache_key] = project
     return project
@@ -175,14 +189,12 @@ def _generation_config(
 
     if thinking_level:
         thinking_cfg["thinkingLevel"] = thinking_level
-    if backend_model.startswith("gemini-3.") and "flash" in backend_model and not tools_present:
-        thinking_cfg.setdefault("includeThoughts", True)
-        thinking_cfg.setdefault("thinkingBudget", -1)
-    elif tools_present:
+    if thought_as_text_enabled(tools_present=tools_present):
+        thinking_cfg["includeThoughts"] = True
+        thinking_cfg["thinkingBudget"] = -1
+    else:
         thinking_cfg["includeThoughts"] = False
         thinking_cfg["thinkingBudget"] = 0
-    elif thinking_level:
-        thinking_cfg.setdefault("includeThoughts", False)
 
     if thinking_cfg:
         gen_config["thinkingConfig"] = thinking_cfg
@@ -281,7 +293,9 @@ async def stream_completion(
     auth_retried = False
 
     while True:
-        contents = messages_to_gemini_contents(messages, trim_aggressive=trim_aggressive)
+        contents = messages_to_gemini_contents(
+            messages, trim_aggressive=trim_aggressive
+        )
         if not contents:
             raise RuntimeError("No user/assistant messages to send")
 
@@ -306,7 +320,9 @@ async def stream_completion(
         retried_auth = False
         rate_limit_detail: Optional[str] = None
 
-        async with httpx.AsyncClient(**httpx_client_kwargs(proxy=proxy, timeout=300.0)) as client:
+        async with httpx.AsyncClient(
+            **httpx_client_kwargs(proxy=proxy, timeout=300.0)
+        ) as client:
             async with client.stream(
                 "POST",
                 STREAM_GENERATE_URL,
@@ -319,7 +335,9 @@ async def stream_completion(
                         "[http] streamGenerateContent 401 — forcing OAuth refresh and retrying: %s",
                         detail,
                     )
-                    access_token = await _refresh_after_401(access_token, account_id=account_id, proxy=proxy)
+                    access_token = await _refresh_after_401(
+                        access_token, account_id=account_id, proxy=proxy
+                    )
                     auth_retried = True
                     retried_auth = True
                 elif response.status_code != 200:
@@ -329,7 +347,9 @@ async def stream_completion(
                     else:
                         if account_id:
                             await pool_manager.mark_failure(account_id)
-                        raise RuntimeError(f"streamGenerateContent failed (HTTP {response.status_code}): {detail}")
+                        raise RuntimeError(
+                            f"streamGenerateContent failed (HTTP {response.status_code}): {detail}"
+                        )
                 else:
                     async for line in response.aiter_lines():
                         if not line or not line.startswith("data:"):
@@ -343,13 +363,17 @@ async def stream_completion(
                             continue
 
                         last_sse_obj = obj
-                        usage_meta = obj.get("usageMetadata") or (obj.get("response") or {}).get("usageMetadata")
+                        usage_meta = obj.get("usageMetadata") or (
+                            obj.get("response") or {}
+                        ).get("usageMetadata")
                         if usage_meta:
                             final_usage = _map_usage(usage_meta)
 
-                        delta_text, tool_calls, finish_reason = extract_parts_from_response(
-                            obj,
-                            allow_thought_text=allow_thought_text,
+                        delta_text, tool_calls, finish_reason = (
+                            extract_parts_from_response(
+                                obj,
+                                allow_thought_text=allow_thought_text,
+                            )
                         )
                         if finish_reason:
                             last_finish_reason = finish_reason
@@ -357,7 +381,9 @@ async def stream_completion(
                             full_text += delta_text
                             yield {"delta": delta_text}
 
-                        new_calls = ingest_stream_tool_calls(tool_calls, pending_tool_calls)
+                        new_calls = ingest_stream_tool_calls(
+                            tool_calls, pending_tool_calls
+                        )
                         if new_calls:
                             yield {"tool_calls": new_calls}
 
@@ -365,9 +391,17 @@ async def stream_completion(
             cooldown = int(os.environ.get("AGY_POOL_COOLDOWN_SECONDS", "3600"))
             await pool_manager.mark_rate_limited(account_id, cooldown)
             excluded.add(account_id)
-            logger.warning("[http] account %s rate-limited, rotating: %s", account_id, rate_limit_detail[:200])
-            account_id, proxy, access_token = await pool_manager.acquire_http_account(exclude=excluded)
-            project_id = await _get_project_id(access_token, account_id=account_id, proxy=proxy)
+            logger.warning(
+                "[http] account %s rate-limited, rotating: %s",
+                account_id,
+                rate_limit_detail[:200],
+            )
+            account_id, proxy, access_token = await pool_manager.acquire_http_account(
+                exclude=excluded
+            )
+            project_id = await _get_project_id(
+                access_token, account_id=account_id, proxy=proxy
+            )
             continue
 
         if retried_auth:
@@ -395,12 +429,16 @@ async def stream_completion(
             error_msg = f"Gemini returned empty response (finishReason={last_finish_reason or 'unknown'})"
             logger.error("[http] %s", error_msg)
             empty_as_empty_content = (
-                os.environ.get("AGY_HTTP_EMPTY_AS_EMPTY_CONTENT", "true").lower() in ("true", "1", "yes")
+                os.environ.get("AGY_HTTP_EMPTY_AS_EMPTY_CONTENT", "true").lower()
+                in ("true", "1", "yes")
                 if last_finish_reason == "STOP"
-                else os.environ.get("AGY_HTTP_EMPTY_AS_EMPTY_CONTENT", "false").lower() in ("true", "1", "yes")
+                else os.environ.get("AGY_HTTP_EMPTY_AS_EMPTY_CONTENT", "false").lower()
+                in ("true", "1", "yes")
             )
             if empty_as_empty_content:
-                logger.info("[http] returning empty content [] with stop_reason=end_turn")
+                logger.info(
+                    "[http] returning empty content [] with stop_reason=end_turn"
+                )
                 yield {
                     "usage": final_usage,
                     "text": "",
