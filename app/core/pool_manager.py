@@ -46,6 +46,9 @@ RATE_LIMIT_SIGNALS: List[str] = [
     "quota exceeded",
     "rate limit",
     "too many requests",
+    "validation_required",
+    "verify your account",
+    "permission_denied",
 ]
 
 _LOCK = asyncio.Lock()

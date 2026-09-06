@@ -140,7 +140,7 @@ async def _get_project_id(
 
 
 def _is_rate_limited(status_code: int, detail: str) -> bool:
-    if status_code == 429:
+    if status_code in (429, 403):
         return True
     lowered = detail.lower()
     return any(sig in lowered for sig in pool_manager.RATE_LIMIT_SIGNALS)
