@@ -306,6 +306,7 @@ async def stream_completion(
         last_sse_obj: Optional[dict] = None
         retried_auth = False
         rate_limit_detail: Optional[str] = None
+        in_think_block = False
 
         async with httpx.AsyncClient(**httpx_client_kwargs(proxy=proxy, timeout=300.0)) as client:
             async with client.stream(
@@ -354,13 +355,34 @@ async def stream_completion(
                         )
                         if finish_reason:
                             last_finish_reason = finish_reason
+
+                        # Wrap thinking text in <think>...</think> when thought_as_text is enabled
+                        candidates = (obj.get("response") or obj).get("candidates") or []
+                        parts = candidates[0].get("content", {}).get("parts") if candidates else []
+                        is_thought_chunk = bool(parts and isinstance(parts[0], dict) and parts[0].get("thought"))
+
                         if delta_text:
+                            if allow_thought_text:
+                                if is_thought_chunk and not in_think_block:
+                                    in_think_block = True
+                                    yield {"delta": "<think>\n"}
+                                    full_text += "<think>\n"
+                                elif not is_thought_chunk and in_think_block:
+                                    in_think_block = False
+                                    yield {"delta": "\n</think>\n\n"}
+                                    full_text += "\n</think>\n\n"
+
                             full_text += delta_text
                             yield {"delta": delta_text}
 
                         new_calls = ingest_stream_tool_calls(tool_calls, pending_tool_calls)
                         if new_calls:
                             yield {"tool_calls": new_calls}
+
+        if in_think_block:
+            in_think_block = False
+            yield {"delta": "\n</think>\n\n"}
+            full_text += "\n</think>\n\n"
 
         if rate_limit_detail is not None:
             cooldown = int(os.environ.get("AGY_POOL_COOLDOWN_SECONDS", "3600"))
