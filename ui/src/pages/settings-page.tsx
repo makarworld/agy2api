@@ -11,25 +11,34 @@ interface ModelAliasRow {
 }
 
 function parseAliasesString(raw: string): ModelAliasRow[] {
-  if (!raw || !raw.trim()) return [];
-  const trimmed = raw.trim();
+  let parsed: ModelAliasRow[] = [];
+  const trimmed = (raw || '').trim();
   if (trimmed.startsWith('{')) {
     try {
       const obj = JSON.parse(trimmed);
-      return Object.entries(obj).map(([alias, target]) => ({ alias, target: String(target) }));
+      parsed = Object.entries(obj).map(([alias, target]) => ({ alias, target: String(target) }));
     } catch {
-      // fallback to comma-separated
+      // fallback
     }
+  } else if (trimmed) {
+    parsed = trimmed
+      .split(',')
+      .map((item) => item.trim())
+      .filter((item) => item.includes('='))
+      .map((item) => {
+        const [alias, ...rest] = item.split('=');
+        return { alias: alias.trim(), target: rest.join('=').trim() };
+      })
+      .filter((row) => row.alias && row.target);
   }
-  return trimmed
-    .split(',')
-    .map((item) => item.trim())
-    .filter((item) => item.includes('='))
-    .map((item) => {
-      const [alias, ...rest] = item.split('=');
-      return { alias: alias.trim(), target: rest.join('=').trim() };
-    })
-    .filter((row) => row.alias && row.target);
+
+  // Ensure default max-gem is present as first row if not already defined
+  const hasMaxGem = parsed.some((r) => r.alias === 'max-gem');
+  if (!hasMaxGem) {
+    parsed.unshift({ alias: 'max-gem', target: 'gemini-3.8-flash-high' });
+  }
+
+  return parsed;
 }
 
 function serializeAliases(rows: ModelAliasRow[]): string {
@@ -43,6 +52,7 @@ export function SettingsPage() {
   const { apiKey } = useApiKey();
   const [settings, setSettings] = useState<Record<string, any>>({});
   const [aliases, setAliases] = useState<ModelAliasRow[]>([]);
+  const [availableModels, setAvailableModels] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [statusMsg, setStatusMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
@@ -56,12 +66,23 @@ export function SettingsPage() {
     setLoading(true);
     setStatusMsg(null);
     try {
-      const res = await fetch(apiUrl('/v1/settings'), { headers: authHeaders });
-      if (!res.ok) throw new Error('Не удалось загрузить настройки');
-      const data = await res.json();
+      const [resSettings, resModels] = await Promise.all([
+        fetch(apiUrl('/v1/settings'), { headers: authHeaders }),
+        fetch(apiUrl('/v1/models'), { headers: authHeaders }).catch(() => null),
+      ]);
+      if (!resSettings.ok) throw new Error('Не удалось загрузить настройки');
+      const data = await resSettings.json();
       const loaded = data.settings || {};
       setSettings(loaded);
       setAliases(parseAliasesString(loaded.AGY_MODEL_ALIASES || ''));
+
+      if (resModels && resModels.ok) {
+        const mData = await resModels.json();
+        const mList = (mData.data || [])
+          .map((m: any) => m.id)
+          .filter((id: string) => !id.includes(' ')); // only clean model slugs
+        setAvailableModels(mList);
+      }
     } catch (err: any) {
       setStatusMsg({ type: 'error', text: err.message });
     } finally {
@@ -234,18 +255,6 @@ export function SettingsPage() {
               type="checkbox"
               checked={!!settings.AGY_POOL_ENABLED}
               onChange={() => handleToggle('AGY_POOL_ENABLED')}
-              className="w-5 h-5 rounded accent-primary cursor-pointer"
-            />
-          </div>
-          <div className="flex items-center justify-between py-1">
-            <div>
-              <div className="text-sm font-medium">AGY_POOL_GIT_AUTOSYNC</div>
-              <div className="text-xs text-muted-foreground">Автоматическая синхронизация через Git</div>
-            </div>
-            <input
-              type="checkbox"
-              checked={!!settings.AGY_POOL_GIT_AUTOSYNC}
-              onChange={() => handleToggle('AGY_POOL_GIT_AUTOSYNC')}
               className="w-5 h-5 rounded accent-primary cursor-pointer"
             />
           </div>
@@ -430,12 +439,21 @@ export function SettingsPage() {
                     />
                   </div>
                   <div className="col-span-6">
-                    <Input
+                    <select
                       value={row.target}
                       onChange={(e) => handleAliasChange(idx, 'target', e.target.value)}
-                      placeholder="e.g. gemini-3.8-flash-high, claude-sonnet-4-6"
-                      className="font-mono text-xs"
-                    />
+                      className="w-full h-9 rounded-md border border-input bg-background px-3 py-1 font-mono text-xs shadow-xs transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                    >
+                      <option value="">Выберите модель...</option>
+                      {availableModels.map((mId) => (
+                        <option key={mId} value={mId}>
+                          {mId}
+                        </option>
+                      ))}
+                      {row.target && !availableModels.includes(row.target) && (
+                        <option value={row.target}>{row.target} (кастомная)</option>
+                      )}
+                    </select>
                   </div>
                   <div className="col-span-1 flex justify-end">
                     <Button
