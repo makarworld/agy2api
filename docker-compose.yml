@@ -20,5 +20,5 @@ services:
 
 networks:
   default:
-    name: voicebot_network
+    name: voicebot_default
     external: true
