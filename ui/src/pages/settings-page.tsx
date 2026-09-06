@@ -1,13 +1,48 @@
 import { useState, useEffect } from 'react';
-import { Settings as SettingsIcon, Save, RefreshCw, CheckCircle2, AlertCircle } from 'lucide-react';
+import { Settings as SettingsIcon, Save, RefreshCw, CheckCircle2, AlertCircle, Plus, Trash2 } from 'lucide-react';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { useApiKey } from '../hooks/use-api-key';
 import { apiUrl } from '../lib/api';
 
+interface ModelAliasRow {
+  alias: string;
+  target: string;
+}
+
+function parseAliasesString(raw: string): ModelAliasRow[] {
+  if (!raw || !raw.trim()) return [];
+  const trimmed = raw.trim();
+  if (trimmed.startsWith('{')) {
+    try {
+      const obj = JSON.parse(trimmed);
+      return Object.entries(obj).map(([alias, target]) => ({ alias, target: String(target) }));
+    } catch {
+      // fallback to comma-separated
+    }
+  }
+  return trimmed
+    .split(',')
+    .map((item) => item.trim())
+    .filter((item) => item.includes('='))
+    .map((item) => {
+      const [alias, ...rest] = item.split('=');
+      return { alias: alias.trim(), target: rest.join('=').trim() };
+    })
+    .filter((row) => row.alias && row.target);
+}
+
+function serializeAliases(rows: ModelAliasRow[]): string {
+  return rows
+    .filter((r) => r.alias.trim() && r.target.trim())
+    .map((r) => `${r.alias.trim()}=${r.target.trim()}`)
+    .join(', ');
+}
+
 export function SettingsPage() {
   const { apiKey } = useApiKey();
   const [settings, setSettings] = useState<Record<string, any>>({});
+  const [aliases, setAliases] = useState<ModelAliasRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [statusMsg, setStatusMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
@@ -24,7 +59,9 @@ export function SettingsPage() {
       const res = await fetch(apiUrl('/v1/settings'), { headers: authHeaders });
       if (!res.ok) throw new Error('Не удалось загрузить настройки');
       const data = await res.json();
-      setSettings(data.settings || {});
+      const loaded = data.settings || {};
+      setSettings(loaded);
+      setAliases(parseAliasesString(loaded.AGY_MODEL_ALIASES || ''));
     } catch (err: any) {
       setStatusMsg({ type: 'error', text: err.message });
     } finally {
@@ -42,6 +79,31 @@ export function SettingsPage() {
 
   const handleChange = (key: string, val: string) => {
     setSettings((prev) => ({ ...prev, [key]: val }));
+  };
+
+  const handleAliasChange = (index: number, field: 'alias' | 'target', value: string) => {
+    setAliases((prev) => {
+      const copy = [...prev];
+      copy[index] = { ...copy[index], [field]: value };
+      setSettings((s) => ({ ...s, AGY_MODEL_ALIASES: serializeAliases(copy) }));
+      return copy;
+    });
+  };
+
+  const handleAddAlias = () => {
+    setAliases((prev) => {
+      const updated = [...prev, { alias: '', target: '' }];
+      setSettings((s) => ({ ...s, AGY_MODEL_ALIASES: serializeAliases(updated) }));
+      return updated;
+    });
+  };
+
+  const handleRemoveAlias = (index: number) => {
+    setAliases((prev) => {
+      const updated = prev.filter((_, i) => i !== index);
+      setSettings((s) => ({ ...s, AGY_MODEL_ALIASES: serializeAliases(updated) }));
+      return updated;
+    });
   };
 
   const handleSave = async () => {
@@ -321,6 +383,76 @@ export function SettingsPage() {
               className="mt-1 font-mono text-sm"
             />
           </div>
+        </div>
+
+        {/* Group 5: Custom Model Aliases */}
+        <div className="border rounded-xl p-5 bg-card space-y-4">
+          <div className="flex items-center justify-between border-b pb-2">
+            <div>
+              <h2 className="text-sm font-semibold tracking-wide uppercase text-muted-foreground">
+                Собственные алиасы моделей
+              </h2>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                Задайте псевдоним (алиас), по которому клиенты могут обращаться к целевой модели бэкенда.
+              </p>
+            </div>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={handleAddAlias}
+              className="gap-1 text-xs"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              Добавить алиас
+            </Button>
+          </div>
+
+          {aliases.length === 0 ? (
+            <div className="text-center py-4 text-xs text-muted-foreground border border-dashed rounded-lg">
+              Пользовательские алиасы не настроены. Нажмите «Добавить алиас» выше.
+            </div>
+          ) : (
+            <div className="space-y-2.5">
+              <div className="grid grid-cols-12 gap-2 text-xs font-medium text-muted-foreground px-1">
+                <div className="col-span-5">Алиас (что шлёт клиент)</div>
+                <div className="col-span-6">Целевая модель бэкенда</div>
+                <div className="col-span-1 text-right">Удалить</div>
+              </div>
+              {aliases.map((row, idx) => (
+                <div key={idx} className="grid grid-cols-12 gap-2 items-center">
+                  <div className="col-span-5">
+                    <Input
+                      value={row.alias}
+                      onChange={(e) => handleAliasChange(idx, 'alias', e.target.value)}
+                      placeholder="e.g. gpt-4o, my-model"
+                      className="font-mono text-xs"
+                    />
+                  </div>
+                  <div className="col-span-6">
+                    <Input
+                      value={row.target}
+                      onChange={(e) => handleAliasChange(idx, 'target', e.target.value)}
+                      placeholder="e.g. gemini-3.8-flash-high, claude-sonnet-4-6"
+                      className="font-mono text-xs"
+                    />
+                  </div>
+                  <div className="col-span-1 flex justify-end">
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => handleRemoveAlias(idx)}
+                      className="h-8 w-8 p-0 text-muted-foreground hover:text-destructive"
+                      title="Удалить"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </Button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       </div>
     </div>

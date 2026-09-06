@@ -12,9 +12,66 @@ logger = logging.getLogger(__name__)
 # model IDs (e.g. Cursor silently routes recognized model names through its own
 # subscription instead of hitting the configured custom base URL). Add more
 # pairs here as needed.
-MODEL_ALIASES = {
+DEFAULT_MODEL_ALIASES = {
     "max-gem": "gemini-3.8-flash-high",
 }
+
+
+class _ModelAliasesDict(dict):
+    """Dynamic dict that includes defaults, runtime overrides, and AGY_MODEL_ALIASES."""
+
+    def _all_aliases(self) -> dict:
+        combined = dict(DEFAULT_MODEL_ALIASES)
+        env_raw = os.environ.get("AGY_MODEL_ALIASES", "").strip()
+        if env_raw:
+            # Supports JSON {"alias": "target"} or comma-separated "alias=target, alias2=target2"
+            if env_raw.startswith("{"):
+                try:
+                    import json
+
+                    parsed = json.loads(env_raw)
+                    if isinstance(parsed, dict):
+                        for k, v in parsed.items():
+                            if k and v:
+                                combined[str(k).strip()] = str(v).strip()
+                except Exception:
+                    pass
+            else:
+                for item in env_raw.split(","):
+                    item = item.strip()
+                    if "=" in item:
+                        k, v = item.split("=", 1)
+                        if k.strip() and v.strip():
+                            combined[k.strip()] = v.strip()
+        combined.update(super().copy())
+        return combined
+
+    def __getitem__(self, key):
+        return self._all_aliases()[key]
+
+    def get(self, key, default=None):
+        return self._all_aliases().get(key, default)
+
+    def __contains__(self, key):
+        return key in self._all_aliases()
+
+    def __iter__(self):
+        return iter(self._all_aliases())
+
+    def __len__(self):
+        return len(self._all_aliases())
+
+    def items(self):
+        return self._all_aliases().items()
+
+    def keys(self):
+        return self._all_aliases().keys()
+
+    def values(self):
+        return self._all_aliases().values()
+
+
+MODEL_ALIASES = _ModelAliasesDict()
 
 
 def resolve_model_alias(name: str) -> str:
