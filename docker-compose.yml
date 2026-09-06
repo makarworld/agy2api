@@ -13,6 +13,7 @@ services:
     volumes:
       - ./app/data:/app/app/data
       - ~/.gemini:/root/.gemini
+      - ~/.agy2api-pool:/root/.agy2api-pool
     ports:
       - "127.0.0.1:${AGY2API_PORT:-8008}:8008"
     networks:
