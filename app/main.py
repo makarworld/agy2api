@@ -2,12 +2,11 @@ import asyncio
 import logging
 import os
 import shutil
-import sys
 import time
 import uuid
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -29,7 +28,9 @@ logger = logging.getLogger(__name__)
 async def agy_garbage_collector():
     brain_dir = os.path.expanduser("~/.gemini/antigravity-cli/brain")
     max_age_seconds = 24 * 3600  # 24 hours
-    stats_retention_seconds = int(os.environ.get("AGY_STATS_TEXT_RETENTION_SECONDS", 30 * 86400))
+    stats_retention_seconds = int(
+        os.environ.get("AGY_STATS_TEXT_RETENTION_SECONDS", 30 * 86400)
+    )
 
     while True:
         try:
@@ -38,9 +39,14 @@ async def agy_garbage_collector():
                 now = time.time()
                 for folder in os.listdir(brain_dir):
                     folder_path = os.path.join(brain_dir, folder)
-                    if os.path.isdir(folder_path) and now - os.path.getmtime(folder_path) > max_age_seconds:
+                    if (
+                        os.path.isdir(folder_path)
+                        and now - os.path.getmtime(folder_path) > max_age_seconds
+                    ):
                         shutil.rmtree(folder_path, ignore_errors=True)
-                        print(f"[Garbage Collector] Deleted old conversation log: {folder}")
+                        print(
+                            f"[Garbage Collector] Deleted old conversation log: {folder}"
+                        )
             # 2. Prune old prompt/response text in stats DB (> 30 days), preserving count/tokens/status/errors
             await stats_store.prune_old_request_previews(stats_retention_seconds)
         except Exception as e:
@@ -100,7 +106,11 @@ app.include_router(mcp_router)
 @app.exception_handler(HTTPException)
 async def anthropic_style_http_exception_handler(request: Request, exc: HTTPException):
     if request.url.path.startswith("/anthropic/"):
-        error_type = "authentication_error" if exc.status_code == 401 else "invalid_request_error"
+        error_type = (
+            "authentication_error"
+            if exc.status_code == 401
+            else "invalid_request_error"
+        )
         return JSONResponse(
             status_code=exc.status_code,
             content={
@@ -147,12 +157,45 @@ ui_candidates = [
 ui_dist = next((p for p in ui_candidates if os.path.exists(p)), ui_candidates[0])
 
 
+def _check_ui_access(request: Request) -> bool:
+    code = (os.getenv("ADMIN_ACCESS_CODE") or os.getenv("ADMIN_ACCESS") or "").strip()
+    if not code:
+        return True
+    param = (
+        request.query_params.get("access")
+        or request.headers.get("x-admin-access")
+        or ""
+    ).strip()
+    return param == code
+
+
+def _not_found_response() -> Response:
+    return Response(status_code=404, content="404 Not Found", media_type="text/plain")
+
+
 @app.get("/")
-async def root_index():
+async def root_index(request: Request):
+    if not _check_ui_access(request):
+        return _not_found_response()
     index_path = os.path.join(ui_dist, "index.html")
     if os.path.exists(index_path):
         return FileResponse(index_path)
-    return JSONResponse(status_code=404, content={"detail": f"UI not built, checked: {ui_candidates}"})
+    return JSONResponse(
+        status_code=404, content={"detail": f"UI not built, checked: {ui_candidates}"}
+    )
+
+
+@app.get("/admin")
+@app.get("/ui")
+async def admin_ui_alias(request: Request):
+    if not _check_ui_access(request):
+        return _not_found_response()
+    index_path = os.path.join(ui_dist, "index.html")
+    if os.path.exists(index_path):
+        return FileResponse(index_path)
+    return JSONResponse(
+        status_code=404, content={"detail": f"UI not built, checked: {ui_candidates}"}
+    )
 
 
 @app.exception_handler(404)
@@ -160,7 +203,11 @@ async def spa_fallback_handler(request: Request, exc):
     # React Router routes (e.g. /stats, /pool) have no matching file on disk --
     # StaticFiles 404s on those. Serve index.html so the client-side router can
     # take over, for any GET that isn't an API call.
-    if request.method == "GET" and not request.url.path.startswith(("/v1/", "/anthropic/", "/health")):
+    if request.method == "GET" and not request.url.path.startswith(
+        ("/v1/", "/anthropic/", "/health")
+    ):
+        if not _check_ui_access(request):
+            return _not_found_response()
         index_path = os.path.join(ui_dist, "index.html")
         if os.path.exists(index_path):
             return FileResponse(index_path)
