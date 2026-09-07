@@ -73,8 +73,13 @@ export function SettingsPage() {
       if (!resSettings.ok) throw new Error('Не удалось загрузить настройки');
       const data = await resSettings.json();
       const loaded = data.settings || {};
-      setSettings(loaded);
-      setAliases(parseAliasesString(loaded.AGY_MODEL_ALIASES || ''));
+      const parsedAliases = parseAliasesString(loaded.AGY_MODEL_ALIASES || '');
+      setAliases(parsedAliases);
+      // Ensure serialized string is present in settings state right away
+      setSettings({
+        ...loaded,
+        AGY_MODEL_ALIASES: serializeAliases(parsedAliases),
+      });
 
       if (resModels && resModels.ok) {
         const mData = await resModels.json();
@@ -131,15 +136,20 @@ export function SettingsPage() {
     setSaving(true);
     setStatusMsg(null);
     try {
+      const payload = {
+        ...settings,
+        AGY_MODEL_ALIASES: serializeAliases(aliases),
+      };
       const res = await fetch(apiUrl('/v1/settings'), {
         method: 'PUT',
         headers: authHeaders,
-        body: JSON.stringify({ settings }),
+        body: JSON.stringify({ settings: payload }),
       });
       if (!res.ok) {
         const data = await res.json();
         throw new Error(data.detail || 'Ошибка сохранения настроек');
       }
+      setSettings(payload);
       setStatusMsg({ type: 'success', text: 'Настройки успешно применены и сохранены в .env' });
     } catch (err: any) {
       setStatusMsg({ type: 'error', text: err.message });
