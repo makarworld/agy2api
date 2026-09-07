@@ -404,24 +404,8 @@ async def _stream_response(
             response_preview=f"Error: {err_str}",
         )
         if not assistant_chunks and not tool_calls_collected:
-            if not text_block_open:
-                yield _sse(
-                    "content_block_start",
-                    {
-                        "type": "content_block_start",
-                        "index": 0,
-                        "content_block": {"type": "text", "text": ""},
-                    },
-                )
-                text_block_open = True
-            yield _sse(
-                "content_block_delta",
-                {
-                    "type": "content_block_delta",
-                    "index": 0,
-                    "delta": {"type": "text_delta", "text": f"Error: {err_str}"},
-                },
-            )
+            # Drop connection so client retries instead of treating error text as assistant message
+            raise
         if text_block_open:
             yield _sse("content_block_stop", {"type": "content_block_stop", "index": 0})
 

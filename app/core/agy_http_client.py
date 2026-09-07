@@ -309,75 +309,87 @@ async def stream_completion(
         in_think_block = False
 
         async with httpx.AsyncClient(**httpx_client_kwargs(proxy=proxy, timeout=300.0)) as client:
-            async with client.stream(
-                "POST",
-                STREAM_GENERATE_URL,
-                headers=cloudcode_headers(access_token, streaming=True),
-                json=body,
-            ) as response:
-                if response.status_code == 401 and not auth_retried:
-                    detail = (await response.aread()).decode(errors="replace")[:200]
-                    logger.warning(
-                        "[http] streamGenerateContent 401 — forcing OAuth refresh and retrying: %s",
-                        detail,
-                    )
-                    access_token = await _refresh_after_401(access_token, account_id=account_id, proxy=proxy)
-                    auth_retried = True
-                    retried_auth = True
-                elif response.status_code != 200:
-                    detail = (await response.aread()).decode(errors="replace")[:500]
-                    if account_id and _is_rate_limited(response.status_code, detail):
-                        rate_limit_detail = detail
-                    else:
-                        if account_id:
-                            await pool_manager.mark_failure(account_id)
-                        raise RuntimeError(f"streamGenerateContent failed (HTTP {response.status_code}): {detail}")
-                else:
-                    async for line in response.aiter_lines():
-                        if not line or not line.startswith("data:"):
-                            continue
-                        raw = line[5:].strip()
-                        if not raw or raw == "[DONE]":
-                            continue
-                        try:
-                            obj = json.loads(raw)
-                        except json.JSONDecodeError:
-                            continue
-
-                        last_sse_obj = obj
-                        usage_meta = obj.get("usageMetadata") or (obj.get("response") or {}).get("usageMetadata")
-                        if usage_meta:
-                            final_usage = _map_usage(usage_meta)
-
-                        delta_text, tool_calls, finish_reason = extract_parts_from_response(
-                            obj,
-                            allow_thought_text=allow_thought_text,
+            try:
+                async with client.stream(
+                    "POST",
+                    STREAM_GENERATE_URL,
+                    headers=cloudcode_headers(access_token, streaming=True),
+                    json=body,
+                ) as response:
+                    if response.status_code == 401 and not auth_retried:
+                        detail = (await response.aread()).decode(errors="replace")[:200]
+                        logger.warning(
+                            "[http] streamGenerateContent 401 — forcing OAuth refresh and retrying: %s",
+                            detail,
                         )
-                        if finish_reason:
-                            last_finish_reason = finish_reason
+                        access_token = await _refresh_after_401(access_token, account_id=account_id, proxy=proxy)
+                        auth_retried = True
+                        retried_auth = True
+                    elif response.status_code != 200:
+                        detail = (await response.aread()).decode(errors="replace")[:500]
+                        if account_id and _is_rate_limited(response.status_code, detail):
+                            rate_limit_detail = detail
+                        else:
+                            if account_id:
+                                await pool_manager.mark_failure(account_id)
+                            raise RuntimeError(f"streamGenerateContent failed (HTTP {response.status_code}): {detail}")
+                    else:
+                        async for line in response.aiter_lines():
+                            if not line or not line.startswith("data:"):
+                                continue
+                            raw = line[5:].strip()
+                            if not raw or raw == "[DONE]":
+                                continue
+                            try:
+                                obj = json.loads(raw)
+                            except json.JSONDecodeError:
+                                continue
 
-                        # Wrap thinking text in <think>...</think> when thought_as_text is enabled
-                        candidates = (obj.get("response") or obj).get("candidates") or []
-                        parts = candidates[0].get("content", {}).get("parts") if candidates else []
-                        is_thought_chunk = bool(parts and isinstance(parts[0], dict) and parts[0].get("thought"))
+                            last_sse_obj = obj
+                            usage_meta = obj.get("usageMetadata") or (obj.get("response") or {}).get("usageMetadata")
+                            if usage_meta:
+                                final_usage = _map_usage(usage_meta)
 
-                        if delta_text:
-                            if allow_thought_text:
-                                if is_thought_chunk and not in_think_block:
-                                    in_think_block = True
-                                    yield {"delta": "<think>\n"}
-                                    full_text += "<think>\n"
-                                elif not is_thought_chunk and in_think_block:
-                                    in_think_block = False
-                                    yield {"delta": "\n</think>\n\n"}
-                                    full_text += "\n</think>\n\n"
+                            delta_text, tool_calls, finish_reason = extract_parts_from_response(
+                                obj,
+                                allow_thought_text=allow_thought_text,
+                            )
+                            if finish_reason:
+                                last_finish_reason = finish_reason
 
-                            full_text += delta_text
-                            yield {"delta": delta_text}
+                            # Wrap thinking text in <think>...</think> when thought_as_text is enabled
+                            candidates = (obj.get("response") or obj).get("candidates") or []
+                            parts = candidates[0].get("content", {}).get("parts") if candidates else []
+                            is_thought_chunk = bool(parts and isinstance(parts[0], dict) and parts[0].get("thought"))
 
-                        new_calls = ingest_stream_tool_calls(tool_calls, pending_tool_calls)
-                        if new_calls:
-                            yield {"tool_calls": new_calls}
+                            if delta_text:
+                                if allow_thought_text:
+                                    if is_thought_chunk and not in_think_block:
+                                        in_think_block = True
+                                        yield {"delta": "<think>\n"}
+                                        full_text += "<think>\n"
+                                    elif not is_thought_chunk and in_think_block:
+                                        in_think_block = False
+                                        yield {"delta": "\n</think>\n\n"}
+                                        full_text += "\n</think>\n\n"
+
+                                full_text += delta_text
+                                yield {"delta": delta_text}
+
+                            new_calls = ingest_stream_tool_calls(tool_calls, pending_tool_calls)
+                            if new_calls:
+                                yield {"tool_calls": new_calls}
+            except (httpx.ConnectError, httpx.ConnectTimeout, httpx.RemoteProtocolError) as net_err:
+                logger.warning("[http] network/connection error on account %s: %s", account_id, net_err)
+                if account_id:
+                    excluded.add(account_id)
+                    try:
+                        account_id, proxy, access_token = await pool_manager.acquire_http_account(exclude=excluded)
+                        project_id = await _get_project_id(access_token, account_id=account_id, proxy=proxy)
+                        continue
+                    except Exception:
+                        pass
+                raise
 
         if in_think_block:
             in_think_block = False

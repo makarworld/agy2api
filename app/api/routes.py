@@ -303,6 +303,8 @@ async def _openai_stream(
             prompt_preview=prompt_preview,
             response_preview=f"Error: {err_str}",
         )
+        if not assistant_chunks:
+            raise
         yield f"data: {json.dumps(_chunk({'content': f'Error: {err_str}'}))}\n\n"
         yield f"data: {json.dumps(_chunk({}, finish_reason='stop'))}\n\n"
         yield "data: [DONE]\n\n"
