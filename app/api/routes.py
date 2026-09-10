@@ -7,7 +7,16 @@ import time
 import uuid
 from typing import Any, List, Optional
 
-from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, Request, UploadFile
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Request,
+    UploadFile,
+)
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -21,8 +30,8 @@ from app.api.models import (
     Usage,
 )
 from app.core import pool_manager, stats_store
+from app.core import agy_http_client
 from app.core.agy_runner import (
-    run_agy_prompt,
     run_completion,
     stream_agy_completion,
     with_heartbeat,
@@ -36,7 +45,7 @@ from app.core.model_manager import (
     resolve_backend_model,
 )
 from app.core.response_cache import get_cached_response, put_cached_response
-from app.core.security import get_api_key
+from app.core.security import get_api_key, get_optional_api_key
 
 logger = logging.getLogger(__name__)
 
@@ -49,10 +58,12 @@ class ImageGenerationRequest(BaseModel):
         ...,
         description="A text description of the desired image(s). (Tips: You can include desired aspect ratios here like 9:16 or 16:9)",
     )
+    model: str | None = Field(None, description="Image model name override (default gemini-3.1-flash-image)")
     n: int | None = Field(1, description="The number of images to generate")
+    size: str | None = Field(None, description="Image aspect ratio or size, e.g. 1:1, 4:3, 16:9, 9:16")
     response_format: str | None = Field(
         "url",
-        description="The format in which the generated images are returned. Must be one of url or b64_json",
+        description="The format in which the generated images are returned. Must be one of url, b64_json or binary",
     )
     reference_images: list[str] | None = Field(
         None,
@@ -510,26 +521,24 @@ async def chat_completions(
     return response
 
 
-@router.post(
-    "/images/generations",
-    response_model=ImageGenerationResponse,
-    summary="Image Generations",
-    description="Creates an image given a prompt using the AGY artist skills.",
-)
-async def generate_image(
-    req: ImageGenerationRequest,
-    background_tasks: BackgroundTasks,
-    request: Request,
-    api_key: str = Depends(get_api_key),
+async def _process_image_generation(
+    prompt: str,
+    *,
+    model: str | None = None,
+    size: str | None = None,
+    response_format: str | None = "url",
+    reference_images: list[str] | None = None,
+    background_tasks: BackgroundTasks | None = None,
+    api_key: str | None = None,
 ):
-    logger.info(f"Generating image. Prompt: {req.prompt[:50]}...")
     start_time = time.time()
     file_mgr = TempFileManager()
-    background_tasks.add_task(file_mgr.cleanup)
+    if background_tasks:
+        background_tasks.add_task(file_mgr.cleanup)
 
     ref_paths = []
-    if req.reference_images:
-        for url in req.reference_images:
+    if reference_images:
+        for url in reference_images:
             if url.startswith("data:"):
                 ext = ".png"
                 if "jpeg" in url or "jpg" in url:
@@ -540,25 +549,44 @@ async def generate_image(
                 except Exception:
                     pass
 
-    prompt = f"Generate an image for the following prompt: '{req.prompt}'. Return ONLY the absolute local file path of the generated image in your response, do not include any other conversational text."
-
-    if ref_paths:
-        paths_str = ", ".join([f"'{p}'" for p in ref_paths])
-        prompt = f"Use the reference images at {paths_str} to generate an image for the following prompt: '{req.prompt}'. Return ONLY the absolute local file path of the generated image in your response, do not include any other conversational text."
-
+    import base64
     import hashlib
 
-    img_chat_id = "img_" + hashlib.sha256(req.prompt.encode("utf-8", errors="replace")).hexdigest()[:12]
-    img_title = f"Image: {req.prompt.strip().replace(chr(10), ' ')[:80]}"
+    reference_parts: list[dict] = []
+    for path in ref_paths:
+        try:
+            with open(path, "rb") as f:
+                raw = f.read()
+            ext = os.path.splitext(path)[1].lower()
+            mime_type = "image/jpeg" if ext in (".jpg", ".jpeg") else "image/png"
+            reference_parts.append(
+                {
+                    "inlineData": {
+                        "mimeType": mime_type,
+                        "data": base64.b64encode(raw).decode("utf-8"),
+                    }
+                }
+            )
+        except Exception:
+            pass
+
+    target_model = model or agy_http_client.DEFAULT_IMAGE_MODEL
+    img_chat_id = "img_" + hashlib.sha256(prompt.encode("utf-8", errors="replace")).hexdigest()[:12]
+    img_title = f"Image: {prompt.strip().replace(chr(10), ' ')[:80]}"
 
     try:
-        agy_response = await run_agy_prompt(prompt=prompt)
+        image_result = await agy_http_client.generate_image(
+            prompt,
+            model=target_model,
+            size=size,
+            reference_parts=reference_parts or None,
+        )
     except Exception as e:
         await stats_store.record_request(
             endpoint="image-generation",
-            model="artist",
+            model=target_model,
             pool_account=pool_manager.get_active_account_id(),
-            prompt_tokens=max(1, len(req.prompt) // 4),
+            prompt_tokens=max(1, len(prompt) // 4),
             completion_tokens=0,
             cache_tokens=0,
             success=False,
@@ -566,47 +594,21 @@ async def generate_image(
             error_type=type(e).__name__,
             chat_id=img_chat_id,
             chat_title=img_title,
-            prompt_preview=req.prompt[:1000],
+            prompt_preview=prompt[:1000],
             response_preview=f"Error: {str(e)}",
         )
-        raise
+        if "HTTP 429" in str(e):
+            raise HTTPException(status_code=429, detail=f"Image generation rate limit: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
-    image_path = ""
-    if isinstance(agy_response, dict):
-        image_path = (
-            agy_response.get("text") or agy_response.get("content") or agy_response.get("response") or str(agy_response)
-        )
-    else:
-        image_path = str(agy_response)
-
-    image_path = image_path.strip()
-    img_data = ImageObject(url=image_path)
-
-    import os
-
-    if os.path.exists(image_path) and os.path.isfile(image_path):
-        import base64
-
-        with open(image_path, "rb") as f:
-            b64 = base64.b64encode(f.read()).decode("utf-8")
-            if req.response_format == "b64_json":
-                img_data = ImageObject(b64_json=b64)
-            else:
-                img_data = ImageObject(url=f"data:image/png;base64,{b64}")
-
-        def remove_file(path):
-            try:
-                os.remove(path)
-            except Exception:
-                pass
-
-        background_tasks.add_task(remove_file, image_path)
+    b64 = image_result.get("data") or ""
+    mime_type = image_result.get("mime_type", "image/jpeg")
 
     await stats_store.record_request(
         endpoint="image-generation",
-        model="artist",
+        model=target_model,
         pool_account=pool_manager.get_active_account_id(),
-        prompt_tokens=max(1, len(req.prompt) // 4),
+        prompt_tokens=max(1, len(prompt) // 4),
         completion_tokens=100,
         cache_tokens=0,
         success=True,
@@ -614,11 +616,93 @@ async def generate_image(
         error_type=None,
         chat_id=img_chat_id,
         chat_title=img_title,
-        prompt_preview=req.prompt[:1000],
-        response_preview=f"Generated image: {image_path[:200]}",
+        prompt_preview=prompt[:1000],
+        response_preview="Generated image via HTTP",
     )
 
+    if response_format == "binary":
+        raw_bytes = base64.b64decode(b64)
+        return Response(content=raw_bytes, media_type=mime_type)
+
+    if response_format == "b64_json":
+        img_data = ImageObject(b64_json=b64)
+    else:
+        img_data = ImageObject(url=f"data:{mime_type};base64,{b64}")
+
     return ImageGenerationResponse(created=int(time.time()), data=[img_data])
+
+
+@router.post(
+    "/images/generations",
+    summary="Image Generations (OpenAI Compatible)",
+    description="Creates an image given a prompt. Auth is optional (API key or public).",
+)
+async def generate_image(
+    req: ImageGenerationRequest,
+    background_tasks: BackgroundTasks,
+    request: Request,
+    api_key: str | None = Depends(get_optional_api_key),
+):
+    logger.info(f"Generating image. Prompt: {req.prompt[:50]}...")
+    return await _process_image_generation(
+        prompt=req.prompt,
+        model=req.model,
+        size=req.size,
+        response_format=req.response_format,
+        reference_images=req.reference_images,
+        background_tasks=background_tasks,
+        api_key=api_key,
+    )
+
+
+class SimpleImageRequest(BaseModel):
+    prompt: str = Field(..., description="Prompt description for image generation")
+    model: str | None = Field(None, description="Image model name")
+    size: str | None = Field(None, description="Aspect ratio or size (e.g. 1:1, 4:3, 16:9, 9:16)")
+    format: str | None = Field("url", description="Response format: url, b64_json or binary")
+
+
+@router.get(
+    "/image",
+    summary="Simple Image Generation (GET)",
+    description="Generate image by passing prompt via query string. Auth is optional. Format can be binary, url, b64_json.",
+)
+async def generate_image_simple_get(
+    prompt: str,
+    background_tasks: BackgroundTasks,
+    model: str | None = None,
+    size: str | None = None,
+    format: str | None = "binary",
+    api_key: str | None = Depends(get_optional_api_key),
+):
+    return await _process_image_generation(
+        prompt=prompt,
+        model=model,
+        size=size,
+        response_format=format,
+        background_tasks=background_tasks,
+        api_key=api_key,
+    )
+
+
+@router.post(
+    "/image",
+    summary="Simple Image Generation (POST)",
+    description="Generate image by passing {prompt: '...'} in JSON body. Auth is optional.",
+)
+async def generate_image_simple_post(
+    req: SimpleImageRequest,
+    background_tasks: BackgroundTasks,
+    api_key: str | None = Depends(get_optional_api_key),
+):
+    return await _process_image_generation(
+        prompt=req.prompt,
+        model=req.model,
+        size=req.size,
+        response_format=req.format,
+        background_tasks=background_tasks,
+        api_key=api_key,
+    )
 
 
 @router.post("/auth/verify", summary="Verify admin password / API key")

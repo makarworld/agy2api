@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 
 def transport() -> str:
-    return os.environ.get("AGY_TRANSPORT", "cli").strip().lower()
+    return os.environ.get("AGY_TRANSPORT", "http").strip().lower()
 
 
 def flatten_messages(system: Optional[str], messages: List[dict]) -> str:

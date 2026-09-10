@@ -10,7 +10,12 @@ import httpx
 from app.core.proxy_config import httpx_client_kwargs
 from app.core import oauth_refresh
 from app.core import pool_manager
-from app.core.cloudcode_common import LOAD_CODEASSIST_URL, STREAM_GENERATE_URL, cloudcode_headers
+from app.core.cloudcode_common import (
+    GENERATE_CONTENT_URL,
+    LOAD_CODEASSIST_URL,
+    STREAM_GENERATE_URL,
+    cloudcode_headers,
+)
 from app.core.http_tools_bridge import (
     anthropic_tools_to_gemini,
     extract_parts_from_response,
@@ -84,12 +89,19 @@ async def get_access_token(
     proxy: Optional[str] = None,
     force: bool = False,
 ) -> str:
-    home = gemini_home or _gemini_home()
+    from app.core import account_store
+
+    account_id = pool_manager.get_active_account_id()
     proxy = proxy if proxy is not None else await _active_proxy()
+    if account_id and account_store.get_account_by_id(account_id):
+        await oauth_refresh.ensure_fresh_sqlite_account(account_id, proxy=proxy, force=force)
+        return oauth_refresh.read_sqlite_access_token(account_id)
+
+    home = gemini_home or _gemini_home()
     await oauth_refresh.ensure_fresh_antigravity_token(
         home,
         proxy=proxy,
-        pool_account_id=pool_manager.get_active_account_id(),
+        pool_account_id=account_id,
         force=force,
     )
     return oauth_refresh.read_access_token(home)
@@ -379,7 +391,13 @@ async def stream_completion(
                             new_calls = ingest_stream_tool_calls(tool_calls, pending_tool_calls)
                             if new_calls:
                                 yield {"tool_calls": new_calls}
-            except (httpx.ConnectError, httpx.ConnectTimeout, httpx.RemoteProtocolError) as net_err:
+            except (
+                httpx.ConnectError,
+                httpx.ConnectTimeout,
+                httpx.ReadError,
+                httpx.ReadTimeout,
+                httpx.RemoteProtocolError,
+            ) as net_err:
                 logger.warning("[http] network/connection error on account %s: %s", account_id, net_err)
                 if account_id:
                     excluded.add(account_id)
@@ -464,3 +482,111 @@ async def stream_completion(
             "stop_reason": stop_reason,
         }
         return
+
+
+IMAGE_SYSTEM_INSTRUCTION = (
+    "You are an AI image generator. Generate images based on user descriptions. "
+    "Focus on creating high-quality, visually appealing images that match the user's request."
+)
+DEFAULT_IMAGE_MODEL = os.environ.get("AGY_IMAGE_MODEL", "gemini-3.1-flash-image")
+
+
+def _image_request_id() -> str:
+    return f"image_gen/{int(time.time() * 1000)}/{uuid.uuid4()}/2"
+
+
+def _parse_aspect_ratio(prompt: str, size: Optional[str] = None) -> str:
+    if size:
+        normalized = size.strip().replace("x", ":")
+        if normalized in {"1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9"}:
+            return normalized
+    lowered = prompt.lower()
+    for ratio in ("21:9", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "5:4", "4:5", "1:1"):
+        if ratio in lowered or ratio.replace(":", "/") in lowered or ratio.replace(":", "x") in lowered:
+            return ratio
+    return "1:1"
+
+
+def _build_image_request(
+    prompt: str,
+    project_id: str,
+    model: str,
+    aspect_ratio: str,
+    reference_parts: Optional[List[dict]] = None,
+) -> dict:
+    parts: List[dict] = list(reference_parts or [])
+    parts.append({"text": prompt})
+    return {
+        "project": project_id,
+        "requestId": _image_request_id(),
+        "request": {
+            "contents": [{"role": "user", "parts": parts}],
+            "generationConfig": {
+                "candidateCount": 1,
+                "imageConfig": {"aspectRatio": aspect_ratio},
+            },
+        },
+        "model": model,
+        "userAgent": "antigravity",
+        "requestType": "image_gen",
+    }
+
+
+def _extract_image_from_json(data: dict) -> dict:
+    candidates = (data.get("response") or data).get("candidates") or []
+    for candidate in candidates:
+        for part in candidate.get("content", {}).get("parts") or []:
+            inline = part.get("inlineData") or {}
+            b64_data = inline.get("data")
+            if b64_data:
+                return {
+                    "mime_type": inline.get("mimeType", "image/jpeg"),
+                    "data": b64_data,
+                }
+    raise RuntimeError(f"No image data returned by the model: {str(data)[:300]}")
+
+
+async def generate_image(
+    prompt: str,
+    *,
+    model: Optional[str] = None,
+    size: Optional[str] = None,
+    reference_parts: Optional[List[dict]] = None,
+    proxy: Optional[str] = None,
+) -> dict:
+    """Generate an image via Cloud Code Assist image models (pure HTTP POST generateContent)."""
+    excluded: set[str] = set()
+    backend_model = model or DEFAULT_IMAGE_MODEL
+    aspect_ratio = _parse_aspect_ratio(prompt, size=size)
+
+    while True:
+        account_id, pool_proxy, access_token = await pool_manager.acquire_http_account(exclude=excluded)
+        account_proxy = proxy if proxy is not None else pool_proxy
+        if not access_token:
+            access_token = await get_access_token(proxy=account_proxy)
+        project_id = await _get_project_id(access_token, account_id=account_id, proxy=account_proxy)
+        body = _build_image_request(prompt, project_id, backend_model, aspect_ratio, reference_parts)
+        headers = cloudcode_headers(access_token, streaming=False)
+
+        async with httpx.AsyncClient(**httpx_client_kwargs(proxy=account_proxy, timeout=300.0)) as client:
+            response = await client.post(GENERATE_CONTENT_URL, headers=headers, json=body)
+            if response.status_code == 401:
+                access_token = await _refresh_after_401(access_token, account_id=account_id, proxy=account_proxy)
+                headers = cloudcode_headers(access_token, streaming=False)
+                response = await client.post(GENERATE_CONTENT_URL, headers=headers, json=body)
+
+            if response.status_code != 200:
+                detail = response.text[:500]
+                if account_id and _is_rate_limited(response.status_code, detail):
+                    cooldown = int(os.environ.get("AGY_POOL_COOLDOWN_SECONDS", "3600"))
+                    await pool_manager.mark_rate_limited(account_id, cooldown)
+                    excluded.add(account_id)
+                    logger.warning("[image] account %s rate-limited, rotating: %s", account_id, detail[:200])
+                    continue
+                raise RuntimeError(f"image generation failed (HTTP {response.status_code}): {detail}")
+
+            image = _extract_image_from_json(response.json())
+
+        if account_id:
+            await pool_manager.mark_success(account_id)
+        return image

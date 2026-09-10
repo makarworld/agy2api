@@ -16,6 +16,7 @@ from typing import Dict, List, Optional, Set, Tuple
 
 import httpx
 
+from app.core import account_store
 from app.core import oauth_refresh
 from app.core import stats_store
 from app.core.proxy_config import get_google_proxy, httpx_client_kwargs
@@ -118,6 +119,12 @@ def _save_manifest(manifest: dict) -> None:
 
 def get_account_token_and_proxy(account_id: str) -> Tuple[Optional[str], Optional[str], Optional[str]]:
     """Retrieve (token, proxy, account_dir) for a given account (or active account from ~/.gemini)."""
+    sqlite_acc = account_store.get_account_by_id(account_id)
+    if sqlite_acc:
+        proxy = get_google_proxy(sqlite_acc.get("proxy"))
+        token = (sqlite_acc.get("access_token") or "").strip() or None
+        return token, proxy, None
+
     acc = _find_account(account_id)
     proxy = get_google_proxy(acc.get("proxy") if acc else None)
     if not pool_enabled() or account_id == get_active_account_id() or not acc:
@@ -160,6 +167,18 @@ def _extract_account_email(account_id: str) -> Optional[str]:
 
 
 def list_accounts() -> List[dict]:
+    if account_store.has_accounts():
+        return [
+            {
+                "id": acc["id"],
+                "label": acc.get("email") or acc["id"],
+                "email": acc.get("email"),
+                "proxy": acc.get("proxy"),
+                "added_at": acc.get("created_at"),
+            }
+            for acc in account_store.get_all_accounts()
+        ]
+
     accounts = _load_manifest().get("accounts", [])
     for acc in accounts:
         if not acc.get("email"):
@@ -518,6 +537,20 @@ async def complete_oauth_flow(
 
     _save_manifest(manifest)
 
+    try:
+        account_store.upsert_account(
+            account_id=account_id,
+            email=email or "",
+            proxy=str(req_proxy or ""),
+            refresh_token=refresh_token or "",
+            client_id=client_id,
+            client_secret=client_secret,
+            access_token=access_token or "",
+            token_expiry=time.time() + expires_in,
+        )
+    except Exception as e:
+        logger.warning(f"[pool] Failed to upsert SQLite account {account_id}: {e}")
+
     # Clear quota cache for this account
     oauth_refresh.clear_quota_summary_cache(access_token)
 
@@ -597,6 +630,23 @@ async def init_pool_state() -> None:
     and re-activate as needed anyway (activate_account is idempotent).
     """
     global _active_account_id
+    try:
+        account_store.sync_all_account_sources()
+    except Exception as e:
+        logger.warning(f"[pool] account_store sync failed: {e}")
+
+    if account_store.has_accounts():
+        accounts = account_store.get_all_accounts()
+        if accounts:
+            try:
+                _active_account_id = await stats_store.get_active_account_id_db()
+            except Exception:
+                _active_account_id = None
+            if not _active_account_id or not account_store.get_account_by_id(_active_account_id):
+                _active_account_id = accounts[0]["id"]
+                await stats_store.set_active_account_id_db(_active_account_id)
+        return
+
     if not pool_enabled():
         return
     try:
@@ -828,6 +878,8 @@ async def select_next_healthy_account(
 async def mark_success(account_id: str, session_hash: Optional[str] = None) -> None:
     if session_hash:
         pin_session_account(session_hash, account_id)
+    if account_store.get_account_by_id(account_id):
+        account_store.mark_account_healthy(account_id)
     await stats_store.upsert_pool_account_state(account_id, status="healthy", consecutive_failures=0)
 
 
@@ -838,6 +890,8 @@ async def mark_rate_limited(account_id: str, cooldown_seconds: int = 60, model: 
             _MODEL_COOLDOWNS[account_id] = {}
         _MODEL_COOLDOWNS[account_id][model] = now + cooldown_seconds
         logger.info(f"[pool] Account {account_id} model {model} in cooldown for {cooldown_seconds}s")
+    elif account_store.get_account_by_id(account_id):
+        account_store.mark_account_rate_limited(account_id, cooldown_seconds)
     else:
         await stats_store.upsert_pool_account_state(
             account_id, status="cooldown", cooldown_until=now + cooldown_seconds
@@ -931,14 +985,26 @@ async def acquire_http_account(
 ) -> Tuple[Optional[str], Optional[str], Optional[str]]:
     """Pool-aware credential acquisition for the HTTP transport.
 
-    Swaps ~/.gemini to the least-recently-used healthy account and returns
-    (account_id, proxy, access_token). The lock is only held while credentials
-    are swapped and the token is read -- once the bearer token is in hand the
-    request no longer depends on what's on disk, so concurrent streams don't
-    serialize the way execute_agy() has to for subprocesses.
+    Prefers SQLite-backed accounts (data/accounts.json). Legacy pool mode still
+    swaps ~/.gemini credential files for subprocess/CLI transport.
 
-    Returns (None, proxy, token) when the pool is disabled.
+    Returns (None, proxy, token) when no pool account is selected.
     """
+    if account_store.has_accounts():
+        async with _LOCK:
+            account = account_store.select_next_healthy_account(exclude_ids=set(exclude))
+            if account is None:
+                raise RuntimeError("All pool accounts are rate-limited or unhealthy")
+
+            account_id = account["id"]
+            proxy = get_google_proxy(account.get("proxy"))
+            global _active_account_id
+            _active_account_id = account_id
+            await stats_store.set_active_account_id_db(account_id)
+            account_store.mark_account_used(account_id)
+            await _ensure_oauth_fresh(proxy=proxy, pool_account_id=account_id)
+            return account_id, proxy, oauth_refresh.read_sqlite_access_token(account_id)
+
     if not pool_enabled():
         proxy = get_active_account_proxy()
         await _ensure_oauth_fresh(proxy=proxy)

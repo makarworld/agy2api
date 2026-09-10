@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 # subscription instead of hitting the configured custom base URL). Add more
 # pairs here as needed.
 DEFAULT_MODEL_ALIASES = {
-    "max-gem": "gemini-3.8-flash-high",
+    "max-gem": "gemini-3.8-flash-tiered",
 }
 
 
@@ -155,6 +155,8 @@ _LOCK = asyncio.Lock()
 
 # Safe fallback models if agy CLI fails or is unreachable
 FALLBACK_MODELS = [
+    "gemini-3.8-flash-tiered",
+    "Gemini 3.8 Flash (Tiered)",
     "gemini-3.8-flash-high",
     "Gemini 3.8 Flash (High)",
     "gemini-3.8-flash-medium",
@@ -165,12 +167,22 @@ FALLBACK_MODELS = [
     "Gemini 3.7 Flash (High)",
     "gemini-3.7-flash-medium",
     "Gemini 3.7 Flash (Medium)",
+    "gemini-3.7-flash-low",
+    "Gemini 3.7 Flash (Low)",
     "gemini-3.6-flash-high",
     "Gemini 3.6 Flash (High)",
-    "gemini-3.1-pro-high",
-    "Gemini 3.1 Pro (High)",
+    "gemini-3.6-flash-medium",
+    "Gemini 3.6 Flash (Medium)",
+    "gemini-3.6-flash-low",
+    "Gemini 3.6 Flash (Low)",
+    "gemini-pro-agent",
+    "Gemini Pro Agent",
+    "gemini-3.1-pro-low",
+    "Gemini 3.1 Pro (Low)",
     "claude-sonnet-4-6",
-    "Claude Sonnet 4.6 (Thinking)",
+    "Claude Sonnet 4.6",
+    "claude-opus-4-6-thinking",
+    "Claude Opus 4.6 (Thinking)",
     "gpt-oss-120b-medium",
     "GPT-OSS 120B (Medium)",
 ]
@@ -181,6 +193,9 @@ async def fetch_models_from_cli() -> List[Model]:
     Executes `agy models` CLI command and parses the output into Model objects.
     Returns both slug IDs and display names for maximum OpenAI client compatibility.
     """
+    if os.environ.get("AGY_TRANSPORT", "http").strip().lower() == "http":
+        return []
+
     cmd = ["agy", "models"]
     logger.info("Fetching available models from Antigravity CLI...")
 

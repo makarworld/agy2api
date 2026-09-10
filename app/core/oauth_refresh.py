@@ -405,6 +405,14 @@ def _verify_cache_valid(access_token: str) -> bool:
 _quota_summary_cache: dict[str, Tuple[float, dict]] = {}
 _QUOTA_CACHE_TTL_SECONDS = 300.0  # 5 minutes cache to avoid frequent requests to Google
 _quota_fetch_lock = asyncio.Lock()
+_contaminated_quota_token_suffixes: set[str] = set()
+
+
+def _quota_cache_key(token: str, pool_account_id: Optional[str] = None) -> str:
+    suffix = _access_token_suffix(token)
+    if pool_account_id:
+        return f"{pool_account_id}:{suffix}"
+    return suffix
 
 
 def clear_quota_summary_cache(access_token: Optional[str] = None) -> None:
@@ -413,9 +421,13 @@ def clear_quota_summary_cache(access_token: Optional[str] = None) -> None:
         token = access_token.strip()
         if token.lower().startswith("bearer "):
             token = token[7:].strip()
-        _quota_summary_cache.pop(_access_token_suffix(token), None)
+        suffix = _access_token_suffix(token)
+        for key in list(_quota_summary_cache):
+            if key == suffix or key.endswith(":" + suffix):
+                _quota_summary_cache.pop(key, None)
     else:
         _quota_summary_cache.clear()
+        _contaminated_quota_token_suffixes.clear()
 
 
 def _parse_quota_buckets(payload: dict) -> dict:
@@ -462,6 +474,48 @@ def _parse_quota_buckets(payload: dict) -> dict:
     return res
 
 
+def _sqlite_access_token_is_shared(account: dict) -> bool:
+    token = (account.get("access_token") or "").strip()
+    if not token:
+        return False
+    from app.core import account_store
+
+    suffix = _access_token_suffix(token)
+    matches = 0
+    for other in account_store.get_all_accounts():
+        if (other.get("access_token") or "").strip() == token:
+            matches += 1
+            if matches > 1:
+                _contaminated_quota_token_suffixes.add(suffix)
+                return True
+    return suffix in _contaminated_quota_token_suffixes
+
+
+def _cached_quota_for_account(pool_account_id: str) -> Optional[dict]:
+    prefix = f"{pool_account_id}:"
+    now = time.time()
+    for key, (exp, cached_data) in _quota_summary_cache.items():
+        if key.startswith(prefix) and exp > now:
+            return dict(cached_data)
+    return None
+
+
+async def _prepare_sqlite_quota_token(
+    pool_account_id: str,
+    *,
+    proxy: Optional[str] = None,
+    force: bool = False,
+) -> Optional[str]:
+    from app.core import account_store
+
+    account = account_store.get_account_by_id(pool_account_id)
+    if not account:
+        return None
+    force_refresh = force or _sqlite_access_token_is_shared(account)
+    await ensure_fresh_sqlite_account(pool_account_id, proxy=proxy, force=force_refresh)
+    return read_sqlite_access_token(pool_account_id)
+
+
 async def retrieve_account_quota(
     account_dir: Optional[str] = None,
     *,
@@ -471,31 +525,47 @@ async def retrieve_account_quota(
     force: bool = False,
 ) -> dict:
     """Fetch quota for an account or token, auto-refreshing on 401 if needed."""
+    from app.core import account_store
+
+    sqlite_account = account_store.get_account_by_id(pool_account_id) if pool_account_id else None
     target_token = access_token
     cred_path = None
-    cred_kind = None
 
-    if account_dir and not target_token:
+    if sqlite_account and pool_account_id and not force:
+        cached = _cached_quota_for_account(pool_account_id)
+        if cached is not None:
+            return cached
+
+    if sqlite_account:
+        try:
+            prepared = await _prepare_sqlite_quota_token(pool_account_id, proxy=proxy, force=False)
+            if prepared:
+                target_token = prepared
+        except Exception as e:
+            logger.debug("[oauth] sqlite quota token prepare failed for %s: %s", pool_account_id, e)
+            target_token = (access_token or sqlite_account.get("access_token") or "").strip() or None
+    elif account_dir and not target_token:
         discovered = discover_credential_candidates(account_dir)
         if discovered:
-            cred_path, cred_kind = discovered[0]
+            cred_path, _cred_kind = discovered[0]
             target_token = access_token_from_path(cred_path)
 
     if not target_token:
         return _parse_quota_buckets({})
 
-    cache_key = _access_token_suffix(target_token)
+    cache_key = _quota_cache_key(target_token, pool_account_id)
+    token_suffix = _access_token_suffix(target_token)
     now = time.time()
     if not force and cache_key in _quota_summary_cache:
         exp, cached_data = _quota_summary_cache[cache_key]
         if exp > now:
-            return cached_data
+            return dict(cached_data)
 
     async with _quota_fetch_lock:
         if not force and cache_key in _quota_summary_cache:
             exp, cached_data = _quota_summary_cache[cache_key]
             if exp > time.time():
-                return cached_data
+                return dict(cached_data)
 
         try:
             async with httpx.AsyncClient(**httpx_client_kwargs(proxy=proxy, timeout=15.0)) as client:
@@ -508,8 +578,8 @@ async def retrieve_account_quota(
             if response.status_code == 200:
                 parsed = _parse_quota_buckets(response.json())
                 _quota_summary_cache[cache_key] = (time.time() + _QUOTA_CACHE_TTL_SECONDS, parsed)
-                _verify_cache[cache_key] = time.time() + _VERIFY_CACHE_TTL_SECONDS
-                return parsed
+                _verify_cache[token_suffix] = time.time() + _VERIFY_CACHE_TTL_SECONDS
+                return dict(parsed)
 
             elif response.status_code == 401:
                 invalidate_verify_cache(target_token)
@@ -518,9 +588,14 @@ async def retrieve_account_quota(
                     _token_suffix(target_token),
                     pool_account_id or (os.path.basename(account_dir) if account_dir else "active"),
                 )
-                # Attempt to refresh token if we have account dir or default home
                 refreshed = False
-                if account_dir:
+                if sqlite_account:
+                    refreshed = await ensure_fresh_sqlite_account(
+                        pool_account_id, proxy=proxy, force=True
+                    )
+                    if refreshed:
+                        target_token = read_sqlite_access_token(pool_account_id)
+                elif account_dir:
                     refreshed = await ensure_fresh_credentials(
                         account_dir, proxy=proxy, pool_account_id=pool_account_id, force=True
                     )
@@ -542,10 +617,12 @@ async def retrieve_account_quota(
                         )
                     if r2.status_code == 200:
                         parsed = _parse_quota_buckets(r2.json())
-                        new_key = _access_token_suffix(target_token)
+                        new_key = _quota_cache_key(target_token, pool_account_id)
                         _quota_summary_cache[new_key] = (time.time() + _QUOTA_CACHE_TTL_SECONDS, parsed)
-                        _verify_cache[new_key] = time.time() + _VERIFY_CACHE_TTL_SECONDS
-                        return parsed
+                        _verify_cache[_access_token_suffix(target_token)] = (
+                            time.time() + _VERIFY_CACHE_TTL_SECONDS
+                        )
+                        return dict(parsed)
 
         except Exception as e:
             logger.debug("[oauth] retrieve_account_quota error for %s: %s", pool_account_id or "account", e)
@@ -635,15 +712,19 @@ async def refresh_google_token(
     *,
     proxy: Optional[str] = None,
     kind: CredentialKind = "antigravity",
+    client_id: Optional[str] = None,
+    client_secret: Optional[str] = None,
 ) -> dict:
     """Exchange a refresh token for a new access token via Google OAuth."""
     refresh_token = _normalize_refresh_token(refresh_token) or refresh_token.strip()
+    resolved_client_id = (client_id or "").strip() or _client_id(kind)
+    resolved_client_secret = (client_secret or "").strip() or _client_secret(kind)
     async with httpx.AsyncClient(**httpx_client_kwargs(proxy=proxy, timeout=30.0)) as client:
         response = await client.post(
             OAUTH_TOKEN_URL,
             data={
-                "client_id": _client_id(kind),
-                "client_secret": _client_secret(kind),
+                "client_id": resolved_client_id,
+                "client_secret": resolved_client_secret,
                 "grant_type": "refresh_token",
                 "refresh_token": refresh_token,
             },
@@ -818,6 +899,86 @@ async def ensure_fresh_credentials(
         return True
 
 
+def _sqlite_token_needs_refresh(account: dict, *, force: bool = False) -> bool:
+    if force:
+        return True
+    access_token = (account.get("access_token") or "").strip()
+    if not access_token:
+        return True
+    expiry_ts = float(account.get("token_expiry") or 0)
+    if expiry_ts <= 0:
+        return True
+    return time.time() >= expiry_ts - refresh_skew_seconds()
+
+
+async def ensure_fresh_sqlite_account(
+    account_id: str,
+    *,
+    proxy: Optional[str] = None,
+    force: bool = False,
+) -> bool:
+    """Refresh OAuth tokens stored in SQLite for the given account."""
+    from app.core import account_store
+
+    if not refresh_enabled():
+        return False
+
+    account = account_store.get_account_by_id(account_id)
+    if not account:
+        raise RuntimeError(f"Unknown SQLite account: {account_id}")
+
+    if not _sqlite_token_needs_refresh(account, force=force):
+        access_token = account.get("access_token") or ""
+        if access_token and (
+            _verify_cache_valid(access_token)
+            or await _verify_access_token_cached(access_token, proxy=proxy, pool_account_id=account_id)
+        ):
+            return False
+
+    refresh_token = account.get("refresh_token")
+    if not refresh_token:
+        raise RuntimeError(f"No refresh_token for SQLite account {account_id}")
+
+    async with _refresh_lock:
+        account = account_store.get_account_by_id(account_id) or account
+        if not force and not _sqlite_token_needs_refresh(account, force=False):
+            access_token = account.get("access_token") or ""
+            if access_token and (
+                _verify_cache_valid(access_token)
+                or await _verify_access_token_cached(access_token, proxy=proxy, pool_account_id=account_id)
+            ):
+                return False
+
+        new_token = await refresh_google_token(
+            refresh_token,
+            proxy=proxy,
+            client_id=account.get("client_id"),
+            client_secret=account.get("client_secret"),
+        )
+        expiry_ts = time.time() + int(new_token.get("expires_in", 3600))
+        account_store.update_account_tokens(
+            account_id,
+            new_token["access_token"],
+            expiry_ts,
+            project_id=account.get("project_id"),
+        )
+        invalidate_verify_cache(account.get("access_token"))
+        logger.info("[oauth] SQLite account %s access token refreshed", account_id)
+        return True
+
+
+def read_sqlite_access_token(account_id: str) -> str:
+    from app.core import account_store
+
+    account = account_store.get_account_by_id(account_id)
+    if not account:
+        raise RuntimeError(f"Unknown SQLite account: {account_id}")
+    token = (account.get("access_token") or "").strip()
+    if not token:
+        raise RuntimeError(f"No access_token for SQLite account {account_id}")
+    return token
+
+
 async def ensure_fresh_antigravity_token(
     gemini_home: Optional[str] = None,
     *,
@@ -825,7 +986,13 @@ async def ensure_fresh_antigravity_token(
     pool_account_id: Optional[str] = None,
     force: bool = False,
 ) -> bool:
-    """Alias for ensure_fresh_credentials (pool_manager compatibility)."""
+    """Refresh credentials — SQLite account first, then ~/.gemini files."""
+    if pool_account_id:
+        from app.core import account_store
+
+        if account_store.get_account_by_id(pool_account_id):
+            return await ensure_fresh_sqlite_account(pool_account_id, proxy=proxy, force=force)
+
     return await ensure_fresh_credentials(gemini_home, proxy=proxy, pool_account_id=pool_account_id, force=force)
 
 

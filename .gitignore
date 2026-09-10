@@ -53,3 +53,5 @@ dist/
 graphify-out/
 ui/dist/
 
+test.txt
+doc/claude*

@@ -491,6 +491,290 @@ class TestOAuthRefresh(unittest.TestCase):
         asyncio.run(_run())
 
 
+def _quota_payload(gemini_5h: float, gemini_weekly: float) -> dict:
+    return {
+        "groups": [
+            {
+                "displayName": "Gemini",
+                "buckets": [
+                    {"bucketId": "gemini-5h", "remainingFraction": gemini_5h, "resetTime": "t5"},
+                    {"bucketId": "gemini-weekly", "remainingFraction": gemini_weekly, "resetTime": "tw"},
+                ],
+            },
+            {
+                "displayName": "Claude",
+                "buckets": [
+                    {"bucketId": "claude-5h", "remainingFraction": 1.0},
+                    {"bucketId": "claude-weekly", "remainingFraction": 1.0},
+                ],
+            },
+        ]
+    }
+
+
+class _FakeQuotaResponse:
+    def __init__(self, status_code: int, payload: dict | None = None):
+        self.status_code = status_code
+        self._payload = payload or {}
+
+    def json(self):
+        return self._payload
+
+
+class TestRetrieveAccountQuotaSqlite(unittest.TestCase):
+    def setUp(self):
+        self._env = os.environ.copy()
+        os.environ["AGY_OAUTH_REFRESH_ENABLED"] = "true"
+        os.environ["AGY_OAUTH_REFRESH_SKEW_SECONDS"] = "120"
+        os.environ.pop("AGY_ACCESS_TOKEN", None)
+        os.environ.pop("AGY_BEARER_TOKEN", None)
+        oauth_refresh.clear_quota_summary_cache()
+        oauth_refresh._verify_cache.clear()
+
+    def tearDown(self):
+        os.environ.clear()
+        os.environ.update(self._env)
+        oauth_refresh.clear_quota_summary_cache()
+        oauth_refresh._verify_cache.clear()
+
+    def _sqlite_store(self, rows: dict):
+        store = {aid: dict(row) for aid, row in rows.items()}
+
+        def get_by_id(account_id):
+            row = store.get(account_id)
+            return dict(row) if row else None
+
+        def get_all():
+            return [dict(row) for row in store.values()]
+
+        def update_tokens(account_id, access_token, token_expiry, project_id=None):
+            store[account_id]["access_token"] = access_token
+            store[account_id]["token_expiry"] = token_expiry
+            if project_id:
+                store[account_id]["project_id"] = project_id
+
+        return store, get_by_id, get_all, update_tokens
+
+    def test_quota_401_refreshes_sqlite_account_not_gemini_home(self):
+        async def _run():
+            future = time.time() + 3600
+            store, get_by_id, get_all, update_tokens = self._sqlite_store(
+                {
+                    "acc-a": {
+                        "id": "acc-a",
+                        "access_token": "stale-token-aaaaaaaaaaaa-a",
+                        "refresh_token": "rt-a",
+                        "token_expiry": future,
+                        "client_id": "cid",
+                        "client_secret": "csec",
+                        "project_id": "",
+                    },
+                    "acc-b": {
+                        "id": "acc-b",
+                        "access_token": "stale-token-bbbbbbbbbbbb-b",
+                        "refresh_token": "rt-b",
+                        "token_expiry": future,
+                        "client_id": "cid",
+                        "client_secret": "csec",
+                        "project_id": "",
+                    },
+                }
+            )
+            seen_tokens = []
+
+            async def fake_post(*args, **kwargs):
+                token = kwargs["headers"]["Authorization"].split(" ", 1)[1]
+                seen_tokens.append(token)
+                if token.startswith("stale-"):
+                    return _FakeQuotaResponse(401)
+                if token == "fresh-rt-a":
+                    return _FakeQuotaResponse(200, _quota_payload(0.06, 0.49))
+                if token == "fresh-rt-b":
+                    return _FakeQuotaResponse(200, _quota_payload(0.90, 0.80))
+                return _FakeQuotaResponse(401)
+
+            mock_client = AsyncMock()
+            mock_client.__aenter__.return_value = mock_client
+            mock_client.post = AsyncMock(side_effect=fake_post)
+
+            async def fake_refresh(refresh_token, **kwargs):
+                return {
+                    "access_token": f"fresh-{refresh_token}",
+                    "refresh_token": refresh_token,
+                    "token_type": "Bearer",
+                    "expires_in": 3600,
+                }
+
+            def boom(*args, **kwargs):
+                raise AssertionError("must not fall back to ~/.gemini")
+
+            with patch("httpx.AsyncClient", return_value=mock_client):
+                with patch("app.core.account_store.get_account_by_id", side_effect=get_by_id):
+                    with patch("app.core.account_store.get_all_accounts", side_effect=get_all):
+                        with patch("app.core.account_store.update_account_tokens", side_effect=update_tokens):
+                            with patch(
+                                "app.core.oauth_refresh.refresh_google_token",
+                                new_callable=AsyncMock,
+                                side_effect=fake_refresh,
+                            ):
+                                with patch(
+                                    "app.core.oauth_refresh.verify_access_token",
+                                    new_callable=AsyncMock,
+                                    return_value=True,
+                                ):
+                                    with patch.object(oauth_refresh, "ensure_fresh_credentials", side_effect=boom):
+                                        with patch.object(oauth_refresh, "read_access_token", side_effect=boom):
+                                            quota_a = await oauth_refresh.retrieve_account_quota(
+                                                access_token=store["acc-a"]["access_token"],
+                                                pool_account_id="acc-a",
+                                            )
+                                            quota_b = await oauth_refresh.retrieve_account_quota(
+                                                access_token=store["acc-b"]["access_token"],
+                                                pool_account_id="acc-b",
+                                            )
+
+            self.assertEqual(quota_a["gemini_5h"], 0.06)
+            self.assertEqual(quota_a["gemini_weekly"], 0.49)
+            self.assertEqual(quota_b["gemini_5h"], 0.90)
+            self.assertEqual(quota_b["gemini_weekly"], 0.80)
+            self.assertIn("fresh-rt-a", seen_tokens)
+            self.assertIn("fresh-rt-b", seen_tokens)
+            self.assertEqual(store["acc-a"]["access_token"], "fresh-rt-a")
+            self.assertEqual(store["acc-b"]["access_token"], "fresh-rt-b")
+
+        asyncio.run(_run())
+
+    def test_shared_access_token_force_refreshes_per_account(self):
+        async def _run():
+            future = time.time() + 3600
+            shared = "shared-access-token-xxxx"
+            store, get_by_id, get_all, update_tokens = self._sqlite_store(
+                {
+                    "acc-a": {
+                        "id": "acc-a",
+                        "access_token": shared,
+                        "refresh_token": "rt-a",
+                        "token_expiry": future,
+                        "client_id": "cid",
+                        "client_secret": "csec",
+                        "project_id": "",
+                    },
+                    "acc-b": {
+                        "id": "acc-b",
+                        "access_token": shared,
+                        "refresh_token": "rt-b",
+                        "token_expiry": future,
+                        "client_id": "cid",
+                        "client_secret": "csec",
+                        "project_id": "",
+                    },
+                }
+            )
+            seen_tokens = []
+
+            async def fake_post(*args, **kwargs):
+                token = kwargs["headers"]["Authorization"].split(" ", 1)[1]
+                seen_tokens.append(token)
+                if token == "fresh-rt-a":
+                    return _FakeQuotaResponse(200, _quota_payload(0.06, 0.49))
+                if token == "fresh-rt-b":
+                    return _FakeQuotaResponse(200, _quota_payload(0.90, 0.80))
+                return _FakeQuotaResponse(200, _quota_payload(0.01, 0.01))
+
+            mock_client = AsyncMock()
+            mock_client.__aenter__.return_value = mock_client
+            mock_client.post = AsyncMock(side_effect=fake_post)
+
+            async def fake_refresh(refresh_token, **kwargs):
+                return {
+                    "access_token": f"fresh-{refresh_token}",
+                    "refresh_token": refresh_token,
+                    "token_type": "Bearer",
+                    "expires_in": 3600,
+                }
+
+            with patch("httpx.AsyncClient", return_value=mock_client):
+                with patch("app.core.account_store.get_account_by_id", side_effect=get_by_id):
+                    with patch("app.core.account_store.get_all_accounts", side_effect=get_all):
+                        with patch("app.core.account_store.update_account_tokens", side_effect=update_tokens):
+                            with patch(
+                                "app.core.oauth_refresh.refresh_google_token",
+                                new_callable=AsyncMock,
+                                side_effect=fake_refresh,
+                            ):
+                                with patch(
+                                    "app.core.oauth_refresh.verify_access_token",
+                                    new_callable=AsyncMock,
+                                    return_value=True,
+                                ):
+                                    quota_a = await oauth_refresh.retrieve_account_quota(
+                                        access_token=shared,
+                                        pool_account_id="acc-a",
+                                    )
+                                    quota_b = await oauth_refresh.retrieve_account_quota(
+                                        access_token=shared,
+                                        pool_account_id="acc-b",
+                                    )
+                                    cached_a = await oauth_refresh.retrieve_account_quota(
+                                        access_token=store["acc-a"]["access_token"],
+                                        pool_account_id="acc-a",
+                                    )
+
+            self.assertEqual(quota_a["gemini_5h"], 0.06)
+            self.assertEqual(quota_b["gemini_5h"], 0.90)
+            self.assertEqual(cached_a["gemini_5h"], 0.06)
+            self.assertNotIn(shared, seen_tokens)
+            self.assertNotEqual(quota_a["gemini_5h"], quota_b["gemini_5h"])
+
+        asyncio.run(_run())
+
+    def test_ensure_fresh_sqlite_account_ignores_env_access_token(self):
+        async def _run():
+            store, get_by_id, get_all, update_tokens = self._sqlite_store(
+                {
+                    "acc-a": {
+                        "id": "acc-a",
+                        "access_token": "old-sqlite-token",
+                        "refresh_token": "rt-a",
+                        "token_expiry": 1,
+                        "client_id": "cid",
+                        "client_secret": "csec",
+                        "project_id": "",
+                    }
+                }
+            )
+            os.environ["AGY_ACCESS_TOKEN"] = "env-live-token-should-not-bleed"
+
+            async def fake_refresh(refresh_token, **kwargs):
+                return {
+                    "access_token": "fresh-from-refresh",
+                    "refresh_token": refresh_token,
+                    "token_type": "Bearer",
+                    "expires_in": 3600,
+                }
+
+            with patch("app.core.account_store.get_account_by_id", side_effect=get_by_id):
+                with patch("app.core.account_store.get_all_accounts", side_effect=get_all):
+                    with patch("app.core.account_store.update_account_tokens", side_effect=update_tokens):
+                        with patch(
+                            "app.core.oauth_refresh.refresh_google_token",
+                            new_callable=AsyncMock,
+                            side_effect=fake_refresh,
+                        ):
+                            with patch(
+                                "app.core.oauth_refresh.verify_access_token",
+                                new_callable=AsyncMock,
+                                return_value=True,
+                            ):
+                                refreshed = await oauth_refresh.ensure_fresh_sqlite_account("acc-a")
+
+            self.assertTrue(refreshed)
+            self.assertEqual(store["acc-a"]["access_token"], "fresh-from-refresh")
+            self.assertNotEqual(store["acc-a"]["access_token"], "env-live-token-should-not-bleed")
+
+        asyncio.run(_run())
+
+
 class TestWithHeartbeat(unittest.TestCase):
     def test_yields_none_on_idle(self):
         async def slow_gen():

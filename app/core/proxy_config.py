@@ -3,6 +3,8 @@ import os
 from typing import Any, Optional
 from urllib.parse import quote, urlparse
 
+import httpx
+
 logger = logging.getLogger(__name__)
 
 _ENV_KEYS = ("AGY_GOOGLE_PROXY", "AGY_PROXY")
@@ -84,7 +86,19 @@ def httpx_client_kwargs(
     timeout: float = 30.0,
 ) -> dict[str, Any]:
     """Shared kwargs for httpx.AsyncClient used by Google/OAuth HTTP transport."""
-    kwargs: dict[str, Any] = {"timeout": timeout}
+    if isinstance(timeout, (int, float)):
+        timeout_obj = httpx.Timeout(
+            timeout=float(timeout),
+            connect=min(15.0, float(timeout)),
+            read=float(timeout),
+            write=30.0,
+            pool=10.0,
+        )
+    else:
+        timeout_obj = timeout
+
+    limits = httpx.Limits(max_keepalive_connections=20, max_connections=100, keepalive_expiry=30.0)
+    kwargs: dict[str, Any] = {"timeout": timeout_obj, "limits": limits}
     if proxy:
         kwargs["proxy"] = proxy
     if not ssl_verify_enabled(proxy):

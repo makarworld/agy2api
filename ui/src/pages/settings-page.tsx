@@ -5,7 +5,23 @@ import { Input } from '../components/ui/input';
 import { useApiKey } from '../hooks/use-api-key';
 import { apiUrl } from '../lib/api';
 
-interface ModelAliasRow {
+const KNOWN_BACKEND_MODELS = [
+  'gemini-3.8-flash-tiered',
+  'gemini-3.8-flash-high',
+  'gemini-3.8-flash-medium',
+  'gemini-3.8-flash-low',
+  'gemini-3.7-flash-high',
+  'gemini-3.7-flash-medium',
+  'gemini-3.7-flash-low',
+  'gemini-3.6-flash-high',
+  'gemini-3.6-flash-medium',
+  'gemini-3.6-flash-low',
+  'gemini-pro-agent',
+  'gemini-3.1-pro-low',
+  'claude-sonnet-4-6',
+  'claude-opus-4-6-thinking',
+  'gpt-oss-120b-medium',
+];
   alias: string;
   target: string;
 }
@@ -35,7 +51,7 @@ function parseAliasesString(raw: string): ModelAliasRow[] {
   // Ensure default max-gem is present as first row if not already defined
   const hasMaxGem = parsed.some((r) => r.alias === 'max-gem');
   if (!hasMaxGem) {
-    parsed.unshift({ alias: 'max-gem', target: 'gemini-3.8-flash-high' });
+    parsed.unshift({ alias: 'max-gem', target: 'gemini-3.8-flash-tiered' });
   }
 
   return parsed;
@@ -86,7 +102,13 @@ export function SettingsPage() {
         const mList = (mData.data || [])
           .map((m: any) => m.id)
           .filter((id: string) => !id.includes(' ')); // only clean model slugs
-        setAvailableModels(mList);
+        const merged = [...KNOWN_BACKEND_MODELS];
+        for (const id of mList) {
+          if (!merged.includes(id)) merged.push(id);
+        }
+        setAvailableModels(merged);
+      } else {
+        setAvailableModels(KNOWN_BACKEND_MODELS);
       }
     } catch (err: any) {
       setStatusMsg({ type: 'error', text: err.message });
@@ -110,7 +132,20 @@ export function SettingsPage() {
   const handleAliasChange = (index: number, field: 'alias' | 'target', value: string) => {
     setAliases((prev) => {
       const copy = [...prev];
-      copy[index] = { ...copy[index], [field]: value };
+      const current = copy[index];
+      if (field === 'target') {
+        const aliasNames = new Set(prev.map((r) => r.alias.trim()).filter(Boolean));
+        const backendSlugs = availableModels.filter((id) => !aliasNames.has(id));
+        const previousAlias = current.alias.trim();
+        const shouldAutofillAlias =
+          !previousAlias || previousAlias === current.target.trim() || backendSlugs.includes(previousAlias);
+        copy[index] = {
+          alias: shouldAutofillAlias ? value : current.alias,
+          target: value,
+        };
+      } else {
+        copy[index] = { ...current, [field]: value };
+      }
       setSettings((s) => ({ ...s, AGY_MODEL_ALIASES: serializeAliases(copy) }));
       return copy;
     });

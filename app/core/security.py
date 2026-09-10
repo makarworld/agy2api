@@ -12,9 +12,7 @@ security = HTTPBearer(auto_error=False)
 
 API_KEY = os.environ.get("AGY_API_KEY", "sk-dummy")
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_COMPAT_API_KEY", API_KEY)
-ADMIN_PASSWORD = os.environ.get(
-    "ADMIN_PASSWORD", os.environ.get("AGY_ADMIN_PASSWORD", API_KEY)
-)
+ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", os.environ.get("AGY_ADMIN_PASSWORD", API_KEY))
 
 
 def get_api_key(
@@ -37,6 +35,31 @@ def get_api_key(
 
     key_info = validate_and_consume_key(provided)
     return key_info.key
+
+
+def get_optional_api_key(
+    credentials: HTTPAuthorizationCredentials | None = Security(security),
+    authorization: str | None = Header(None),
+    x_api_key: str | None = Header(None),
+) -> str | None:
+    """Returns valid key if provided; if omitted, returns None without error."""
+    provided = None
+    if credentials and credentials.credentials:
+        provided = credentials.credentials
+    elif x_api_key:
+        provided = x_api_key
+    elif authorization:
+        parts = authorization.split(" ", 1)
+        provided = parts[1] if len(parts) == 2 else authorization
+
+    if not provided:
+        return None
+
+    try:
+        key_info = validate_and_consume_key(provided)
+        return key_info.key
+    except Exception:
+        return None
 
 
 def get_anthropic_api_key(
