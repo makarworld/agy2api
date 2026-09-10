@@ -173,6 +173,24 @@ async def refresh_all_quotas(api_key: str = Depends(get_api_key)):
     return {"status": "ok", "quotas": results}
 
 
+@router.post("/accounts/{account_id}/refresh-quota", summary="Force refresh quota for a single account")
+async def refresh_single_account_quota(account_id: str, api_key: str = Depends(get_api_key)):
+    token, proxy, account_dir = pool_manager.get_account_token_and_proxy(account_id)
+    if not token and not account_dir:
+        raise HTTPException(status_code=404, detail=f"Account {account_id} not found")
+    try:
+        q = await oauth_refresh.retrieve_account_quota(
+            account_dir=account_dir,
+            access_token=token,
+            proxy=proxy,
+            pool_account_id=account_id,
+            force=True,
+        )
+        return {"status": "ok", "quota": q}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/accounts/{account_id}/errors", summary="Get recent request errors for a specific pool account")
 async def get_account_errors(account_id: str, limit: int = 20, api_key: str = Depends(get_api_key)):
     errors = await stats_store.get_account_recent_errors(account_id, limit=limit)

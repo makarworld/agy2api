@@ -22,6 +22,8 @@ const KNOWN_BACKEND_MODELS = [
   'claude-opus-4-6-thinking',
   'gpt-oss-120b-medium',
 ];
+
+interface ModelAliasRow {
   alias: string;
   target: string;
 }

@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { LogIn, Pencil, AlertTriangle, X, RefreshCw } from 'lucide-react';
+import { LogIn, Pencil, AlertTriangle, X, RefreshCw, Gauge } from 'lucide-react';
 import { type PoolAccount } from '../hooks/use-stats';
 import { useApiKey } from '../hooks/use-api-key';
 import { apiUrl } from '../lib/api';
@@ -198,7 +198,23 @@ export function AccountsTable({
   const { apiKey } = useApiKey();
   const [selectedErrorAcc, setSelectedErrorAcc] = useState<PoolAccount | null>(null);
   const [checkingHealthId, setCheckingHealthId] = useState<string | null>(null);
+  const [refreshingQuotaId, setRefreshingQuotaId] = useState<string | null>(null);
   const [healthMsg, setHealthMsg] = useState<{ id: string; text: string; ok: boolean } | null>(null);
+
+  const refreshAccountQuota = async (acc: PoolAccount) => {
+    setRefreshingQuotaId(acc.id);
+    try {
+      await fetch(apiUrl(`/v1/accounts/${acc.id}/refresh-quota`), {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${apiKey}` },
+      });
+      onChanged();
+    } catch {
+      // ignore
+    } finally {
+      setRefreshingQuotaId(null);
+    }
+  };
 
   const editProxy = async (acc: PoolAccount) => {
     const next = window.prompt(
@@ -284,7 +300,18 @@ export function AccountsTable({
                     )}
                     {acc.active && <span className="ml-1 text-xs text-emerald-500 font-normal">● active</span>}
                   </div>
-                  <QuotaBadges quota={acc.quota} />
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    <QuotaBadges quota={acc.quota} />
+                    <button
+                      onClick={() => refreshAccountQuota(acc)}
+                      disabled={refreshingQuotaId === acc.id}
+                      className="inline-flex items-center gap-1 mt-1 px-1.5 py-0.5 text-[10px] font-medium rounded bg-secondary hover:bg-secondary/80 text-muted-foreground hover:text-foreground transition-colors border border-border/50 disabled:opacity-50"
+                      title="Check quota with Google for this account"
+                    >
+                      <Gauge className={`w-3 h-3 ${refreshingQuotaId === acc.id ? 'animate-spin' : ''}`} />
+                      Check
+                    </button>
+                  </div>
                 </td>
                 <td className="p-3">
                   <div className="flex flex-col gap-1 items-start">
