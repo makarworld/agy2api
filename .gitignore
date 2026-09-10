@@ -31,6 +31,12 @@ Thumbs.db
 # Runtime stats DB (local data, not source)
 app/data/
 
+# Local SQLite with accounts / OAuth tokens — never commit
+data/
+*.db
+*.db-shm
+*.db-wal
+
 # Account pool credential store must NEVER be inside this repo's history --
 # it lives in its own separate private git repo, default path is outside
 # the working tree (~/.agy2api-pool), this entry just guards against
