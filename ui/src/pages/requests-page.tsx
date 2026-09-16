@@ -133,6 +133,427 @@ function EndpointBadge({ endpoint }: { endpoint: string }) {
   );
 }
 
+function isPromptKey(key?: string): boolean {
+  if (!key) return false;
+  const lower = key.toLowerCase();
+  return lower === 'text' || lower === 'prompt' || lower === 'content' || lower === 'systeminstruction';
+}
+
+function collectPromptPaths(obj: any, path = 'root', paths: string[] = []): string[] {
+  if (!obj || typeof obj !== 'object') return paths;
+  if (Array.isArray(obj)) {
+    obj.forEach((item, idx) => {
+      collectPromptPaths(item, `${path}[${idx}]`, paths);
+    });
+  } else {
+    for (const [k, v] of Object.entries(obj)) {
+      const curPath = `${path}.${k}`;
+      if (
+        typeof v === 'string' &&
+        (isPromptKey(k) ||
+          (curPath.includes('contents') && k === 'text') ||
+          (curPath.includes('systemInstruction') && k === 'text'))
+      ) {
+        paths.push(curPath);
+      } else if (typeof v === 'object' && v !== null) {
+        collectPromptPaths(v, curPath, paths);
+      }
+    }
+  }
+  return paths;
+}
+
+function JsonNodeViewer({
+  value,
+  keyName,
+  path = 'root',
+  depth = 0,
+  isLast = true,
+  expandedPaths,
+  onTogglePath,
+}: {
+  value: any;
+  keyName?: string | number;
+  path?: string;
+  depth?: number;
+  isLast?: boolean;
+  expandedPaths: Set<string>;
+  onTogglePath: (path: string) => void;
+}) {
+  const indent = '  '.repeat(depth);
+
+  const renderKey = () => {
+    if (keyName === undefined) return null;
+    return (
+      <>
+        <span className="text-sky-400 dark:text-sky-300 font-medium">"{keyName}"</span>
+        <span className="text-muted-foreground">: </span>
+      </>
+    );
+  };
+
+  if (value === null) {
+    return (
+      <div>
+        <span>{indent}</span>
+        {renderKey()}
+        <span className="text-muted-foreground font-semibold">null</span>
+        {!isLast && <span className="text-muted-foreground">,</span>}
+      </div>
+    );
+  }
+
+  if (typeof value === 'boolean') {
+    return (
+      <div>
+        <span>{indent}</span>
+        {renderKey()}
+        <span className="text-amber-400 font-semibold">{value ? 'true' : 'false'}</span>
+        {!isLast && <span className="text-muted-foreground">,</span>}
+      </div>
+    );
+  }
+
+  if (typeof value === 'number') {
+    return (
+      <div>
+        <span>{indent}</span>
+        {renderKey()}
+        <span className="text-purple-400 font-semibold">{value}</span>
+        {!isLast && <span className="text-muted-foreground">,</span>}
+      </div>
+    );
+  }
+
+  if (typeof value === 'string') {
+    const isPrompt =
+      (typeof keyName === 'string' && isPromptKey(keyName)) ||
+      (path.includes('contents') && keyName === 'text') ||
+      (path.includes('systemInstruction') && keyName === 'text');
+    const isExpanded = expandedPaths.has(path);
+
+    if (isPrompt) {
+      if (!isExpanded) {
+        return (
+          <div className="flex items-center flex-wrap">
+            <span>{indent}</span>
+            {renderKey()}
+            <button
+              type="button"
+              onClick={() => onTogglePath(path)}
+              className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-xs font-mono bg-primary/10 hover:bg-primary/20 text-primary border border-primary/30 transition-colors cursor-pointer select-none my-0.5"
+              title="Click to expand prompt"
+            >
+              <span className="font-bold">...</span>
+              <span className="text-[10px] opacity-75 font-sans">({value.length.toLocaleString()} chars)</span>
+            </button>
+            {!isLast && <span className="text-muted-foreground">,</span>}
+          </div>
+        );
+      }
+
+      return (
+        <div>
+          <div className="flex items-center gap-2">
+            <span>{indent}</span>
+            {renderKey()}
+            <button
+              type="button"
+              onClick={() => onTogglePath(path)}
+              className="text-[11px] text-primary hover:underline cursor-pointer font-sans"
+            >
+              [collapse]
+            </button>
+          </div>
+          <div
+            style={{ paddingLeft: `${(depth + 1) * 16}px` }}
+            className="my-1.5 p-3 rounded-lg bg-muted/50 border border-border/80 text-foreground font-mono text-xs whitespace-pre-wrap break-words select-text max-h-[50vh] overflow-y-auto"
+          >
+            {value}
+          </div>
+          <div>
+            <span>{indent}</span>
+            {!isLast && <span className="text-muted-foreground">,</span>}
+          </div>
+        </div>
+      );
+    }
+
+    return (
+      <div>
+        <span>{indent}</span>
+        {renderKey()}
+        <span className="text-emerald-400 dark:text-emerald-300 break-all">{JSON.stringify(value)}</span>
+        {!isLast && <span className="text-muted-foreground">,</span>}
+      </div>
+    );
+  }
+
+  if (Array.isArray(value)) {
+    if (value.length === 0) {
+      return (
+        <div>
+          <span>{indent}</span>
+          {renderKey()}
+          <span className="text-muted-foreground">[]</span>
+          {!isLast && <span className="text-muted-foreground">,</span>}
+        </div>
+      );
+    }
+
+    return (
+      <div>
+        <div>
+          <span>{indent}</span>
+          {renderKey()}
+          <span className="text-muted-foreground">[</span>
+        </div>
+        {value.map((item, idx) => (
+          <JsonNodeViewer
+            key={idx}
+            value={item}
+            path={`${path}[${idx}]`}
+            depth={depth + 1}
+            isLast={idx === value.length - 1}
+            expandedPaths={expandedPaths}
+            onTogglePath={onTogglePath}
+          />
+        ))}
+        <div>
+          <span>{indent}</span>
+          <span className="text-muted-foreground">]</span>
+          {!isLast && <span className="text-muted-foreground">,</span>}
+        </div>
+      </div>
+    );
+  }
+
+  if (typeof value === 'object') {
+    const entries = Object.entries(value);
+    if (entries.length === 0) {
+      return (
+        <div>
+          <span>{indent}</span>
+          {renderKey()}
+          <span className="text-muted-foreground">&#123;&#125;</span>
+          {!isLast && <span className="text-muted-foreground">,</span>}
+        </div>
+      );
+    }
+
+    return (
+      <div>
+        <div>
+          <span>{indent}</span>
+          {renderKey()}
+          <span className="text-muted-foreground">&#123;</span>
+        </div>
+        {entries.map(([k, v], idx) => (
+          <JsonNodeViewer
+            key={k}
+            value={v}
+            keyName={k}
+            path={`${path}.${k}`}
+            depth={depth + 1}
+            isLast={idx === entries.length - 1}
+            expandedPaths={expandedPaths}
+            onTogglePath={onTogglePath}
+          />
+        ))}
+        <div>
+          <span>{indent}</span>
+          <span className="text-muted-foreground">&#125;</span>
+          {!isLast && <span className="text-muted-foreground">,</span>}
+        </div>
+      </div>
+    );
+  }
+
+  return null;
+}
+
+function ResponseStatusBadge({
+  status,
+  success,
+}: {
+  status?: number | null;
+  success: boolean;
+}) {
+  const code = status ?? (success ? 200 : 500);
+  let color = 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20';
+  let text = `${code} OK`;
+
+  if (code === 429) {
+    color = 'bg-amber-500/10 text-amber-400 border-amber-500/20';
+    text = '429 Rate Limited';
+  } else if (code === 401) {
+    color = 'bg-red-500/10 text-red-400 border-red-500/20';
+    text = '401 Unauthorized';
+  } else if (code === 0) {
+    color = 'bg-red-500/10 text-red-400 border-red-500/20';
+    text = 'Network Error';
+  } else if (code >= 400) {
+    color = 'bg-destructive/10 text-destructive border-destructive/20';
+    text = `${code} Error`;
+  }
+
+  return (
+    <span
+      className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-medium border font-mono ${color}`}
+    >
+      {success && code === 200 ? <CheckCircle2 className="w-3 h-3" /> : <XCircle className="w-3 h-3 text-current" />}
+      {text}
+    </span>
+  );
+}
+
+function RequestAndResponseView({ request }: { request: RequestItem }) {
+  const parsedRequest = useMemo(() => {
+    if (!request.raw_request) return null;
+    try {
+      return typeof request.raw_request === 'string' ? JSON.parse(request.raw_request) : request.raw_request;
+    } catch {
+      return null;
+    }
+  }, [request.raw_request]);
+
+  const parsedResponse = useMemo(() => {
+    if (!request.raw_response) return null;
+    try {
+      return typeof request.raw_response === 'string' ? JSON.parse(request.raw_response) : request.raw_response;
+    } catch {
+      return null;
+    }
+  }, [request.raw_response]);
+
+  const allPromptPaths = useMemo(() => collectPromptPaths(parsedRequest), [parsedRequest]);
+  const [expandedPaths, setExpandedPaths] = useState<Set<string>>(new Set());
+
+  const togglePath = (path: string) => {
+    setExpandedPaths((prev) => {
+      const next = new Set(prev);
+      if (next.has(path)) {
+        next.delete(path);
+      } else {
+        next.add(path);
+      }
+      return next;
+    });
+  };
+
+  const allExpanded = allPromptPaths.length > 0 && expandedPaths.size === allPromptPaths.length;
+  const toggleAll = () => {
+    if (allExpanded) {
+      setExpandedPaths(new Set());
+    } else {
+      setExpandedPaths(new Set(allPromptPaths));
+    }
+  };
+
+  const rawRequestString = useMemo(() => {
+    if (parsedRequest) return JSON.stringify(parsedRequest, null, 2);
+    if (request.raw_request) return request.raw_request;
+    return '';
+  }, [parsedRequest, request.raw_request]);
+
+  const rawResponseString = useMemo(() => {
+    if (parsedResponse) return JSON.stringify(parsedResponse, null, 2);
+    if (request.raw_response) return request.raw_response;
+    if (request.response_preview) return request.response_preview;
+    return '';
+  }, [parsedResponse, request.raw_response, request.response_preview]);
+
+  return (
+    <div className="space-y-6">
+      {/* 1. Raw Request Section */}
+      <div className="space-y-3">
+        <div className="flex items-center justify-between flex-wrap gap-2">
+          <div className="flex items-center gap-2">
+            <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
+              <Zap className="w-3.5 h-3.5 text-primary" /> Upstream Request
+            </span>
+            {request.pool_account && (
+              <span className="text-[11px] font-mono bg-muted px-2 py-0.5 rounded text-muted-foreground border border-border/60">
+                Account: {request.pool_account}
+              </span>
+            )}
+            <span className="text-[11px] text-muted-foreground">(Last Attempt)</span>
+          </div>
+
+          <div className="flex items-center gap-2">
+            {allPromptPaths.length > 0 && (
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-7 text-xs px-2.5 gap-1.5 cursor-pointer"
+                onClick={toggleAll}
+              >
+                {allExpanded ? 'Collapse All Prompts' : `Expand All Prompts (${allPromptPaths.length})`}
+              </Button>
+            )}
+            {rawRequestString && <CopyButton text={rawRequestString} label="Copy JSON" />}
+          </div>
+        </div>
+
+        {parsedRequest ? (
+          <div className="p-4 max-h-[50vh] overflow-y-auto rounded-xl bg-muted/40 border border-border/80 text-xs font-mono overflow-x-auto text-foreground select-text">
+            <JsonNodeViewer
+              value={parsedRequest}
+              expandedPaths={expandedPaths}
+              onTogglePath={togglePath}
+            />
+          </div>
+        ) : request.raw_request ? (
+          <pre className="p-4 max-h-[50vh] rounded-xl bg-muted/40 border border-border text-xs font-mono overflow-x-auto text-foreground whitespace-pre-wrap">
+            {request.raw_request}
+          </pre>
+        ) : (
+          <div className="p-4 rounded-xl bg-muted/20 border border-border/60 text-xs text-muted-foreground flex items-center justify-between">
+            <span>No raw upstream request recorded for this entry (legacy record or local shortcut).</span>
+            {request.prompt_preview && <span className="font-mono">Preview available in Formatted View</span>}
+          </div>
+        )}
+      </div>
+
+      {/* 2. Response Section */}
+      <div className="space-y-3 pt-4 border-t border-border">
+        <div className="flex items-center justify-between flex-wrap gap-2">
+          <div className="flex items-center gap-2.5">
+            <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
+              <Bot className="w-3.5 h-3.5 text-primary" /> Response
+            </span>
+            <ResponseStatusBadge
+              status={request.response_status}
+              success={!!request.success}
+            />
+            {request.latency_ms !== null && (
+              <span className="text-xs text-muted-foreground font-mono">
+                {formatLatency(request.latency_ms)}
+              </span>
+            )}
+          </div>
+
+          {rawResponseString && <CopyButton text={rawResponseString} label="Copy Response" />}
+        </div>
+
+        <div className="p-4 max-h-[45vh] overflow-y-auto rounded-xl bg-muted/30 border border-border/80 text-xs font-mono overflow-x-auto text-foreground select-text">
+          {parsedResponse ? (
+            <pre className="whitespace-pre-wrap break-words">
+              {JSON.stringify(parsedResponse, null, 2)}
+            </pre>
+          ) : request.raw_response ? (
+            <pre className="whitespace-pre-wrap break-words">{request.raw_response}</pre>
+          ) : request.response_preview ? (
+            <pre className="whitespace-pre-wrap break-words">{request.response_preview}</pre>
+          ) : (
+            <span className="italic text-muted-foreground">No response recorded</span>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function RequestDetailModal({
   request,
   onClose,
@@ -140,7 +561,7 @@ function RequestDetailModal({
   request: RequestItem;
   onClose: () => void;
 }) {
-  const [tab, setTab] = useState<'preview' | 'raw'>('preview');
+  const [tab, setTab] = useState<'preview' | 'raw' | 'request'>('preview');
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
@@ -215,11 +636,19 @@ function RequestDetailModal({
           </button>
           <button
             onClick={() => setTab('raw')}
-            className={`pb-2 font-medium border-b-2 transition-colors ${
+            className={`pb-2 font-medium border-b-2 transition-colors cursor-pointer ${
               tab === 'raw' ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'
             }`}
           >
             Raw JSON
+          </button>
+          <button
+            onClick={() => setTab('request')}
+            className={`pb-2 font-medium border-b-2 transition-colors cursor-pointer ${
+              tab === 'request' ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'
+            }`}
+          >
+            Request
           </button>
         </div>
 
@@ -235,7 +664,7 @@ function RequestDetailModal({
                   </span>
                   {request.prompt_preview && <CopyButton text={request.prompt_preview} label="Copy Prompt" />}
                 </div>
-                <div className="p-4 rounded-xl bg-muted/40 border border-border/80 text-sm whitespace-pre-wrap font-sans text-foreground select-text">
+                <div className="p-4 max-h-[60vh] overflow-y-auto rounded-xl bg-muted/40 border border-border/80 text-sm whitespace-pre-wrap break-words font-sans text-foreground select-text">
                   {request.prompt_preview || <span className="italic text-muted-foreground">No prompt recorded</span>}
                 </div>
               </div>
@@ -245,11 +674,14 @@ function RequestDetailModal({
                 <div className="space-y-2">
                   <div className="flex items-center justify-between">
                     <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
-                      <Bot className="w-3.5 h-3.5 text-emerald-500" /> Assistant Response
+                      <Bot className="w-3.5 h-3.5 text-emerald-500" /> Response ·{' '}
+                      <span className={Boolean(request.success) ? 'text-emerald-400' : 'text-red-400'}>
+                        {Boolean(request.success) ? 200 : 500}
+                      </span>
                     </span>
                     {request.response_preview && <CopyButton text={request.response_preview} label="Copy Response" />}
                   </div>
-                  <div className="p-4 rounded-xl bg-muted/30 border border-border/80 text-sm prose dark:prose-invert max-w-none select-text">
+                  <div className="p-4 max-h-[60vh] overflow-y-auto rounded-xl bg-muted/30 border border-border/80 text-sm prose dark:prose-invert max-w-none select-text">
                     {request.response_preview ? (
                       <ReactMarkdown>{request.response_preview}</ReactMarkdown>
                     ) : (
@@ -269,10 +701,12 @@ function RequestDetailModal({
                 </div>
               )}
             </>
-          ) : (
+          ) : tab === 'raw' ? (
             <pre className="p-4 rounded-xl bg-muted/40 border border-border text-xs font-mono overflow-x-auto text-foreground">
               {JSON.stringify(request, null, 2)}
             </pre>
+          ) : (
+            <RequestAndResponseView request={request} />
           )}
         </div>
 
@@ -498,7 +932,7 @@ function ChatCard({
                           </span>
                           {req.prompt_preview && <CopyButton text={req.prompt_preview} />}
                         </div>
-                        <div className="p-2.5 rounded-lg bg-muted/40 border border-border/50 text-foreground font-sans line-clamp-4 select-text">
+                        <div className="p-2.5 max-h-40 overflow-y-auto rounded-lg bg-muted/40 border border-border/50 text-foreground font-sans whitespace-pre-wrap break-words select-text">
                           {req.prompt_preview || <span className="italic text-muted-foreground">No prompt text</span>}
                         </div>
                       </div>
@@ -507,12 +941,15 @@ function ChatCard({
                       <div className="space-y-1">
                         <div className="flex items-center justify-between text-muted-foreground font-medium">
                           <span className="flex items-center gap-1 text-emerald-500">
-                            <Bot className="w-3 h-3" /> Response
+                            <Bot className="w-3 h-3" /> Response ·{' '}
+                            <span className={Boolean(req.success) ? 'text-emerald-400' : 'text-red-400'}>
+                              {Boolean(req.success) ? 200 : 500}
+                            </span>
                           </span>
                           {req.response_preview && <CopyButton text={req.response_preview} />}
                         </div>
                         {Boolean(req.success) ? (
-                          <div className="p-2.5 rounded-lg bg-muted/20 border border-border/50 text-foreground font-sans line-clamp-4 select-text">
+                          <div className="p-2.5 max-h-40 overflow-y-auto rounded-lg bg-muted/20 border border-border/50 text-foreground font-sans whitespace-pre-wrap break-words select-text">
                             {req.response_preview || <span className="italic text-muted-foreground">No response text</span>}
                           </div>
                         ) : (

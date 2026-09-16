@@ -5,26 +5,86 @@ import time
 import uuid
 from typing import Any
 
-from fastapi import APIRouter, BackgroundTasks, Depends, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from app.api.anthropic_models import AnthropicMessagesRequest
 from app.core import pool_manager, stats_store
 from app.core.agy_runner import run_completion, stream_agy_completion, with_heartbeat
+from app.core.agy_http_client import ProQuotaExhaustedError
 from app.core.auto_classifier import (
+    classifier_model,
+    classifier_effort,
     is_auto_classifier_request,
-    shortcut_enabled,
     shortcut_response,
 )
 from app.core.file_handler import TempFileManager
 from app.core.http_tools_bridge import stream_tool_call_key
 from app.core.key_manager import record_key_output_tokens
-from app.core.model_manager import get_force_model, resolve_backend_model
+from app.core.model_manager import get_force_model, resolve_backend_model, resolve_http_model
+from app.core.request_tracer import get_current_trace, start_trace
 from app.core.security import get_anthropic_api_key
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+_TEST123_ASK_USER_QUESTION = {
+    "name": "AskUserQuestion",
+    "description": "Ask the user one or more structured multiple-choice questions.",
+    "input_schema": {
+        "type": "object",
+        "required": ["questions"],
+        "properties": {
+            "questions": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "required": ["question", "header", "multiSelect", "options"],
+                    "properties": {
+                        "question": {"type": "string"},
+                        "header": {"type": "string", "maxLength": 12},
+                        "multiSelect": {"type": "boolean"},
+                        "options": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "required": ["label", "description"],
+                                "properties": {
+                                    "label": {"type": "string"},
+                                    "description": {"type": "string"},
+                                    "preview": {"type": "string"},
+                                },
+                            },
+                        },
+                    },
+                },
+            }
+        },
+    },
+}
+
+
+def _tools_for_model(model: str, tools: list[dict] | None) -> list[dict] | None:
+    if model != "test123":
+        return tools
+    existing = list(tools or [])
+    if not any(tool.get("name") == "AskUserQuestion" for tool in existing):
+        existing.append(_TEST123_ASK_USER_QUESTION)
+    return existing
+
+
+def _test123_system(system: str | None) -> str | None:
+    if system is None:
+        system = ""
+    if not system:
+        return "TEST123: call AskUserQuestion exactly once for this request. Do not answer with plain text."
+    return f"{system}\n\nTEST123: call AskUserQuestion exactly once for this request. Do not answer with plain text."
+
+
+def _is_model_capacity_error(error: Exception) -> bool:
+    detail = str(error).lower()
+    return "model_capacity_exhausted" in detail or ("no capacity available" in detail and "http 503" in detail)
 
 
 def _extract_system_text(system) -> str | None:
@@ -253,6 +313,7 @@ async def _stream_response(
     tool_choice: Any | None = None,
     api_key: str | None = None,
     thought_as_text: bool | None = None,
+    thinking_level: str | None = None,
 ):
     msg_id = f"msg_{uuid.uuid4().hex[:24]}"
     fallback_prompt_tokens = max(1, sum(_message_char_len(m) for m in messages) // 4)
@@ -296,6 +357,7 @@ async def _stream_response(
                 tools=tools,
                 tool_choice=tool_choice,
                 thought_as_text=thought_as_text,
+                thinking_level=thinking_level,
             )
         ):
             if piece is None:
@@ -388,10 +450,11 @@ async def _stream_response(
     except Exception as e:
         logger.error(f"[anthropic] Stream exception ({type(e).__name__}): {e}")
         err_str = str(e)
+        trace = get_current_trace()
         await stats_store.record_request(
             endpoint="anthropic-chat",
             model=client_model,
-            pool_account=pool_manager.get_active_account_id(),
+            pool_account=(trace.pool_account if trace and trace.pool_account else pool_manager.get_active_account_id()),
             prompt_tokens=0,
             completion_tokens=max(1, len(err_str) // 4),
             cache_tokens=0,
@@ -402,8 +465,13 @@ async def _stream_response(
             chat_title=chat_title,
             prompt_preview=prompt_preview,
             response_preview=f"Error: {err_str}",
+            raw_request=trace.raw_request_str if trace else None,
+            raw_response=trace.raw_response_str if trace else None,
+            response_status=trace.response_status if trace and trace.response_status is not None else 500,
         )
-        if not assistant_chunks and not tool_calls_collected:
+        if isinstance(e, ProQuotaExhaustedError):
+            error_message = str(e)
+        elif not assistant_chunks and not tool_calls_collected:
             # Drop connection so client retries instead of treating error text as assistant message
             raise
         if text_block_open:
@@ -461,10 +529,11 @@ async def _stream_response(
 
     is_error = stop_reason == "error"
     preview = assistant_text[:1500] if assistant_text else json.dumps(tool_calls_collected)[:1500]
+    trace = get_current_trace()
     await stats_store.record_request(
         endpoint="anthropic-chat",
         model=client_model,
-        pool_account=pool_manager.get_active_account_id(),
+        pool_account=(trace.pool_account if trace and trace.pool_account else pool_manager.get_active_account_id()),
         prompt_tokens=prompt_tokens,
         completion_tokens=completion_tokens,
         cache_tokens=cache_tokens,
@@ -475,6 +544,11 @@ async def _stream_response(
         chat_title=chat_title,
         prompt_preview=prompt_preview,
         response_preview=preview,
+        raw_request=trace.raw_request_str if trace else None,
+        raw_response=trace.raw_response_str if trace else None,
+        response_status=trace.response_status
+        if trace and trace.response_status is not None
+        else (200 if not is_error else 500),
     )
     record_key_output_tokens(api_key, completion_tokens)
 
@@ -500,11 +574,15 @@ async def create_message(
 ):
     logger.info(f"[anthropic] Processing message request for model: {req.model}")
     start_time = time.time()
+    start_trace()
     file_mgr = TempFileManager()
     background_tasks.add_task(file_mgr.cleanup)
 
     messages, system, files = _build_messages(req.system, req.messages, file_mgr)
     agy_model = await resolve_backend_model(req.model)
+    display_model = (
+        f"{req.model} · {resolve_http_model(agy_model)[0]} · {os.environ.get('AGY_HTTP_MAX_OUTPUT_TOKENS', '8192')}"
+    )
     if get_force_model():
         logger.info(f"[anthropic] Force model: requested={req.model} backend={agy_model}")
 
@@ -521,7 +599,9 @@ async def create_message(
         system_text=system,
     )
 
-    if shortcut_enabled() and is_auto_classifier_request(messages, system=system, headers=dict(request.headers)):
+    classifier_request = is_auto_classifier_request(messages, system=system, headers=dict(request.headers))
+    selected_classifier_model = classifier_model()
+    if classifier_request and selected_classifier_model.lower() == "skip":
         response_text = shortcut_response()
         prompt_tokens = max(1, sum(_message_char_len(m) for m in messages) // 4)
         logger.info("[anthropic] auto-classifier shortcut -> %s", response_text)
@@ -543,7 +623,7 @@ async def create_message(
         completion_tokens = max(1, len(response_text) // 4)
         await stats_store.record_request(
             endpoint="anthropic-classifier-shortcut",
-            model=req.model,
+            model=display_model,
             pool_account=pool_manager.get_active_account_id(),
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
@@ -574,7 +654,17 @@ async def create_message(
             }
         )
 
+    if classifier_request and selected_classifier_model:
+        agy_model = await resolve_backend_model(selected_classifier_model)
+        classifier_effort_value = classifier_effort()
+        logger.info("[anthropic] auto-classifier model -> %s", agy_model)
+
     thought_param = req.thought_as_text if req.thought_as_text is not None else req.include_thoughts
+    request_tools = _tools_for_model(req.model, req.tools)
+    request_tool_choice = req.tool_choice
+    if req.model == "test123":
+        system = _test123_system(system)
+        request_tool_choice = {"type": "tool", "name": "AskUserQuestion"}
 
     if req.stream:
         return StreamingResponse(
@@ -587,10 +677,11 @@ async def create_message(
                 chat_id,
                 chat_title,
                 prompt_preview,
-                tools=req.tools,
-                tool_choice=req.tool_choice,
+                tools=request_tools,
+                tool_choice=request_tool_choice,
                 api_key=api_key,
                 thought_as_text=thought_param,
+                thinking_level=classifier_effort_value if classifier_request else None,
             ),
             media_type="text/event-stream",
         )
@@ -600,18 +691,20 @@ async def create_message(
             messages=messages,
             system=system,
             model=agy_model,
-            tools=req.tools,
-            tool_choice=req.tool_choice,
+            tools=request_tools,
+            tool_choice=request_tool_choice,
             thought_as_text=thought_param,
+            thinking_level=classifier_effort_value if classifier_request else None,
         )
     except Exception as e:
         logger.error(f"[anthropic] Message request exception ({type(e).__name__}): {e}")
         err_str = str(e)
         out_tokens = max(1, len(err_str) // 4)
+        trace = get_current_trace()
         await stats_store.record_request(
             endpoint="anthropic-chat",
-            model=req.model,
-            pool_account=pool_manager.get_active_account_id(),
+            model=display_model,
+            pool_account=(trace.pool_account if trace and trace.pool_account else pool_manager.get_active_account_id()),
             prompt_tokens=0,
             completion_tokens=out_tokens,
             cache_tokens=0,
@@ -622,7 +715,15 @@ async def create_message(
             chat_title=chat_title,
             prompt_preview=prompt_preview,
             response_preview=f"Error: {err_str}",
+            raw_request=trace.raw_request_str if trace else None,
+            raw_response=trace.raw_response_str if trace else None,
+            response_status=trace.response_status if trace and trace.response_status is not None else 500,
         )
+        if _is_model_capacity_error(e):
+            raise HTTPException(
+                status_code=503,
+                detail="Upstream model capacity exhausted; retry the request",
+            ) from e
         return JSONResponse(
             content={
                 "id": f"msg_{uuid.uuid4().hex[:24]}",
@@ -671,10 +772,11 @@ async def create_message(
         cache_tokens = 0
 
     preview = assistant_text[:1500] if assistant_text else json.dumps(tool_calls)[:1500]
+    trace = get_current_trace()
     await stats_store.record_request(
         endpoint="anthropic-chat",
-        model=req.model,
-        pool_account=pool_manager.get_active_account_id(),
+        model=display_model,
+        pool_account=(trace.pool_account if trace and trace.pool_account else pool_manager.get_active_account_id()),
         prompt_tokens=prompt_tokens,
         completion_tokens=completion_tokens,
         cache_tokens=cache_tokens,
@@ -685,6 +787,9 @@ async def create_message(
         chat_title=chat_title,
         prompt_preview=prompt_preview,
         response_preview=preview,
+        raw_request=trace.raw_request_str if trace else None,
+        raw_response=trace.raw_response_str if trace else None,
+        response_status=trace.response_status if trace and trace.response_status is not None else 200,
     )
     record_key_output_tokens(api_key, completion_tokens)
 

@@ -16,7 +16,7 @@ Your ENTIRE response MUST begin with <block>. Do NOT output any analysis, reason
 class TestAutoClassifier(unittest.TestCase):
     def setUp(self):
         self._env = os.environ.copy()
-        os.environ.pop("AGY_AUTO_CLASSIFIER_SHORTCUT", None)
+        os.environ.pop("AGY_AUTO_CLASSIFIER_MODEL", None)
         os.environ.pop("AGY_AUTO_CLASSIFIER_RESPONSE", None)
 
     def tearDown(self):
@@ -38,9 +38,13 @@ class TestAutoClassifier(unittest.TestCase):
     def test_shortcut_disabled_by_default(self):
         self.assertFalse(auto_classifier.shortcut_enabled())
 
-    def test_shortcut_enabled_via_env(self):
-        os.environ["AGY_AUTO_CLASSIFIER_SHORTCUT"] = "true"
+    def test_skip_enabled_via_env(self):
+        os.environ["AGY_AUTO_CLASSIFIER_MODEL"] = "skip"
         self.assertTrue(auto_classifier.shortcut_enabled())
+
+    def test_classifier_model(self):
+        os.environ["AGY_AUTO_CLASSIFIER_MODEL"] = "max-gem"
+        self.assertEqual(auto_classifier.classifier_model(), "max-gem")
 
     def test_custom_response(self):
         os.environ["AGY_AUTO_CLASSIFIER_RESPONSE"] = "<block>yes</block>"

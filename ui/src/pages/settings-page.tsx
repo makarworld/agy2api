@@ -4,6 +4,7 @@ import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { useApiKey } from '../hooks/use-api-key';
 import { apiUrl } from '../lib/api';
+import { buildThoughtTemplate, parseThoughtTemplate } from '../lib/thought-template';
 
 const KNOWN_BACKEND_MODELS = [
   'gemini-3.8-flash-tiered',
@@ -53,7 +54,7 @@ function parseAliasesString(raw: string): ModelAliasRow[] {
   // Ensure default max-gem is present as first row if not already defined
   const hasMaxGem = parsed.some((r) => r.alias === 'max-gem');
   if (!hasMaxGem) {
-    parsed.unshift({ alias: 'max-gem', target: 'gemini-3.8-flash-tiered' });
+    parsed.unshift({ alias: 'max-gem', target: 'gemini-3.8-flash-high' });
   }
 
   return parsed;
@@ -73,6 +74,7 @@ export function SettingsPage() {
   const [availableModels, setAvailableModels] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [thoughtTemplate, setThoughtTemplate] = useState('<think>\\n{...}\\n</think>\\n\\n');
   const [statusMsg, setStatusMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
   const authHeaders = {
@@ -92,6 +94,12 @@ export function SettingsPage() {
       const data = await resSettings.json();
       const loaded = data.settings || {};
       const parsedAliases = parseAliasesString(loaded.AGY_MODEL_ALIASES || '');
+      setThoughtTemplate(
+        buildThoughtTemplate(
+          loaded.AGY_THOUGHT_TEXT_PREFIX || '<think>\n',
+          loaded.AGY_THOUGHT_TEXT_SUFFIX || '\n</think>\n\n',
+        ),
+      );
       setAliases(parsedAliases);
       // Ensure serialized string is present in settings state right away
       setSettings({
@@ -108,9 +116,9 @@ export function SettingsPage() {
         for (const id of mList) {
           if (!merged.includes(id)) merged.push(id);
         }
-        setAvailableModels(merged);
+        setAvailableModels([...merged, ...parsedAliases.map((a) => a.alias).filter((a) => a && !merged.includes(a))]);
       } else {
-        setAvailableModels(KNOWN_BACKEND_MODELS);
+        setAvailableModels([...KNOWN_BACKEND_MODELS, ...parsedAliases.map((a) => a.alias).filter((a) => !KNOWN_BACKEND_MODELS.includes(a))]);
       }
     } catch (err: any) {
       setStatusMsg({ type: 'error', text: err.message });
@@ -170,12 +178,19 @@ export function SettingsPage() {
   };
 
   const handleSave = async () => {
+    const thoughtWrappers = parseThoughtTemplate(thoughtTemplate);
+    if (!thoughtWrappers) {
+      setStatusMsg({ type: 'error', text: 'Шаблон рассуждений должен содержать ровно один маркер {...}' });
+      return;
+    }
     setSaving(true);
     setStatusMsg(null);
     try {
       const payload = {
         ...settings,
         AGY_MODEL_ALIASES: serializeAliases(aliases),
+        AGY_THOUGHT_TEXT_PREFIX: thoughtWrappers.prefix,
+        AGY_THOUGHT_TEXT_SUFFIX: thoughtWrappers.suffix,
       };
       const res = await fetch(apiUrl('/v1/settings'), {
         method: 'PUT',
@@ -220,7 +235,12 @@ export function SettingsPage() {
             <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
             Обновить
           </Button>
-          <Button size="sm" onClick={handleSave} disabled={saving} className="gap-1.5">
+          <Button
+            size="sm"
+            onClick={handleSave}
+            disabled={saving || !parseThoughtTemplate(thoughtTemplate)}
+            className="gap-1.5"
+          >
             <Save className="w-4 h-4" />
             {saving ? 'Сохранение...' : 'Сохранить изменения'}
           </Button>
@@ -342,6 +362,21 @@ export function SettingsPage() {
               className="w-5 h-5 rounded accent-primary cursor-pointer"
             />
           </div>
+          <div>
+            <label className="text-sm font-medium">Шаблон блока рассуждений</label>
+            <Input
+              value={thoughtTemplate}
+              onChange={(e) => setThoughtTemplate(e.target.value)}
+              className="mt-1 font-mono text-sm"
+              aria-invalid={!parseThoughtTemplate(thoughtTemplate)}
+            />
+            <div className="mt-1 text-xs text-muted-foreground">
+              Маркер {'{...}'} обязателен и обозначает текст рассуждений. Перенос строки: \\n
+            </div>
+            {!parseThoughtTemplate(thoughtTemplate) && (
+              <div className="mt-1 text-xs text-destructive">Нужен ровно один неизменённый маркер {'{...}'}</div>
+            )}
+          </div>
           <div className="flex items-center justify-between py-1">
             <div>
               <div className="text-sm font-medium">AGY_HTTP_TRIM_TOOL_RESULTS</div>
@@ -368,15 +403,23 @@ export function SettingsPage() {
           </div>
           <div className="flex items-center justify-between py-1">
             <div>
-              <div className="text-sm font-medium">AGY_AUTO_CLASSIFIER_SHORTCUT</div>
-              <div className="text-xs text-muted-foreground">Быстрый классификатор запросов</div>
+              <div className="text-sm font-medium">AGY_AUTO_CLASSIFIER_MODEL</div>
+              <div className="text-xs text-muted-foreground">Модель для авто-классификатора</div>
             </div>
-            <input
-              type="checkbox"
-              checked={!!settings.AGY_AUTO_CLASSIFIER_SHORTCUT}
-              onChange={() => handleToggle('AGY_AUTO_CLASSIFIER_SHORTCUT')}
-              className="w-5 h-5 rounded accent-primary cursor-pointer"
-            />
+            <select
+              value={settings.AGY_AUTO_CLASSIFIER_MODEL || 'skip'}
+              onChange={(e) => handleChange('AGY_AUTO_CLASSIFIER_MODEL', e.target.value)}
+              className="border rounded-md bg-background px-3 py-2 text-sm min-w-64"
+            >
+              <option value="skip">Разрешить всё</option>
+              <option value="gemini-3.8-flash">Gemini 3.8</option><option value="gemini-3.7-flash">Gemini 3.7</option>
+              <option value="gemini-3.6-flash">Gemini 3.6</option><option value="claude-sonnet-4-6">Claude Sonnet 4.6</option>
+              <option value="claude-opus-4-6-thinking">Claude Opus 4.6</option><option value="gemini-pro-agent">Gemini Pro</option>
+              <option value="gpt-oss-120b-medium">GPT-OSS</option>
+            </select>
+            <select value={settings.AGY_AUTO_CLASSIFIER_EFFORT || 'low'} onChange={(e) => handleChange('AGY_AUTO_CLASSIFIER_EFFORT', e.target.value)} className="border rounded-md bg-background px-3 py-2 text-sm">
+              <option value="0">0</option><option value="low">low</option><option value="medium">medium</option><option value="high">high</option>
+            </select>
           </div>
           <div className="flex items-center justify-between py-1">
             <div>

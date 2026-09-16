@@ -1,5 +1,6 @@
 """Anthropic tools <-> Gemini functionDeclarations conversion for HTTP transport."""
 
+import ast
 import json
 import logging
 import os
@@ -124,6 +125,13 @@ def thought_as_text_enabled(*, tools_present: bool = False, param_override: Opti
     if env is not None and str(env).strip() != "":
         return str(env).strip().lower() in ("1", "true", "yes")
     return True
+
+
+def thought_text_wrappers() -> tuple[str, str]:
+    return (
+        os.environ.get("AGY_THOUGHT_TEXT_PREFIX", "<think>\n"),
+        os.environ.get("AGY_THOUGHT_TEXT_SUFFIX", "\n</think>\n\n"),
+    )
 
 
 def tool_result_trim_enabled() -> bool:
@@ -454,6 +462,7 @@ def messages_to_gemini_contents(
                 if not isinstance(args, dict):
                     args = {}
                 fc_id, thought_sig = decode_tool_id(tc.get("id", ""))
+                thought_sig = tc.get("thought_signature") or thought_sig
                 fc_part: dict = {"name": name, "args": args}
                 if fc_id:
                     fc_part["id"] = fc_id
@@ -531,16 +540,55 @@ def extract_parts_from_response(
             "input": args,
             "_stream_index": part_idx,
         }
+        if thought_sig:
+            tc["thought_signature"] = thought_sig
         dedupe_key = fc_id or (f"{name}@{part_idx}" if name else f"partial@{part_idx}")
         if dedupe_key in seen_call_keys:
             continue
         seen_call_keys.add(dedupe_key)
         tool_calls.append(tc)
 
-    if not text_chunks and not tool_calls and thought_chunks and allow_thought_text:
-        text_chunks = thought_chunks
+    visible_text = "".join(text_chunks)
+    if not tool_calls and visible_text:
+        parsed_text, parsed_calls = parse_text_serialized_tool_call(visible_text)
+        if parsed_calls:
+            visible_text = parsed_text
+            tool_calls.extend(parsed_calls)
 
-    if finish_reason and not text_chunks and not tool_calls:
+    if not visible_text and not tool_calls and thought_chunks and allow_thought_text:
+        visible_text = "".join(thought_chunks)
+
+    if finish_reason and not visible_text and not tool_calls:
         logger.warning("[http] empty stream chunk finishReason=%s", finish_reason)
 
-    return "".join(text_chunks), tool_calls, finish_reason
+    return visible_text, tool_calls, finish_reason
+
+
+def parse_text_serialized_tool_call(text: str) -> Tuple[str, List[dict]]:
+    """Parse Gemini's occasional Python-repr tool-call fallback safely."""
+    candidate = text[text.find("{") :].strip()
+    if not candidate or "'tool_calls'" not in candidate:
+        return text, []
+    try:
+        parsed = ast.parse(candidate, mode="exec")
+        expression = parsed.body[0].value if parsed.body and isinstance(parsed.body[0], ast.Expr) else None
+        payload = ast.literal_eval(expression) if expression is not None else None
+    except (SyntaxError, ValueError, TypeError):
+        return text, []
+    if not isinstance(payload, dict) or payload.get("stop_reason") != "tool_use":
+        return text, []
+    raw_calls = payload.get("tool_calls")
+    if not isinstance(raw_calls, list):
+        return text, []
+    calls = []
+    for call in raw_calls:
+        if not isinstance(call, dict) or not isinstance(call.get("name"), str):
+            return text, []
+        calls.append(
+            {
+                "id": str(call.get("id") or ""),
+                "name": call["name"],
+                "input": call.get("input") if isinstance(call.get("input"), dict) else {},
+            }
+        )
+    return str(payload.get("text") or ""), calls

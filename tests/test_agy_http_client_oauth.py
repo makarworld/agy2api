@@ -7,6 +7,36 @@ from app.core import agy_http_client
 
 
 class TestAgyHttpClientOAuthRetry(unittest.TestCase):
+    def setUp(self):
+        self._account_patch = patch.object(
+            agy_http_client.pool_manager,
+            "acquire_http_account",
+            new_callable=AsyncMock,
+            return_value=(None, None, None),
+        )
+        self._account_patch.start()
+
+    def tearDown(self):
+        self._account_patch.stop()
+
+    def test_503_no_capacity_is_model_capacity_error_not_account_rate_limit(self):
+        self.assertTrue(
+            agy_http_client._is_model_capacity_error(
+                503,
+                '{"message":"No capacity available for model gemini-3.8-flash-high"}',
+            )
+        )
+        self.assertFalse(agy_http_client._is_rate_limited(503, "No capacity available"))
+
+    def test_title_prompt_suppresses_thought_text(self):
+        self.assertTrue(
+            agy_http_client._suppress_thought_text(
+                "Write the title in Russian. Keep technical terms and code identifiers in their original form.",
+                [],
+            )
+        )
+        self.assertFalse(agy_http_client._suppress_thought_text("普通のプロンプト", []))
+
     def test_get_project_id_retries_on_401(self):
         async def _run():
             responses = [

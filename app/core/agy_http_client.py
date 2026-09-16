@@ -23,13 +23,29 @@ from app.core.http_tools_bridge import (
     http_debug_enabled,
     ingest_stream_tool_calls,
     messages_to_gemini_contents,
+    parse_text_serialized_tool_call,
     summarize_sse_parts,
     thought_as_text_enabled,
+    thought_text_wrappers,
     tool_choice_to_gemini_mode,
 )
 from app.core.model_manager import resolve_http_model
+from app.core.request_tracer import record_attempt
 
 logger = logging.getLogger(__name__)
+
+_TITLE_PROMPT_MARKER = "write the title in russian"
+_CLAUDE_CODE_SYSTEM_MARKERS = ("x-anthropic-billing-header:", "You are Claude Code")
+
+
+class ProQuotaExhaustedError(RuntimeError):
+    """All accounts rejected the local Pro quota."""
+
+
+def _suppress_thought_text(system: Optional[str], messages: List[dict]) -> bool:
+    payload = json.dumps({"system": system or "", "messages": messages}, ensure_ascii=False).lower()
+    return _TITLE_PROMPT_MARKER in payload
+
 
 SAFETY_SETTINGS = [
     {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
@@ -47,8 +63,27 @@ def _gemini_home() -> str:
     return os.path.expanduser("~/.gemini")
 
 
-def _agent_request_id() -> str:
-    return f"agent/{uuid.uuid4()}/{int(time.time() * 1000)}/{uuid.uuid4()}/1"
+def _agent_request_id(cascade_id: str, trajectory_id: str, step: int) -> str:
+    return f"agent/{cascade_id}/{int(time.time() * 1000)}/{trajectory_id}/{step}"
+
+
+_HAR_MODEL_ENUMS = {
+    "gemini-3.8-flash-high": "MODEL_PLACEHOLDER_M318",
+    "gemini-3.8-flash-low": "MODEL_PLACEHOLDER_M320",
+    "gemini-3.7-flash-high": "MODEL_PLACEHOLDER_M298",
+    "gemini-3.7-flash-low": "MODEL_PLACEHOLDER_M300",
+    "gemini-3.6-flash-high": "MODEL_PLACEHOLDER_M71",
+    "gemini-3.6-flash-low": "MODEL_PLACEHOLDER_M73",
+    "gemini-3.1-pro-low": "MODEL_PLACEHOLDER_M36",
+    "gemini-pro-agent": "MODEL_PLACEHOLDER_M16",
+    "gpt-oss-120b-medium": "MODEL_OPENAI_GPT_OSS_120B_MEDIUM",
+    "claude-opus-4-6-thinking": "MODEL_PLACEHOLDER_M26",
+    "claude-sonnet-4-6": "MODEL_PLACEHOLDER_M35",
+}
+
+
+def _model_enum(model: str) -> str:
+    return _HAR_MODEL_ENUMS.get(model.lower(), model)
 
 
 def _normalize_project_id(raw: Any) -> str:
@@ -135,7 +170,7 @@ async def _get_project_id(
         response = await client.post(
             LOAD_CODEASSIST_URL,
             headers=cloudcode_headers(access_token),
-            json={},
+            json={"metadata": {"ideType": "ANTIGRAVITY"}},
         )
     if response.status_code == 401 and not _auth_retried:
         logger.warning("[http] loadCodeAssist 401 — forcing OAuth refresh and retrying")
@@ -158,13 +193,18 @@ def _is_rate_limited(status_code: int, detail: str) -> bool:
     return any(sig in lowered for sig in pool_manager.RATE_LIMIT_SIGNALS)
 
 
+def _is_model_capacity_error(status_code: int, detail: str) -> bool:
+    lowered = detail.lower()
+    return status_code == 503 and ("no capacity available" in lowered or "service is currently unavailable" in lowered)
+
+
 def _map_usage(usage_metadata: dict) -> dict:
     if not usage_metadata:
         return {}
     # promptTokenCount is total input; cachedContentTokenCount is a subset (not additive).
     prompt_total = usage_metadata.get("promptTokenCount", 0)
     cache_read = usage_metadata.get("cachedContentTokenCount", 0)
-    return {
+    body = {
         "input_tokens": prompt_total,
         "output_tokens": usage_metadata.get("candidatesTokenCount", 0),
         "thinking_tokens": usage_metadata.get("thoughtsTokenCount", 0),
@@ -173,6 +213,7 @@ def _map_usage(usage_metadata: dict) -> dict:
         + usage_metadata.get("candidatesTokenCount", 0)
         + usage_metadata.get("thoughtsTokenCount", 0),
     }
+    return body
 
 
 def _generation_config(
@@ -180,21 +221,51 @@ def _generation_config(
     thinking_level: Optional[str],
     *,
     tools_present: bool = False,
-    max_output_tokens: int = 8192,
+    max_output_tokens: int = 65536,
 ) -> dict:
+    lower_model = backend_model.lower()
+    if lower_model.startswith("claude-"):
+        max_output_tokens, default_budget = 64000, 1024
+    elif lower_model == "gpt-oss-120b-medium":
+        max_output_tokens, default_budget = 32768, 8192
+    elif lower_model == "gemini-pro-agent":
+        max_output_tokens, default_budget = 65535, 10001
+    elif lower_model.endswith("-low"):
+        default_budget = 1000
+    elif lower_model.endswith("-medium"):
+        default_budget = 4000
+    else:
+        default_budget = -1
     gen_config: dict = {"maxOutputTokens": max_output_tokens}
     thinking_cfg: dict = {}
 
-    if thinking_level:
-        thinking_cfg["thinkingLevel"] = thinking_level
-    if backend_model.startswith("gemini-3.") and "flash" in backend_model and not tools_present:
-        thinking_cfg.setdefault("includeThoughts", True)
-        thinking_cfg.setdefault("thinkingBudget", -1)
-    elif tools_present:
+    is_pro = "pro" in lower_model
+    is_gemini_3 = lower_model.startswith("gemini-3.") or "gemini-3" in lower_model
+
+    if thinking_level == "zero":
         thinking_cfg["includeThoughts"] = False
         thinking_cfg["thinkingBudget"] = 0
+    elif thinking_level and lower_model.startswith("gemini-"):
+        default_budget = {"low": 1000, "medium": 4000, "high": -1}.get(thinking_level, default_budget)
     elif thinking_level:
-        thinking_cfg.setdefault("includeThoughts", False)
+        thinking_cfg["thinkingLevel"] = thinking_level
+
+    if is_pro:
+        # Gemini Pro models only work in thinking mode and reject budget 0.
+        thinking_cfg.setdefault("includeThoughts", True)
+        thinking_cfg.setdefault("thinkingBudget", default_budget)
+    elif thinking_level:
+        # Explicit thinking level requested (e.g. high/medium/low for flash)
+        thinking_cfg.setdefault("includeThoughts", True)
+        thinking_cfg.setdefault("thinkingBudget", default_budget)
+    elif is_gemini_3 and "flash" in lower_model:
+        # Gemini 3.x Flash without explicit level (auto/default)
+        thinking_cfg.setdefault("includeThoughts", True)
+        thinking_cfg.setdefault("thinkingBudget", default_budget)
+    elif tools_present:
+        # Legacy/base models with tools -> disable thinking for speed
+        thinking_cfg["includeThoughts"] = True
+        thinking_cfg["thinkingBudget"] = default_budget
 
     if thinking_cfg:
         gen_config["thinkingConfig"] = thinking_cfg
@@ -210,7 +281,11 @@ def _build_envelope(
     system: Optional[str] = None,
     tools: Optional[List[dict]] = None,
     tool_choice: Optional[Any] = None,
-    max_output_tokens: int = 8192,
+    max_output_tokens: int = 65536,
+    trajectory_id: Optional[str] = None,
+    cascade_id: Optional[str] = None,
+    step: int = 1,
+    request_seq: int = 1,
 ) -> dict:
     gemini_tools = anthropic_tools_to_gemini(tools)
     inner: dict = {
@@ -221,12 +296,15 @@ def _build_envelope(
             tools_present=bool(gemini_tools),
             max_output_tokens=max_output_tokens,
         ),
-        "safetySettings": SAFETY_SETTINGS,
         "sessionId": str(-abs(hash(uuid.uuid4()))),
     }
 
-    if system:
-        inner["systemInstruction"] = {"parts": [{"text": system}]}
+    if system and any(marker in system for marker in _CLAUDE_CODE_SYSTEM_MARKERS):
+        # Cloud Code masks rejection of Claude Code's identity system prompt as HTTP 429.
+        # Agy carries client context in user contents, which preserves it without rejection.
+        inner["contents"] = [{"role": "user", "parts": [{"text": system}]}] + contents
+    elif system:
+        inner["systemInstruction"] = {"role": "user", "parts": [{"text": system}]}
 
     if gemini_tools:
         inner["tools"] = gemini_tools
@@ -234,14 +312,26 @@ def _build_envelope(
         if mode:
             inner["toolConfig"] = {"functionCallingConfig": {"mode": mode}}
 
-    return {
+    body = {
         "project": project_id,
-        "requestId": _agent_request_id(),
+        "requestId": _agent_request_id(cascade_id or str(uuid.uuid4()), trajectory_id or str(uuid.uuid4()), step),
         "model": backend_model,
         "userAgent": "antigravity",
         "requestType": "agent",
         "request": inner,
     }
+
+    if trajectory_id:
+        body["request"]["labels"] = {
+            "last_step_index": str(step - 1),
+            "model_enum": _model_enum(backend_model),
+            "request_id": f"{trajectory_id}-{request_seq}",
+            "trajectory_id": trajectory_id,
+            "used_claude": str(backend_model.lower().startswith("claude-")).lower(),
+            "used_claude_conservative": str(backend_model.lower().startswith("claude-")).lower(),
+            "used_non_gemini_model": str(not backend_model.lower().startswith("gemini-")).lower(),
+        }
+    return body
 
 
 def _log_empty_stream_debug(
@@ -267,6 +357,16 @@ def _log_empty_stream_debug(
         logger.warning("[http][debug] last_sse=%s", json.dumps(last_sse_obj)[:2000])
 
 
+def _log_http_request(url: str, body: dict) -> None:
+    if http_debug_enabled():
+        logger.warning("[http][debug] REQUEST url=%s json=%s", url, json.dumps(body, ensure_ascii=False))
+
+
+def _log_http_response(url: str, status: int, body: str) -> None:
+    if http_debug_enabled():
+        logger.warning("[http][debug] RESPONSE url=%s status=%s body=%s", url, status, body)
+
+
 async def stream_completion(
     messages: List[dict],
     system: Optional[str] = None,
@@ -276,22 +376,38 @@ async def stream_completion(
     tool_choice: Optional[Any] = None,
     proxy: Optional[str] = None,
     thought_as_text: Optional[bool] = None,
+    thinking_level_override: Optional[str] = None,
 ) -> AsyncIterator[dict]:
     """Direct HTTP stream to Cloud Code Assist with Claude Code tools passthrough."""
     excluded: set[str] = set()
-    account_id, pool_proxy, access_token = await pool_manager.acquire_http_account()
+    backend_model, thinking_level = resolve_http_model(model or "gemini-2.5-flash")
+    if thinking_level_override is not None and "pro" not in backend_model.lower():
+        thinking_level = "zero" if thinking_level_override == "0" else thinking_level_override
+    try:
+        account_id, pool_proxy, access_token = await pool_manager.acquire_http_account(model=backend_model)
+    except RuntimeError as exc:
+        if backend_model == "gemini-pro-agent":
+            raise ProQuotaExhaustedError("Все лимиты Pro закончились. Переключите модель на другую.") from exc
+        raise
     proxy = proxy if proxy is not None else pool_proxy
     if not access_token:
         access_token = await get_access_token(proxy=proxy)
     project_id = await _get_project_id(access_token, account_id=account_id, proxy=proxy)
-    backend_model, thinking_level = resolve_http_model(model or "gemini-2.5-flash")
     tools_present = bool(anthropic_tools_to_gemini(tools))
     allow_thought_text = thought_as_text_enabled(tools_present=tools_present, param_override=thought_as_text)
-    max_output_tokens = int(os.environ.get("AGY_HTTP_MAX_OUTPUT_TOKENS", "8192"))
+    if _suppress_thought_text(system, messages):
+        allow_thought_text = False
+    thought_prefix, thought_suffix = thought_text_wrappers()
+    max_output_tokens = int(os.environ.get("AGY_HTTP_MAX_OUTPUT_TOKENS", "65536"))
+    cascade_id = str(uuid.uuid4())
+    trajectory_id = str(uuid.uuid4())
+    step = 1
+    request_seq = 1
 
     trim_aggressive = False
     retried_empty = False
     auth_retried = False
+    yielded_any_content = False
 
     while True:
         contents = messages_to_gemini_contents(messages, trim_aggressive=trim_aggressive)
@@ -307,6 +423,10 @@ async def stream_completion(
             tools=tools,
             tool_choice=tool_choice,
             max_output_tokens=max_output_tokens,
+            trajectory_id=trajectory_id,
+            cascade_id=cascade_id,
+            step=step,
+            request_seq=request_seq,
         )
         if model and model != backend_model and not retried_empty:
             logger.info("[http] model %s -> backend %s", model, backend_model)
@@ -319,9 +439,15 @@ async def stream_completion(
         retried_auth = False
         rate_limit_detail: Optional[str] = None
         in_think_block = False
+        serialized_text_buffer = ""
+        buffering_serialized_text = False
+
+        record_attempt(raw_request=body, pool_account=account_id)
 
         async with httpx.AsyncClient(**httpx_client_kwargs(proxy=proxy, timeout=300.0)) as client:
             try:
+                _log_http_request(STREAM_GENERATE_URL, body)
+                debug_response_lines: list[str] = []
                 async with client.stream(
                     "POST",
                     STREAM_GENERATE_URL,
@@ -330,6 +456,12 @@ async def stream_completion(
                 ) as response:
                     if response.status_code == 401 and not auth_retried:
                         detail = (await response.aread()).decode(errors="replace")[:200]
+                        record_attempt(
+                            raw_request=body,
+                            response_status=401,
+                            raw_response=detail,
+                            pool_account=account_id,
+                        )
                         logger.warning(
                             "[http] streamGenerateContent 401 — forcing OAuth refresh and retrying: %s",
                             detail,
@@ -338,7 +470,21 @@ async def stream_completion(
                         auth_retried = True
                         retried_auth = True
                     elif response.status_code != 200:
-                        detail = (await response.aread()).decode(errors="replace")[:500]
+                        detail = (await response.aread()).decode(errors="replace")
+                        record_attempt(
+                            raw_request=body,
+                            response_status=response.status_code,
+                            raw_response=detail,
+                            pool_account=account_id,
+                        )
+                        _log_http_response(STREAM_GENERATE_URL, response.status_code, detail)
+                        if _is_model_capacity_error(response.status_code, detail):
+                            logger.warning(
+                                "[http] model service unavailable; retrying without account rotation: "
+                                "model=%s reason=model_capacity endpoint=streamGenerateContent",
+                                backend_model,
+                            )
+                            raise RuntimeError(f"streamGenerateContent failed (HTTP {response.status_code}): {detail}")
                         if account_id and _is_rate_limited(response.status_code, detail):
                             rate_limit_detail = detail
                         else:
@@ -347,6 +493,8 @@ async def stream_completion(
                             raise RuntimeError(f"streamGenerateContent failed (HTTP {response.status_code}): {detail}")
                     else:
                         async for line in response.aiter_lines():
+                            if http_debug_enabled():
+                                debug_response_lines.append(line)
                             if not line or not line.startswith("data:"):
                                 continue
                             raw = line[5:].strip()
@@ -375,22 +523,38 @@ async def stream_completion(
                             is_thought_chunk = bool(parts and isinstance(parts[0], dict) and parts[0].get("thought"))
 
                             if delta_text:
+                                if tools_present and (
+                                    buffering_serialized_text or (not full_text and delta_text.lstrip().startswith("{"))
+                                ):
+                                    buffering_serialized_text = True
+                                    serialized_text_buffer += delta_text
+                                    full_text += delta_text
+                                    continue
                                 if allow_thought_text:
                                     if is_thought_chunk and not in_think_block:
                                         in_think_block = True
-                                        yield {"delta": "<think>\n"}
-                                        full_text += "<think>\n"
+                                        yield {"delta": thought_prefix}
+                                        full_text += thought_prefix
+                                        yielded_any_content = True
                                     elif not is_thought_chunk and in_think_block:
                                         in_think_block = False
-                                        yield {"delta": "\n</think>\n\n"}
-                                        full_text += "\n</think>\n\n"
+                                        yield {"delta": thought_suffix}
+                                        full_text += thought_suffix
+                                        yielded_any_content = True
 
                                 full_text += delta_text
                                 yield {"delta": delta_text}
+                                yielded_any_content = True
 
                             new_calls = ingest_stream_tool_calls(tool_calls, pending_tool_calls)
                             if new_calls:
                                 yield {"tool_calls": new_calls}
+                                yielded_any_content = True
+                        _log_http_response(
+                            STREAM_GENERATE_URL,
+                            response.status_code,
+                            "\n".join(debug_response_lines),
+                        )
             except (
                 httpx.ConnectError,
                 httpx.ConnectTimeout,
@@ -398,11 +562,40 @@ async def stream_completion(
                 httpx.ReadTimeout,
                 httpx.RemoteProtocolError,
             ) as net_err:
-                logger.warning("[http] network/connection error on account %s: %s", account_id, net_err)
+                record_attempt(
+                    raw_request=body,
+                    response_status=0,
+                    raw_response=f"NetworkError: {type(net_err).__name__}: {net_err}",
+                    pool_account=account_id,
+                )
+                if yielded_any_content:
+                    logger.error(
+                        "[http] network error after stream started (account=%s). Dropping stream to trigger clean client retry: %s",
+                        account_id,
+                        net_err,
+                    )
+                    raise RuntimeError(f"Network error mid-stream: {net_err}") from net_err
+
+                logger.warning(
+                    "[http] rotating account=%s model=%s endpoint=streamGenerateContent reason=network next=select: %s",
+                    account_id,
+                    backend_model,
+                    net_err,
+                )
                 if account_id:
+                    previous_account_id = account_id
                     excluded.add(account_id)
                     try:
-                        account_id, proxy, access_token = await pool_manager.acquire_http_account(exclude=excluded)
+                        account_id, proxy, access_token = await pool_manager.acquire_http_account(
+                            exclude=excluded, model=backend_model
+                        )
+                        logger.info(
+                            "[http] rotation complete previous=%s next=%s model=%s "
+                            "endpoint=streamGenerateContent reason=network",
+                            previous_account_id,
+                            account_id,
+                            backend_model,
+                        )
                         project_id = await _get_project_id(access_token, account_id=account_id, proxy=proxy)
                         continue
                     except Exception:
@@ -411,22 +604,53 @@ async def stream_completion(
 
         if in_think_block:
             in_think_block = False
-            yield {"delta": "\n</think>\n\n"}
-            full_text += "\n</think>\n\n"
+            yield {"delta": thought_suffix}
+            full_text += thought_suffix
 
         if rate_limit_detail is not None:
             cooldown = int(os.environ.get("AGY_POOL_COOLDOWN_SECONDS", "3600"))
-            await pool_manager.mark_rate_limited(account_id, cooldown)
+            previous_account_id = account_id
+            await pool_manager.mark_rate_limited(account_id, cooldown, model=backend_model)
             excluded.add(account_id)
-            logger.warning("[http] account %s rate-limited, rotating: %s", account_id, rate_limit_detail[:200])
-            account_id, proxy, access_token = await pool_manager.acquire_http_account(exclude=excluded)
+            logger.warning(
+                "[http] rotating account=%s model=%s endpoint=streamGenerateContent "
+                "reason=account_rate_limit next=select: %s",
+                account_id,
+                backend_model,
+                rate_limit_detail[:200],
+            )
+            try:
+                account_id, proxy, access_token = await pool_manager.acquire_http_account(
+                    exclude=excluded, model=backend_model
+                )
+            except RuntimeError as exc:
+                if backend_model == "gemini-pro-agent":
+                    raise ProQuotaExhaustedError("Все лимиты Pro закончились. Переключите модель на другую.") from exc
+                raise
+            logger.info(
+                "[http] rotation complete previous=%s next=%s model=%s "
+                "endpoint=streamGenerateContent reason=account_rate_limit",
+                previous_account_id,
+                account_id,
+                backend_model,
+            )
             project_id = await _get_project_id(access_token, account_id=account_id, proxy=proxy)
             continue
 
         if retried_auth:
+            step += 2
+            request_seq += 1
             continue
 
         all_tool_calls = finalize_pending_tool_calls(pending_tool_calls)
+        if full_text and not all_tool_calls:
+            parsed_text, parsed_calls = parse_text_serialized_tool_call(full_text)
+            if parsed_calls:
+                full_text = parsed_text
+                all_tool_calls = parsed_calls
+            elif serialized_text_buffer:
+                buffering_serialized_text = False
+                yield {"delta": serialized_text_buffer}
         if not full_text and not all_tool_calls:
             _log_empty_stream_debug(
                 finish_reason=last_finish_reason,
@@ -441,6 +665,8 @@ async def stream_completion(
                     last_finish_reason,
                 )
                 retried_empty = True
+                step += 2
+                request_seq += 1
                 trim_aggressive = True
                 max_output_tokens = min(max_output_tokens * 2, 16384)
                 continue
@@ -473,6 +699,32 @@ async def stream_completion(
 
         if account_id:
             await pool_manager.mark_success(account_id)
+
+        candidate_parts = []
+        if full_text:
+            candidate_parts.append({"text": full_text})
+        if all_tool_calls:
+            for tc in all_tool_calls:
+                candidate_parts.append({"functionCall": {"name": tc.get("name"), "args": tc.get("input", {})}})
+
+        raw_resp_obj = {
+            "candidates": [
+                {
+                    "content": {
+                        "role": "model",
+                        "parts": candidate_parts or [{"text": ""}],
+                    },
+                    "finishReason": last_finish_reason or "STOP",
+                }
+            ],
+            "usageMetadata": final_usage or (last_sse_obj or {}).get("usageMetadata", {}),
+        }
+        record_attempt(
+            raw_request=body,
+            response_status=200,
+            raw_response=raw_resp_obj,
+            pool_account=account_id,
+        )
 
         stop_reason = "tool_use" if all_tool_calls else "end_turn"
         yield {
@@ -568,6 +820,8 @@ async def generate_image(
         body = _build_image_request(prompt, project_id, backend_model, aspect_ratio, reference_parts)
         headers = cloudcode_headers(access_token, streaming=False)
 
+        record_attempt(raw_request=body, pool_account=account_id)
+
         async with httpx.AsyncClient(**httpx_client_kwargs(proxy=account_proxy, timeout=300.0)) as client:
             response = await client.post(GENERATE_CONTENT_URL, headers=headers, json=body)
             if response.status_code == 401:
@@ -577,15 +831,39 @@ async def generate_image(
 
             if response.status_code != 200:
                 detail = response.text[:500]
+                record_attempt(
+                    raw_request=body,
+                    response_status=response.status_code,
+                    raw_response=detail,
+                    pool_account=account_id,
+                )
+                if _is_model_capacity_error(response.status_code, detail):
+                    logger.warning(
+                        "[image] model service unavailable; retrying without account rotation: "
+                        "model=%s reason=model_capacity",
+                        backend_model,
+                    )
+                    raise RuntimeError(f"image generation failed (HTTP {response.status_code}): {detail}")
                 if account_id and _is_rate_limited(response.status_code, detail):
                     cooldown = int(os.environ.get("AGY_POOL_COOLDOWN_SECONDS", "3600"))
                     await pool_manager.mark_rate_limited(account_id, cooldown)
                     excluded.add(account_id)
-                    logger.warning("[image] account %s rate-limited, rotating: %s", account_id, detail[:200])
+                    logger.warning(
+                        "[image] rotating account=%s reason=account_rate_limit next=select: %s",
+                        account_id,
+                        detail[:200],
+                    )
                     continue
                 raise RuntimeError(f"image generation failed (HTTP {response.status_code}): {detail}")
 
-            image = _extract_image_from_json(response.json())
+            resp_json = response.json()
+            record_attempt(
+                raw_request=body,
+                response_status=200,
+                raw_response=resp_json,
+                pool_account=account_id,
+            )
+            image = _extract_image_from_json(resp_json)
 
         if account_id:
             await pool_manager.mark_success(account_id)

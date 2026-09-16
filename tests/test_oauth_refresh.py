@@ -405,7 +405,7 @@ class TestOAuthRefresh(unittest.TestCase):
         self.assertNotIn("X-Goog-Api-Client", headers)
 
         stream_headers = cloudcode_headers("ya29.test", streaming=True)
-        self.assertEqual(stream_headers["Accept"], "text/event-stream")
+        self.assertNotIn("Accept", stream_headers)
 
     def test_strips_refresh_token_whitespace(self):
         view = oauth_refresh._normalize_token_view(

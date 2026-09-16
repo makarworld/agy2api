@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 # subscription instead of hitting the configured custom base URL). Add more
 # pairs here as needed.
 DEFAULT_MODEL_ALIASES = {
-    "max-gem": "gemini-3.8-flash-tiered",
+    "max-gem": "gemini-3.8-flash-high",
 }
 
 
@@ -119,28 +119,78 @@ async def _resolve_requested_model(requested: str) -> str:
 
 
 async def resolve_backend_model(requested: str) -> str:
-    """Resolve backend model, honoring AGY_FORCE_MODEL when set."""
+    """Resolve backend model.
+
+    If requested model is known (exists in MODEL_ALIASES or available models list),
+    resolve it normally. AGY_FORCE_MODEL is used as fallback only when requested
+    model is unknown/not found in aliases or model list.
+    """
     force = get_force_model()
     if force:
+        # Check if requested model is known directly or via case-insensitive match
+        if requested in MODEL_ALIASES:
+            return MODEL_ALIASES[requested]
+
+        models = await get_available_models()
+        ids = [m.id for m in models]
+        if requested in ids:
+            return requested
+
+        lower = requested.lower()
+        matched = next((m for m in ids if m.lower() == lower), None)
+        if matched:
+            return matched
+
+        # Requested model is unknown -> fallback to force model
         return await _resolve_requested_model(force)
+
     return await _resolve_requested_model(requested)
 
 
 # Cloud Code Assist HTTP API uses different backend IDs than agy CLI slugs for some models.
 _HTTP_MODEL_MAP: dict[str, Tuple[str, Optional[str]]] = {
-    "gemini-3.8-flash": ("gemini-3.8-flash-high", None),
+    "gemini-3.8-flash": ("gemini-3.8-flash-high", "high"),
+    "gemini-3.8-flash-auto": ("gemini-3.8-flash-high", None),
+    "gemini-3.8-flash-high": ("gemini-3.8-flash-high", "high"),
+    "gemini-3.8-flash-medium": ("gemini-3.8-flash-low", "medium"),
+    "gemini-3.8-flash-low": ("gemini-3.8-flash-low", "low"),
+    "gemini-3.7-flash": ("gemini-3.7-flash-low", "high"),
+    "gemini-3.7-flash-auto": ("gemini-3.7-flash-low", None),
     "gemini-3.7-flash-high": ("gemini-3.7-flash-low", "high"),
     "gemini-3.7-flash-medium": ("gemini-3.7-flash-low", "medium"),
     "gemini-3.7-flash-low": ("gemini-3.7-flash-low", "low"),
-    "gemini-3.7-flash": ("gemini-3.7-flash-low", "high"),
+    "gemini-3.6-flash": ("gemini-3.6-flash-low", "high"),
+    "gemini-3.6-flash-auto": ("gemini-3.6-flash-low", None),
+    "gemini-3.6-flash-high": ("gemini-3.6-flash-low", "high"),
+    "gemini-3.6-flash-medium": ("gemini-3.6-flash-low", "medium"),
+    "gemini-3.6-flash-low": ("gemini-3.6-flash-low", "low"),
     "gemini-3.1-pro-high": ("gemini-3.1-pro-low", "high"),
+    "gemini-3.1-pro-auto": ("gemini-3.1-pro-low", None),
     "gemini-3.1-pro": ("gemini-3.1-pro-low", "low"),
+}
+
+_DISPLAY_MODEL_MAP = {
+    "gemini 3.8 flash (high)": "gemini-3.8-flash-high",
+    "gemini 3.8 flash (medium)": "gemini-3.8-flash-medium",
+    "gemini 3.8 flash (low)": "gemini-3.8-flash-low",
+    "gemini 3.7 flash (high)": "gemini-3.7-flash-high",
+    "gemini 3.7 flash (medium)": "gemini-3.7-flash-medium",
+    "gemini 3.7 flash (low)": "gemini-3.7-flash-low",
+    "gemini 3.6 flash (high)": "gemini-3.6-flash-high",
+    "gemini 3.6 flash (medium)": "gemini-3.6-flash-medium",
+    "gemini 3.6 flash (low)": "gemini-3.6-flash-low",
+    "gemini 3.1 pro (high)": "gemini-3.1-pro-high",
+    "gemini 3.1 pro (medium)": "gemini-3.1-pro-medium",
+    "gemini 3.1 pro (low)": "gemini-3.1-pro-low",
+    "claude opus 4.6 (thinking)": "claude-opus-4-6-thinking",
+    "claude sonnet 4.6": "claude-sonnet-4-6",
 }
 
 
 def resolve_http_model(name: str) -> Tuple[str, Optional[str]]:
     """Map agy/alias model name to (backend_model, thinking_level) for HTTP transport."""
     resolved = resolve_model_alias(name)
+    resolved = _DISPLAY_MODEL_MAP.get(resolved.lower(), resolved)
     entry = _HTTP_MODEL_MAP.get(resolved)
     if entry:
         return entry
@@ -157,18 +207,24 @@ _LOCK = asyncio.Lock()
 FALLBACK_MODELS = [
     "gemini-3.8-flash-tiered",
     "Gemini 3.8 Flash (Tiered)",
+    "gemini-3.8-flash-auto",
+    "Gemini 3.8 Flash (Auto)",
     "gemini-3.8-flash-high",
     "Gemini 3.8 Flash (High)",
     "gemini-3.8-flash-medium",
     "Gemini 3.8 Flash (Medium)",
     "gemini-3.8-flash-low",
     "Gemini 3.8 Flash (Low)",
+    "gemini-3.7-flash-auto",
+    "Gemini 3.7 Flash (Auto)",
     "gemini-3.7-flash-high",
     "Gemini 3.7 Flash (High)",
     "gemini-3.7-flash-medium",
     "Gemini 3.7 Flash (Medium)",
     "gemini-3.7-flash-low",
     "Gemini 3.7 Flash (Low)",
+    "gemini-3.6-flash-auto",
+    "Gemini 3.6 Flash (Auto)",
     "gemini-3.6-flash-high",
     "Gemini 3.6 Flash (High)",
     "gemini-3.6-flash-medium",
@@ -177,8 +233,14 @@ FALLBACK_MODELS = [
     "Gemini 3.6 Flash (Low)",
     "gemini-pro-agent",
     "Gemini Pro Agent",
+    "gemini-3.1-pro-high",
+    "Gemini 3.1 Pro (High)",
+    "gemini-3.1-pro-auto",
+    "Gemini 3.1 Pro (Auto)",
     "gemini-3.1-pro-low",
     "Gemini 3.1 Pro (Low)",
+    "gemini-3.1-pro",
+    "Gemini 3.1 Pro",
     "claude-sonnet-4-6",
     "Claude Sonnet 4.6",
     "claude-opus-4-6-thinking",

@@ -6,7 +6,6 @@ from typing import AsyncIterator, List, Optional, Union, Any
 
 from app.core import pool_manager
 from app.core import stats_store
-from app.core import agy_session_pool
 from app.core import agy_http_client
 
 logger = logging.getLogger(__name__)
@@ -77,9 +76,8 @@ async def with_heartbeat(
 
 
 async def _stream_warm(messages: List[dict], system: Optional[str], model: Optional[str]) -> AsyncIterator[dict]:
-    async for chunk in agy_session_pool.send_turn(
-        model, messages, flatten_messages(system, messages), _pick_pool_account
-    ):
+    logger.warning("[runner] warm mode is deprecated, routing to http stream")
+    async for chunk in _stream_http(messages, system, model):
         yield chunk
 
 
@@ -100,6 +98,7 @@ async def _stream_http(
     tools: Optional[List[dict]] = None,
     tool_choice: Optional[Any] = None,
     thought_as_text: Optional[bool] = None,
+    thinking_level: Optional[str] = None,
 ) -> AsyncIterator[dict]:
     async for chunk in agy_http_client.stream_completion(
         messages=messages,
@@ -108,6 +107,7 @@ async def _stream_http(
         tools=tools,
         tool_choice=tool_choice,
         thought_as_text=thought_as_text,
+        thinking_level_override=thinking_level,
     ):
         yield chunk
 
@@ -119,6 +119,7 @@ async def _run_http_completion(
     tools: Optional[List[dict]] = None,
     tool_choice: Optional[Any] = None,
     thought_as_text: Optional[bool] = None,
+    thinking_level: Optional[str] = None,
 ) -> dict:
     final: dict = {"text": "", "usage": {}, "tool_calls": [], "stop_reason": "end_turn"}
     async for chunk in agy_http_client.stream_completion(
@@ -128,6 +129,7 @@ async def _run_http_completion(
         tools=tools,
         tool_choice=tool_choice,
         thought_as_text=thought_as_text,
+        thinking_level_override=thinking_level,
     ):
         if "delta" in chunk:
             final["text"] += chunk["delta"]
@@ -269,11 +271,12 @@ async def run_completion(
     tools: Optional[List[dict]] = None,
     tool_choice: Optional[Any] = None,
     thought_as_text: Optional[bool] = None,
+    thinking_level: Optional[str] = None,
 ) -> dict:
     """Structured-message entrypoint shared by /v1/chat/completions and /anthropic/v1/messages
     for non-streaming requests."""
     mode = transport()
-    if mode == "http":
+    if mode in ("http", "warm"):
         return await _run_http_completion(
             messages,
             system,
@@ -281,15 +284,8 @@ async def run_completion(
             tools=tools,
             tool_choice=tool_choice,
             thought_as_text=thought_as_text,
+            thinking_level=thinking_level,
         )
-
-    if mode == "warm":
-        cold_prompt = flatten_messages(system, messages)
-        final = {"text": "", "usage": {}}
-        async for chunk in agy_session_pool.send_turn(model, messages, cold_prompt, _pick_pool_account):
-            if "usage" in chunk:
-                final = {"text": chunk.get("text", ""), "usage": chunk.get("usage", {})}
-        return final
 
     return await run_agy_prompt(prompt=flatten_messages(system, messages), model=model)
 
@@ -301,6 +297,7 @@ async def stream_agy_completion(
     tools: Optional[List[dict]] = None,
     tool_choice: Optional[Any] = None,
     thought_as_text: Optional[bool] = None,
+    thinking_level: Optional[str] = None,
 ) -> AsyncIterator[dict]:
     """Real streaming for warm/http transport; simulated streaming for cli."""
     mode = transport()
@@ -312,6 +309,7 @@ async def stream_agy_completion(
             tools=tools,
             tool_choice=tool_choice,
             thought_as_text=thought_as_text,
+            thinking_level=thinking_level,
         ):
             yield chunk
         return

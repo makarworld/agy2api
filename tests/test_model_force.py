@@ -40,6 +40,7 @@ class TestModelForce(unittest.TestCase):
                 self.assertEqual(backend, "claude-sonnet-4-6")
 
         import asyncio
+
         asyncio.run(_run())
 
     def test_resolve_with_force_max_gem(self):
@@ -49,11 +50,21 @@ class TestModelForce(unittest.TestCase):
                 "app.core.model_manager.get_available_models",
                 new=AsyncMock(return_value=_mock_models()),
             ):
-                for requested in ("claude-sonnet-5", "max-gem", "claude-opus-4"):
+                # Known alias resolves to its own target
+                backend = await resolve_backend_model("max-gem")
+                self.assertEqual(backend, MODEL_ALIASES["max-gem"])
+
+                # Known model in available list resolves to itself
+                backend = await resolve_backend_model("claude-sonnet-4-6")
+                self.assertEqual(backend, "claude-sonnet-4-6")
+
+                # Unknown models not in aliases or model list fallback to force model
+                for requested in ("claude-sonnet-5", "unknown-custom-model"):
                     backend = await resolve_backend_model(requested)
                     self.assertEqual(backend, MODEL_ALIASES["max-gem"])
 
         import asyncio
+
         asyncio.run(_run())
 
     def test_resolve_with_force_direct_backend(self):
@@ -67,6 +78,7 @@ class TestModelForce(unittest.TestCase):
                 self.assertEqual(backend, "gemini-3.7-flash-high")
 
         import asyncio
+
         asyncio.run(_run())
 
 

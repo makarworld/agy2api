@@ -500,6 +500,11 @@ def _cached_quota_for_account(pool_account_id: str) -> Optional[dict]:
     return None
 
 
+def get_cached_account_quota(pool_account_id: str) -> Optional[dict]:
+    """Return fresh quota cache without starting a network request."""
+    return _cached_quota_for_account(pool_account_id)
+
+
 async def _prepare_sqlite_quota_token(
     pool_account_id: str,
     *,

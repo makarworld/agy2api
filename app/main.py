@@ -17,7 +17,7 @@ from app.api.mcp_routes import router as mcp_router
 from app.api.routes import router as api_router
 from app.api.settings_routes import router as settings_router
 from app.api.stats_routes import router as stats_router
-from app.core import account_store, agy_session_pool, pool_manager, stats_store
+from app.core import account_store, pool_manager, stats_store
 from app.core.logging_setup import setup_logging, trace_id_var
 from app.core.model_manager import get_available_models
 
@@ -61,7 +61,7 @@ async def pool_git_autosync_loop():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    stats_store.init_db(os.environ.get("AGY_STATS_DB_PATH", "app/data/stats.db"))
+    stats_store.init_db()
     account_store.init_accounts_table()
     account_store.sync_all_account_sources()
     await pool_manager.init_pool_state()
@@ -78,7 +78,6 @@ async def lifespan(app: FastAPI):
     model_warmup.cancel()
     if autosync_task:
         autosync_task.cancel()
-    await agy_session_pool.shutdown()
 
 
 app = FastAPI(

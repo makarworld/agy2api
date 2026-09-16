@@ -12,12 +12,51 @@ from app.core.http_tools_bridge import (
     ingest_stream_tool_calls,
     merge_stream_tool_call,
     messages_to_gemini_contents,
+    parse_text_serialized_tool_call,
     stream_tool_call_key,
+    thought_text_wrappers,
     tool_choice_to_gemini_mode,
 )
 
 
 class TestHttpToolsBridge(unittest.TestCase):
+    def test_thought_text_wrappers_default(self):
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(thought_text_wrappers(), ("<think>\n", "\n</think>\n\n"))
+
+    def test_thought_text_wrappers_custom_and_empty(self):
+        with mock.patch.dict(
+            os.environ,
+            {"AGY_THOUGHT_TEXT_PREFIX": "[reasoning]", "AGY_THOUGHT_TEXT_SUFFIX": ""},
+            clear=True,
+        ):
+            self.assertEqual(thought_text_wrappers(), ("[reasoning]", ""))
+
+    def test_parses_text_serialized_tool_call(self):
+        text = "{'text': '', 'usage': {'output_tokens': 43}, 'tool_calls': [{'id': 'call_1', 'name': 'Bash', 'input': {'command': 'pwd'}}], 'stop_reason': 'tool_use'}"
+        visible, calls = parse_text_serialized_tool_call(text)
+        self.assertEqual(visible, "")
+        self.assertEqual(calls[0]["name"], "Bash")
+        self.assertEqual(calls[0]["input"], {"command": "pwd"})
+
+    def test_does_not_parse_normal_text_with_tool_calls_word(self):
+        visible, calls = parse_text_serialized_tool_call("The tool_calls field is documented here.")
+        self.assertEqual(visible, "The tool_calls field is documented here.")
+        self.assertEqual(calls, [])
+
+    def test_parses_serialized_tool_call_after_prefix(self):
+        text = "<think>selecting tool</think> {'text': '', 'tool_calls': [{'id': 'call_1', 'name': 'Bash', 'input': {'command': 'pwd'}}], 'stop_reason': 'tool_use'}"
+        visible, calls = parse_text_serialized_tool_call(text)
+        self.assertEqual(visible, "")
+        self.assertEqual(calls[0]["name"], "Bash")
+
+    def test_extracts_text_serialized_tool_call_from_sse_part(self):
+        text = "{'text': '', 'tool_calls': [{'id': 'call_1', 'name': 'Read', 'input': {'file_path': 'x'}}], 'stop_reason': 'tool_use'}"
+        visible, calls, _ = extract_parts_from_response(
+            {"candidates": [{"content": {"parts": [{"text": text}]}}]}
+        )
+        self.assertEqual(visible, "")
+        self.assertEqual(calls[0]["name"], "Read")
     def test_anthropic_tools_to_gemini(self):
         tools = [
             {

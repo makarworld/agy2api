@@ -1,5 +1,6 @@
 import asyncio
 import base64
+from datetime import datetime, timezone
 import hashlib
 import json
 import logging
@@ -483,6 +484,15 @@ async def complete_oauth_flow(
         os.makedirs(account_dir, exist_ok=True)
         is_update = False
 
+    duplicate_token_acc = account_store.find_account_by_refresh_token(
+        refresh_token or "", exclude_account_id=account_id
+    )
+    if duplicate_token_acc:
+        raise ValueError(
+            f"OAuth refresh token already belongs to {duplicate_token_acc.get('email') or duplicate_token_acc['id']}; "
+            "select the intended Google account and log in again"
+        )
+
     # Write oauth_creds.json
     creds_data = {
         "access_token": access_token,
@@ -548,6 +558,9 @@ async def complete_oauth_flow(
             access_token=access_token or "",
             token_expiry=time.time() + expires_in,
         )
+        # Successful OAuth relogin makes SQLite account usable immediately.
+        # OAuth refresh must clear the old request cooldown as well as stats state.
+        account_store.mark_account_healthy(account_id)
     except Exception as e:
         logger.warning(f"[pool] Failed to upsert SQLite account {account_id}: {e}")
 
@@ -687,8 +700,18 @@ async def activate_account(account_id: str) -> None:
     oauth_refresh.clear_active_credential_cache()
     global _active_account_id
     _active_account_id = account_id
+    _SESSION_AFFINITY.clear()
+    _MODEL_COOLDOWNS.pop(account_id, None)
+    if account_store.get_account_by_id(account_id):
+        account_store.mark_account_healthy(account_id)
     await stats_store.set_active_account_id_db(account_id)
-    await stats_store.upsert_pool_account_state(account_id, last_used_ts=time.time())
+    await stats_store.upsert_pool_account_state(
+        account_id,
+        status="healthy",
+        cooldown_until=None,
+        consecutive_failures=0,
+        last_used_ts=time.time(),
+    )
     await _ensure_oauth_fresh(proxy=proxy, pool_account_id=account_id)
     logger.info(f"[pool] Activated account {account_id}")
 
@@ -927,6 +950,8 @@ async def check_and_recover_account_health(account_id: str) -> dict:
         has_quota = (gemini_5h is None or gemini_5h > 0.0) and (claude_5h is None or claude_5h > 0.0)
 
         if has_quota:
+            if account_store.get_account_by_id(account_id):
+                account_store.mark_account_healthy(account_id)
             await stats_store.upsert_pool_account_state(
                 account_id, status="healthy", cooldown_until=None, consecutive_failures=0
             )
@@ -938,12 +963,14 @@ async def check_and_recover_account_health(account_id: str) -> dict:
                 "message": "Account is healthy and ready for requests",
             }
         else:
+            cooldown_until = await apply_quota_cooldown(account_id, quota_data)
             return {
                 "account_id": account_id,
                 "status": "cooldown",
                 "recovered": False,
                 "quota": quota_data,
-                "message": "Quota limit still exhausted (5h remaining is 0%)",
+                "cooldown_until": cooldown_until,
+                "message": "Quota limit still exhausted until the next quota reset",
             }
     except Exception as e:
         logger.warning(f"[pool] check_and_recover_account_health failed for {account_id}: {e}")
@@ -954,6 +981,41 @@ async def check_and_recover_account_health(account_id: str) -> dict:
             "error": str(e),
             "message": f"Health check failed: {e}",
         }
+
+
+def _quota_reset_timestamp(value: object) -> Optional[float]:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.timestamp()
+    except ValueError:
+        return None
+
+
+async def apply_quota_cooldown(account_id: str, quota_data: dict) -> Optional[float]:
+    """Align account cooldown with the next reset of an exhausted quota bucket."""
+    exhausted_resets = []
+    for bucket in ("gemini_5h", "gemini_weekly", "claude_5h", "claude_weekly"):
+        if quota_data.get(bucket) == 0:
+            reset_at = _quota_reset_timestamp(quota_data.get(f"{bucket}_reset"))
+            if reset_at and reset_at > time.time():
+                exhausted_resets.append(reset_at)
+
+    if not exhausted_resets:
+        return None
+
+    cooldown_until = min(exhausted_resets)
+    cooldown_seconds = max(1, int(cooldown_until - time.time()))
+    account_store.mark_account_rate_limited(account_id, cooldown_seconds)
+    await stats_store.upsert_pool_account_state(
+        account_id,
+        status="cooldown",
+        cooldown_until=cooldown_until,
+    )
+    return cooldown_until
 
 
 async def _run_subprocess(
@@ -982,6 +1044,7 @@ async def _run_subprocess(
 
 async def acquire_http_account(
     exclude: Set[str] = frozenset(),
+    model: Optional[str] = None,
 ) -> Tuple[Optional[str], Optional[str], Optional[str]]:
     """Pool-aware credential acquisition for the HTTP transport.
 
@@ -992,7 +1055,10 @@ async def acquire_http_account(
     """
     if account_store.has_accounts():
         async with _LOCK:
-            account = account_store.select_next_healthy_account(exclude_ids=set(exclude))
+            selected = await select_next_healthy_account(exclude=exclude, model=model)
+            if not selected:
+                raise RuntimeError("All pool accounts are rate-limited or unhealthy")
+            account = account_store.get_account_by_id(selected["id"])
             if account is None:
                 raise RuntimeError("All pool accounts are rate-limited or unhealthy")
 
@@ -1011,7 +1077,7 @@ async def acquire_http_account(
         return None, proxy, _read_live_access_token(_gemini_home())
 
     async with _LOCK:
-        account = await select_next_healthy_account(exclude=exclude)
+        account = await select_next_healthy_account(exclude=exclude, model=model)
         if account is None:
             raise RuntimeError("All pool accounts are rate-limited or unhealthy")
 
@@ -1085,26 +1151,4 @@ async def execute_agy(
 
 
 # ---- git sync -------------------------------------------------------------------
-
-
-def _git_sync(*args: str) -> str:
-    result = subprocess.run(["git", "-C", _pool_dir(), *args], capture_output=True, text=True)
-    if result.returncode != 0:
-        raise RuntimeError(f"git {' '.join(args)} failed: {result.stderr.strip()}")
-    return result.stdout.strip()
-
-
-async def git_pull() -> str:
-    return await asyncio.to_thread(_git_sync, "pull")
-
-
-def _git_commit_and_push_sync(message: str) -> str:
-    _git_sync("add", "-A")
-    result = subprocess.run(["git", "-C", _pool_dir(), "commit", "-m", message], capture_output=True, text=True)
-    if result.returncode != 0 and "nothing to commit" not in result.stdout.lower():
-        raise RuntimeError(f"git commit failed: {result.stderr.strip()}")
-    return _git_sync("push")
-
-
-async def git_commit_and_push(message: str = "Update account pool") -> str:
-    return await asyncio.to_thread(_git_commit_and_push_sync, message)
+from app.core.pool_git_sync import git_commit_and_push, git_pull  # noqa: F401

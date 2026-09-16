@@ -7,6 +7,7 @@ import hashlib
 import uuid
 from typing import Optional, List, Dict, Any, Tuple
 
+from app.core.db import DB_PATH, get_connection, get_db_path, set_db_path
 from app.core.token_stats import request_total_tokens
 
 logger = logging.getLogger(__name__)
@@ -69,12 +70,13 @@ def extract_chat_metadata(
         if first_user_text
         else (system_text.strip().replace("\n", " ")[:150] if system_text else "Chat Session")
     )
-    prompt_preview = last_user_text.strip()[:1000] if last_user_text else ""
+    prompt_preview = last_user_text.strip() if last_user_text else ""
 
     return chat_id, chat_title, prompt_preview
 
 
-_DB_PATH = "app/data/stats.db"
+_DB_PATH = DB_PATH
+_INITIALIZED_DBS: set[str] = set()
 
 _DDL = """
 CREATE TABLE IF NOT EXISTS requests (
@@ -92,7 +94,10 @@ CREATE TABLE IF NOT EXISTS requests (
     chat_id TEXT,
     chat_title TEXT,
     prompt_preview TEXT,
-    response_preview TEXT
+    response_preview TEXT,
+    raw_request TEXT,
+    raw_response TEXT,
+    response_status INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS availability_events (
@@ -134,11 +139,11 @@ CREATE INDEX IF NOT EXISTS idx_api_keys_active ON api_keys(is_active);
 
 
 def init_db(db_path: str = None) -> None:
-    global _DB_PATH
     if db_path:
-        _DB_PATH = db_path
-    os.makedirs(os.path.dirname(_DB_PATH) or ".", exist_ok=True)
-    conn = sqlite3.connect(_DB_PATH)
+        set_db_path(db_path)
+    current_path = get_db_path()
+    os.makedirs(os.path.dirname(current_path) or ".", exist_ok=True)
+    conn = get_connection()
     try:
         conn.executescript(_DDL)
         # Migrate existing table if columns are missing
@@ -148,6 +153,9 @@ def init_db(db_path: str = None) -> None:
             ("chat_title", "TEXT"),
             ("prompt_preview", "TEXT"),
             ("response_preview", "TEXT"),
+            ("raw_request", "TEXT"),
+            ("raw_response", "TEXT"),
+            ("response_status", "INTEGER"),
         ]:
             if col_name not in existing_cols:
                 conn.execute(f"ALTER TABLE requests ADD COLUMN {col_name} {col_type}")
@@ -158,13 +166,11 @@ def init_db(db_path: str = None) -> None:
         conn.commit()
     finally:
         conn.close()
-    logger.info(f"Stats DB initialized at {_DB_PATH}")
+    logger.info(f"Stats DB initialized at {current_path}")
 
 
 def _conn() -> sqlite3.Connection:
-    os.makedirs(os.path.dirname(_DB_PATH) or ".", exist_ok=True)
-    conn = sqlite3.connect(_DB_PATH)
-    conn.row_factory = sqlite3.Row
+    conn = get_connection()
     try:
         conn.execute("SELECT 1 FROM pool_account_state LIMIT 1")
     except sqlite3.OperationalError:
@@ -190,14 +196,18 @@ def _record_request_sync(
     chat_title: Optional[str] = None,
     prompt_preview: Optional[str] = None,
     response_preview: Optional[str] = None,
+    raw_request: Optional[str] = None,
+    raw_response: Optional[str] = None,
+    response_status: Optional[int] = None,
 ):
     conn = _conn()
     try:
         conn.execute(
             "INSERT INTO requests (ts, endpoint, model, pool_account, prompt_tokens, "
             "completion_tokens, cache_tokens, success, latency_ms, error_type, "
-            "chat_id, chat_title, prompt_preview, response_preview) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "chat_id, chat_title, prompt_preview, response_preview, "
+            "raw_request, raw_response, response_status) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 time.time(),
                 endpoint,
@@ -213,6 +223,9 @@ def _record_request_sync(
                 chat_title,
                 prompt_preview,
                 response_preview,
+                raw_request,
+                raw_response,
+                response_status,
             ),
         )
         if pool_account:
@@ -246,6 +259,9 @@ async def record_request(
     chat_title: Optional[str] = None,
     prompt_preview: Optional[str] = None,
     response_preview: Optional[str] = None,
+    raw_request: Optional[str] = None,
+    raw_response: Optional[str] = None,
+    response_status: Optional[int] = None,
 ) -> None:
     try:
         await asyncio.to_thread(
@@ -263,6 +279,9 @@ async def record_request(
             chat_title,
             prompt_preview,
             response_preview,
+            raw_request,
+            raw_response,
+            response_status,
         )
     except Exception as e:
         logger.error(f"Failed to record stats: {e}")
@@ -717,8 +736,10 @@ def _prune_old_request_previews_sync(retention_seconds: int = 30 * 86400) -> int
     conn = _conn()
     try:
         cur = conn.execute(
-            "UPDATE requests SET prompt_preview = NULL, response_preview = NULL "
-            "WHERE ts < ? AND (prompt_preview IS NOT NULL OR response_preview IS NOT NULL)",
+            "UPDATE requests SET prompt_preview = NULL, response_preview = NULL, "
+            "raw_request = NULL, raw_response = NULL "
+            "WHERE ts < ? AND (prompt_preview IS NOT NULL OR response_preview IS NOT NULL "
+            "OR raw_request IS NOT NULL OR raw_response IS NOT NULL)",
             (threshold,),
         )
         conn.commit()

@@ -46,7 +46,7 @@ export interface PoolAccount {
   added_at: number;
   proxy: string | null;
   active: boolean;
-  status: 'healthy' | 'cooldown' | 'unhealthy';
+  status: 'healthy' | 'cooldown' | 'unhealthy' | 'exhausted_429';
   cooldown_until: number | null;
   consecutive_failures: number;
   last_used_ts: number | null;

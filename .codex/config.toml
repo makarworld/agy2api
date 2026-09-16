@@ -1,0 +1,3 @@
+[mcp_servers.http-toolkit]
+command = 'C:\Users\User\AppData\Local\httptoolkit-server\client\bin\httptoolkit-server'
+args = ["mcp"]

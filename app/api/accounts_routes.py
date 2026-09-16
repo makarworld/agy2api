@@ -1,15 +1,39 @@
 import logging
+import asyncio
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from app.core import oauth_refresh, pool_manager, stats_store
+from app.core import account_store, oauth_refresh, pool_manager, stats_store
+from app.core.cloudcode_lifecycle import LIFECYCLE_PATHS, call_lifecycle
 from app.core.security import get_api_key
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+_quota_refresh_tasks: dict[str, asyncio.Task] = {}
+
+
+async def _refresh_account_quota(account_id: str, token: Optional[str], proxy: Optional[str], account_dir: Optional[str]):
+    try:
+        quota = await oauth_refresh.retrieve_account_quota(
+            account_dir=account_dir,
+            access_token=token,
+            proxy=proxy,
+            pool_account_id=account_id,
+        )
+        await pool_manager.apply_quota_cooldown(account_id, quota)
+    except Exception as e:
+        logger.debug("[accounts] Background quota refresh failed for %s: %s", account_id, e)
+
+
+def _schedule_quota_refresh(account_id: str, token: Optional[str], proxy: Optional[str], account_dir: Optional[str]) -> None:
+    if account_id in _quota_refresh_tasks:
+        return
+    task = asyncio.create_task(_refresh_account_quota(account_id, token, proxy, account_dir))
+    _quota_refresh_tasks[account_id] = task
+    task.add_done_callback(lambda _: _quota_refresh_tasks.pop(account_id, None))
 
 
 class AddAccountRequest(BaseModel):
@@ -52,18 +76,11 @@ async def list_accounts(api_key: str = Depends(get_api_key)):
     for acc in account_items:
         acc_id = acc.get("id", "active")
         state = states.get(acc_id, {})
+        db_account = account_store.get_account_by_id(acc_id)
         token, proxy, account_dir = pool_manager.get_account_token_and_proxy(acc_id)
-        quota_data = {}
+        quota_data = oauth_refresh.get_cached_account_quota(acc_id) or {}
         if token or account_dir:
-            try:
-                quota_data = await oauth_refresh.retrieve_account_quota(
-                    account_dir=account_dir,
-                    access_token=token,
-                    proxy=proxy,
-                    pool_account_id=acc_id,
-                )
-            except Exception as e:
-                logger.debug(f"[accounts] Failed to retrieve quota for {acc_id}: {e}")
+            _schedule_quota_refresh(acc_id, token, proxy, account_dir)
 
         result.append(
             {
@@ -73,8 +90,8 @@ async def list_accounts(api_key: str = Depends(get_api_key)):
                 "added_at": acc.get("added_at"),
                 "proxy": acc.get("proxy"),
                 "active": acc_id == active_id if pool_manager.pool_enabled() else True,
-                "status": state.get("status", "healthy"),
-                "cooldown_until": state.get("cooldown_until"),
+                "status": (db_account or {}).get("status") or state.get("status", "healthy"),
+                "cooldown_until": (db_account or {}).get("backoff_until") or state.get("cooldown_until"),
                 "consecutive_failures": state.get("consecutive_failures", 0),
                 "last_used_ts": state.get("last_used_ts"),
                 "total_requests": state.get("total_requests", 0),
@@ -85,6 +102,39 @@ async def list_accounts(api_key: str = Depends(get_api_key)):
             }
         )
     return {"pool_enabled": pool_manager.pool_enabled(), "accounts": result}
+
+
+def _account_by_email(email: str) -> dict:
+    wanted = email.strip().lower()
+    for account in pool_manager.list_accounts():
+        if (account.get("email") or "").strip().lower() == wanted:
+            return account
+    raise HTTPException(status_code=404, detail=f"Account email not found: {email}")
+
+
+@router.post("/accounts/{email:path}/lifecycle/{operation}", summary="Call Cloud Code lifecycle for an account email")
+async def account_lifecycle(
+    email: str,
+    operation: str,
+    payload: dict | None = None,
+    api_key: str = Depends(get_api_key),
+):
+    if operation not in LIFECYCLE_PATHS:
+        raise HTTPException(status_code=404, detail=f"Unknown lifecycle operation: {operation}")
+    account = _account_by_email(email)
+    account_id = account["id"]
+    token, proxy, _ = pool_manager.get_account_token_and_proxy(account_id)
+    if not token:
+        await oauth_refresh.ensure_fresh_sqlite_account(account_id, proxy=proxy)
+        token, proxy, _ = pool_manager.get_account_token_and_proxy(account_id)
+    if not token:
+        raise HTTPException(status_code=409, detail="Account has no access token")
+    try:
+        project_id = (payload or {}).get("project_id") or account.get("project_id") or "aicode-consumers"
+        result = await call_lifecycle(operation, token, proxy, project_id, payload or {})
+        return {"account_id": account_id, "email": account.get("email"), "operation": operation, "data": result}
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 @router.get("/accounts/oauth/start", summary="Generate Antigravity Google OAuth PKCE authorization URL")
@@ -167,6 +217,7 @@ async def refresh_all_quotas(api_key: str = Depends(get_api_key)):
                     pool_account_id=acc_id,
                     force=True,
                 )
+                await pool_manager.apply_quota_cooldown(acc_id, q)
                 results[acc_id] = q
             except Exception as e:
                 results[acc_id] = {"error": str(e)}
@@ -186,6 +237,7 @@ async def refresh_single_account_quota(account_id: str, api_key: str = Depends(g
             pool_account_id=account_id,
             force=True,
         )
+        await pool_manager.apply_quota_cooldown(account_id, q)
         return {"status": "ok", "quota": q}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

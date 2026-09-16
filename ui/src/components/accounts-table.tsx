@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { LogIn, Pencil, AlertTriangle, X, RefreshCw, Gauge } from 'lucide-react';
+import { LogIn, Pencil, AlertTriangle, X, RefreshCw, Gauge, CheckCircle2 } from 'lucide-react';
 import { type PoolAccount } from '../hooks/use-stats';
 import { useApiKey } from '../hooks/use-api-key';
 import { apiUrl } from '../lib/api';
@@ -199,7 +199,28 @@ export function AccountsTable({
   const [selectedErrorAcc, setSelectedErrorAcc] = useState<PoolAccount | null>(null);
   const [checkingHealthId, setCheckingHealthId] = useState<string | null>(null);
   const [refreshingQuotaId, setRefreshingQuotaId] = useState<string | null>(null);
+  const [activatingId, setActivatingId] = useState<string | null>(null);
   const [healthMsg, setHealthMsg] = useState<{ id: string; text: string; ok: boolean } | null>(null);
+
+  const handleActivate = async (acc: PoolAccount) => {
+    if (acc.active || activatingId) return;
+    setActivatingId(acc.id);
+    try {
+      const res = await fetch(apiUrl(`/v1/accounts/${acc.id}/activate`), {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${apiKey}` },
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.detail || 'Failed to activate account');
+      }
+      onChanged();
+    } catch (e: any) {
+      alert(e.message || 'Failed to activate account');
+    } finally {
+      setActivatingId(null);
+    }
+  };
 
   const refreshAccountQuota = async (acc: PoolAccount) => {
     setRefreshingQuotaId(acc.id);
@@ -298,7 +319,11 @@ export function AccountsTable({
                         ({acc.email})
                       </span>
                     )}
-                    {acc.active && <span className="ml-1 text-xs text-emerald-500 font-normal">● active</span>}
+                    {acc.active && (
+                      <span className="ml-1 inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-emerald-500/15 text-emerald-400 border border-emerald-500/30">
+                        ● active
+                      </span>
+                    )}
                   </div>
                   <div className="flex items-center gap-1.5 flex-wrap">
                     <QuotaBadges quota={acc.quota} />
@@ -375,6 +400,21 @@ export function AccountsTable({
                 </td>
                 <td className="p-3 text-right">
                   <div className="inline-flex items-center gap-1.5">
+                    {!acc.active && (
+                      <button
+                        onClick={() => handleActivate(acc)}
+                        disabled={activatingId === acc.id}
+                        className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium rounded-md bg-emerald-600/15 hover:bg-emerald-600/25 text-emerald-400 border border-emerald-500/30 transition-colors cursor-pointer disabled:opacity-50"
+                        title="Set as active account for subsequent requests"
+                      >
+                        {activatingId === acc.id ? (
+                          <RefreshCw className="w-3 h-3 animate-spin" />
+                        ) : (
+                          <CheckCircle2 className="w-3 h-3" />
+                        )}
+                        Activate
+                      </button>
+                    )}
                     <button
                       onClick={() => setSelectedErrorAcc(acc)}
                       className="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium rounded-md bg-secondary hover:bg-secondary/80 text-secondary-foreground transition-colors"

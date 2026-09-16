@@ -37,6 +37,9 @@ export interface RequestItem {
   chat_title: string | null;
   prompt_preview: string | null;
   response_preview: string | null;
+  raw_request?: string | null;
+  raw_response?: string | null;
+  response_status?: number | null;
 }
 
 export interface RequestsOverview {

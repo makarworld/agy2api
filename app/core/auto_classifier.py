@@ -11,12 +11,17 @@ _CLASSIFIER_MARKERS = (
 )
 
 
+def classifier_model() -> str:
+    return os.environ.get("AGY_AUTO_CLASSIFIER_MODEL", "").strip()
+
+
+def classifier_effort() -> str:
+    value = os.environ.get("AGY_AUTO_CLASSIFIER_EFFORT", "low").strip().lower()
+    return value if value in {"0", "low", "medium", "high"} else "low"
+
+
 def shortcut_enabled() -> bool:
-    return os.environ.get("AGY_AUTO_CLASSIFIER_SHORTCUT", "").lower() in (
-        "1",
-        "true",
-        "yes",
-    )
+    return classifier_model().lower() == "skip"
 
 
 def shortcut_response() -> str:

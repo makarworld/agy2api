@@ -1,4 +1,5 @@
 import logging
+import json
 import os
 import re
 from typing import Any, Dict
@@ -16,9 +17,12 @@ CONFIG_KEYS = [
     # Boolean flags
     "AGY_POOL_ENABLED",
     "AGY_THOUGHT_AS_TEXT",
+    "AGY_THOUGHT_TEXT_PREFIX",
+    "AGY_THOUGHT_TEXT_SUFFIX",
     "AGY_HTTP_TRIM_TOOL_RESULTS",
     "AGY_HTTP_EMPTY_AS_EMPTY_CONTENT",
-    "AGY_AUTO_CLASSIFIER_SHORTCUT",
+    "AGY_AUTO_CLASSIFIER_MODEL",
+    "AGY_AUTO_CLASSIFIER_EFFORT",
     "AGY_OAUTH_REFRESH_ENABLED",
     "AGY_SSL_VERIFY",
     "AGY_HTTP_DEBUG",
@@ -39,7 +43,6 @@ BOOLEAN_KEYS = {
     "AGY_THOUGHT_AS_TEXT",
     "AGY_HTTP_TRIM_TOOL_RESULTS",
     "AGY_HTTP_EMPTY_AS_EMPTY_CONTENT",
-    "AGY_AUTO_CLASSIFIER_SHORTCUT",
     "AGY_OAUTH_REFRESH_ENABLED",
     "AGY_SSL_VERIFY",
     "AGY_HTTP_DEBUG",
@@ -75,13 +78,19 @@ def _update_env_file(updates: Dict[str, str]) -> None:
 
     updated_keys = set()
     new_lines = []
+    formatted = {
+        key: json.dumps(value, ensure_ascii=False)
+        if key in {"AGY_THOUGHT_TEXT_PREFIX", "AGY_THOUGHT_TEXT_SUFFIX"}
+        else value
+        for key, value in updates.items()
+    }
     for line in lines:
         stripped = line.strip()
         if stripped and not stripped.startswith("#") and "=" in stripped:
             k, _ = stripped.split("=", 1)
             k = k.strip()
             if k in updates:
-                new_lines.append(f"{k}={updates[k]}\n")
+                new_lines.append(f"{k}={formatted[k]}\n")
                 updated_keys.add(k)
                 continue
         new_lines.append(line)
@@ -91,7 +100,7 @@ def _update_env_file(updates: Dict[str, str]) -> None:
         if k not in updated_keys:
             if new_lines and not new_lines[-1].endswith("\n"):
                 new_lines.append("\n")
-            new_lines.append(f"{k}={v}\n")
+            new_lines.append(f"{k}={formatted[k]}\n")
 
     with open(path, "w", encoding="utf-8") as f:
         f.writelines(new_lines)
