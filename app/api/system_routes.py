@@ -3,6 +3,7 @@ import os
 import subprocess
 
 from fastapi import APIRouter, Depends
+from app.core.paths import get_log_file_path
 from app.core.security import get_api_key
 
 logger = logging.getLogger(__name__)
@@ -16,7 +17,7 @@ async def verify_auth(api_key: str = Depends(get_api_key)):
 
 
 def _read_local_log_tail(lines: int) -> str:
-    log_path = os.environ.get("AGY_LOG_FILE_PATH", "app/data/agy2api.log")
+    log_path = get_log_file_path()
     try:
         with open(log_path, encoding="utf-8", errors="replace") as f:
             all_lines = f.readlines()

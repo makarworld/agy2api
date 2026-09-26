@@ -20,6 +20,7 @@ import httpx
 from app.core import account_store
 from app.core import oauth_refresh
 from app.core import stats_store
+from app.core.paths import get_pool_dir
 from app.core.proxy_config import get_google_proxy, httpx_client_kwargs
 
 logger = logging.getLogger(__name__)
@@ -72,7 +73,7 @@ def pool_enabled() -> bool:
 
 
 def _pool_dir() -> str:
-    return os.path.expanduser(os.environ.get("AGY_POOL_DIR", "~/.agy2api-pool"))
+    return get_pool_dir()
 
 
 def _gemini_home() -> str:

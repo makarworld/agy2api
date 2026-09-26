@@ -53,6 +53,7 @@ hidden_imports = [
     'app.core.cloudcode_common',
     'app.core.cloudcode_lifecycle',
     'app.core.db',
+    'app.core.paths',
     'app.core.http_tools_bridge',
     'app.core.key_manager',
     'app.core.logging_setup',
@@ -84,6 +85,8 @@ a = Analysis(
 
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 
+icon_file = 'app.ico' if sys.platform.startswith('win') and os.path.exists('app.ico') else None
+
 exe = EXE(
     pyz,
     a.scripts,
@@ -104,5 +107,5 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon='app.ico',
+    icon=icon_file,
 )

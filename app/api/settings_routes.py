@@ -8,6 +8,7 @@ from typing import Any, Dict
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
+from app.core.paths import get_env_file_path
 from app.core.security import get_api_key
 
 logger = logging.getLogger(__name__)
@@ -60,9 +61,7 @@ BOOLEAN_KEYS = {
 
 
 def _env_path() -> str:
-    if getattr(sys, "frozen", False):
-        return os.path.join(os.path.dirname(sys.executable), ".env")
-    return os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".env"))
+    return get_env_file_path()
 
 
 _last_env_mtime: float = 0.0

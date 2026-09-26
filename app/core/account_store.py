@@ -6,12 +6,13 @@ import time
 from typing import Any, Dict, List, Optional
 
 from app.core.db import DATA_DIR, DB_PATH, get_connection
+from app.core.paths import get_accounts_json_path
 
 logger = logging.getLogger(__name__)
 
 _DATA_DIR = DATA_DIR
 _DB_PATH = DB_PATH
-_JSON_ACCOUNTS_FILE = os.environ.get("ACCOUNTS_FILE", os.path.join(_DATA_DIR, "accounts.json"))
+_JSON_ACCOUNTS_FILE = get_accounts_json_path()
 
 
 def get_db_connection() -> sqlite3.Connection:

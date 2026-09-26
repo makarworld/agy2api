@@ -1,18 +1,10 @@
 import os
-import sys
 import sqlite3
 
-if getattr(sys, "frozen", False):
-    _APP_ROOT = os.path.dirname(sys.executable)
-else:
-    _APP_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from app.core.paths import get_data_dir, get_db_path as _get_default_db_path
 
-_DEFAULT_DATA_DIR = os.path.join(_APP_ROOT, "data")
-DATA_DIR = os.environ.get("AGY_DATA_DIR", _DEFAULT_DATA_DIR)
-DB_PATH = os.environ.get(
-    "AGY_DB_PATH",
-    os.environ.get("AGY_STATS_DB_PATH", os.path.join(DATA_DIR, "stats.db")),
-)
+DATA_DIR = get_data_dir()
+DB_PATH = _get_default_db_path()
 
 
 def set_db_path(path: str) -> None:

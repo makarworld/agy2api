@@ -1,26 +1,26 @@
-"""Entrypoint for standalone single-file AGY2API executable."""
+"""Entrypoint for standalone single-file AGY2API executable (Windows & Linux)."""
 
 import os
 import sys
 import webbrowser
 
 if getattr(sys, "frozen", False):
-    APP_DIR = os.path.dirname(sys.executable)
     ROOT_DIR = sys._MEIPASS
 else:
     ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
-    APP_DIR = ROOT_DIR
 
 if ROOT_DIR not in sys.path:
     sys.path.insert(0, ROOT_DIR)
 
+from app.core.paths import ensure_agy_dirs, get_env_file_path, get_agy_home
+
+ensure_agy_dirs()
+
 from dotenv import load_dotenv
 
-env_file = os.path.join(APP_DIR, ".env")
+env_file = get_env_file_path()
 if os.path.exists(env_file):
     load_dotenv(env_file)
-elif os.path.exists(os.path.join(ROOT_DIR, ".env")):
-    load_dotenv(os.path.join(ROOT_DIR, ".env"))
 
 os.environ.setdefault("AGY_HOST", "127.0.0.1")
 os.environ.setdefault("AGY_PORT", "26767")
@@ -31,7 +31,6 @@ os.environ.setdefault(
     "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com",
 )
 os.environ.setdefault("ANTIGRAVITY_CLIENT_SECRET", "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")
-os.environ.setdefault("AGY_DATA_DIR", os.path.join(APP_DIR, "data"))
 
 from app.core.logging_setup import console_colors_enabled, enable_windows_console_ansi
 
@@ -45,9 +44,11 @@ if __name__ == "__main__":
     port = int(os.environ.get("AGY_PORT", "26767"))
     api_key = os.environ.get("AGY_API_KEY", "agy-secret-key-12345")
     url = f"http://{host}:{port}"
+    agy_home = get_agy_home()
 
     print("=" * 60)
     print("   AGY2API Server is running!")
+    print(f"   Home dir: {agy_home}")
     print(f"   Web UI:   {url}")
     print(f"   API Key:  {api_key}")
     print(f"   OpenAI:   {url}/v1")

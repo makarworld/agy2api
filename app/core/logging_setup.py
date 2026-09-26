@@ -5,6 +5,8 @@ import sys
 import uuid
 import contextvars
 
+from app.core.paths import get_log_file_path
+
 # Mặc định là 'no-trace' khi không nằm trong một request
 trace_id_var: contextvars.ContextVar[str] = contextvars.ContextVar("trace_id", default="no-trace")
 
@@ -50,6 +52,7 @@ class TraceLogFilter(logging.Filter):
         record.trace_id = trace_id_var.get()
         return True
 
+
 def setup_logging():
     enable_windows_console_ansi()
 
@@ -71,7 +74,7 @@ def setup_logging():
 
     # Also write to a local rotating file so /v1/logs works without journalctl
     # (e.g. local dev on Windows, where journalctl doesn't exist at all).
-    log_file_path = os.environ.get("AGY_LOG_FILE_PATH", "app/data/agy2api.log")
+    log_file_path = get_log_file_path()
     os.makedirs(os.path.dirname(log_file_path) or ".", exist_ok=True)
     file_handler = logging.handlers.RotatingFileHandler(
         log_file_path, maxBytes=5_000_000, backupCount=3, encoding="utf-8"
@@ -81,7 +84,7 @@ def setup_logging():
     root_logger.addHandler(file_handler)
 
     logging.getLogger("httpx").setLevel(logging.WARNING)
-    
+
     # Apply filter to uvicorn loggers to ensure they don't crash if they try to log with our formatter
     for logger_name in ("uvicorn", "uvicorn.error", "uvicorn.access", "fastapi"):
         l = logging.getLogger(logger_name)
