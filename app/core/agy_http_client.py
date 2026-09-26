@@ -854,7 +854,7 @@ async def generate_image(
 
     while True:
         account_id, pool_proxy, access_token = await pool_manager.acquire_http_account(exclude=excluded)
-        account_proxy = proxy if proxy is not None else pool_proxy
+        account_proxy = pool_proxy if pool_proxy is not None else proxy
         if not access_token:
             access_token = await get_access_token(proxy=account_proxy)
         project_id = await _get_project_id(access_token, account_id=account_id, proxy=account_proxy)

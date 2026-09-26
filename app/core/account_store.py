@@ -244,6 +244,22 @@ def update_account_tokens(
         conn.commit()
 
 
+def update_account_proxy(account_id: str, proxy: Optional[str]) -> None:
+    now = time.time()
+    clean_proxy = (proxy or "").strip()
+    init_accounts_table()
+    with get_db_connection() as conn:
+        conn.execute(
+            """
+            UPDATE accounts
+            SET proxy = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (clean_proxy, now, account_id),
+        )
+        conn.commit()
+
+
 def mark_account_used(account_id: str) -> None:
     now = time.time()
     with get_db_connection() as conn:

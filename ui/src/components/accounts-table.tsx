@@ -306,11 +306,19 @@ export function AccountsTable({
       acc.proxy || ''
     );
     if (next === null) return;
-    await fetch(apiUrl(`/v1/accounts/${acc.id}/proxy`), {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
-      body: JSON.stringify({ proxy: next.trim() || null }),
-    });
+    try {
+      const res = await fetch(apiUrl(`/v1/accounts/${acc.id}/proxy`), {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+        body: JSON.stringify({ proxy: next.trim() || null }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        alert(err.detail || 'Не удалось сохранить прокси');
+      }
+    } catch (e: any) {
+      alert(e.message || 'Ошибка сети при сохранении прокси');
+    }
     onChanged();
   };
 

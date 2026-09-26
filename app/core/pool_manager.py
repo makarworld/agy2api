@@ -243,16 +243,50 @@ def _find_account_by_email(email: str) -> Optional[dict]:
 def set_account_proxy(account_id: str, proxy: Optional[str]) -> dict:
     """proxy is a full URL, e.g. http://user:pass@host:port or socks5://host:port.
     Pass None/empty to clear it (account goes back to using no proxy / the host's default)."""
+    clean_proxy = (proxy or "").strip() or None
+
+    # 1. Update SQLite account store
+    if account_store.get_account_by_id(account_id):
+        account_store.update_account_proxy(account_id, clean_proxy)
+
+    # 2. Update manifest
     manifest = _load_manifest()
+    found = False
     for acc in manifest.get("accounts", []):
         if acc["id"] == account_id:
-            if proxy:
-                acc["proxy"] = proxy
+            found = True
+            if clean_proxy:
+                acc["proxy"] = clean_proxy
             else:
                 acc.pop("proxy", None)
-            _save_manifest(manifest)
-            return acc
-    raise ValueError(f"Unknown pool account: {account_id}")
+            break
+
+    if not found and account_store.get_account_by_id(account_id):
+        acc_db = account_store.get_account_by_id(account_id)
+        entry = {
+            "id": account_id,
+            "label": acc_db.get("name") or acc_db.get("email") or account_id,
+            "email": acc_db.get("email"),
+            "name": acc_db.get("name"),
+            "picture": acc_db.get("picture"),
+            "added_at": acc_db.get("created_at") or time.time(),
+        }
+        if clean_proxy:
+            entry["proxy"] = clean_proxy
+        manifest.setdefault("accounts", []).append(entry)
+        found = True
+
+    if not found and not account_store.get_account_by_id(account_id):
+        raise ValueError(f"Unknown pool account: {account_id}")
+
+    _save_manifest(manifest)
+
+    # Invalidate quota cache for account
+    db_acc = account_store.get_account_by_id(account_id)
+    if db_acc and db_acc.get("access_token"):
+        oauth_refresh.clear_quota_summary_cache(db_acc["access_token"])
+
+    return _find_account(account_id) or {"id": account_id, "proxy": clean_proxy}
 
 
 def _proxy_env(proxy: Optional[str]) -> Optional[dict]:

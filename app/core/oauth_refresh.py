@@ -11,7 +11,7 @@ from urllib.parse import unquote
 import httpx
 
 from app.core.cloudcode_common import QUOTA_PROJECT, QUOTA_SUMMARY_URL, cloudcode_headers
-from app.core.proxy_config import httpx_client_kwargs
+from app.core.proxy_config import get_google_proxy, httpx_client_kwargs
 
 logger = logging.getLogger(__name__)
 
@@ -536,6 +536,7 @@ async def retrieve_account_quota(
     sqlite_account = account_store.get_account_by_id(pool_account_id) if pool_account_id else None
     target_token = access_token
     cred_path = None
+    effective_proxy = get_google_proxy(proxy or (sqlite_account.get("proxy") if sqlite_account else None))
 
     if sqlite_account and pool_account_id and not force:
         cached = _cached_quota_for_account(pool_account_id)
@@ -544,7 +545,7 @@ async def retrieve_account_quota(
 
     if sqlite_account:
         try:
-            prepared = await _prepare_sqlite_quota_token(pool_account_id, proxy=proxy, force=False)
+            prepared = await _prepare_sqlite_quota_token(pool_account_id, proxy=effective_proxy, force=False)
             if prepared:
                 target_token = prepared
         except Exception as e:
@@ -574,7 +575,7 @@ async def retrieve_account_quota(
                 return dict(cached_data)
 
         try:
-            async with httpx.AsyncClient(**httpx_client_kwargs(proxy=proxy, timeout=15.0)) as client:
+            async with httpx.AsyncClient(**httpx_client_kwargs(proxy=effective_proxy, timeout=15.0)) as client:
                 response = await client.post(
                     QUOTA_SUMMARY_URL,
                     headers=cloudcode_headers(target_token),
@@ -596,24 +597,26 @@ async def retrieve_account_quota(
                 )
                 refreshed = False
                 if sqlite_account:
-                    refreshed = await ensure_fresh_sqlite_account(pool_account_id, proxy=proxy, force=True)
+                    refreshed = await ensure_fresh_sqlite_account(pool_account_id, proxy=effective_proxy, force=True)
                     if refreshed:
                         target_token = read_sqlite_access_token(pool_account_id)
                 elif account_dir:
                     refreshed = await ensure_fresh_credentials(
-                        account_dir, proxy=proxy, pool_account_id=pool_account_id, force=True
+                        account_dir, proxy=effective_proxy, pool_account_id=pool_account_id, force=True
                     )
                     if refreshed:
                         new_token = access_token_from_path(cred_path) if cred_path else None
                         if new_token:
                             target_token = new_token
                 else:
-                    refreshed = await ensure_fresh_credentials(proxy=proxy, pool_account_id=pool_account_id, force=True)
+                    refreshed = await ensure_fresh_credentials(
+                        proxy=effective_proxy, pool_account_id=pool_account_id, force=True
+                    )
                     if refreshed:
                         target_token = read_access_token()
 
                 if refreshed and target_token:
-                    async with httpx.AsyncClient(**httpx_client_kwargs(proxy=proxy, timeout=15.0)) as client:
+                    async with httpx.AsyncClient(**httpx_client_kwargs(proxy=effective_proxy, timeout=15.0)) as client:
                         r2 = await client.post(
                             QUOTA_SUMMARY_URL,
                             headers=cloudcode_headers(target_token),
@@ -943,17 +946,18 @@ async def ensure_fresh_sqlite_account(
 
     async with _refresh_lock:
         account = account_store.get_account_by_id(account_id) or account
+        effective_proxy = get_google_proxy(proxy or account.get("proxy"))
         if not force and not _sqlite_token_needs_refresh(account, force=False):
             access_token = account.get("access_token") or ""
             if access_token and (
                 _verify_cache_valid(access_token)
-                or await _verify_access_token_cached(access_token, proxy=proxy, pool_account_id=account_id)
+                or await _verify_access_token_cached(access_token, proxy=effective_proxy, pool_account_id=account_id)
             ):
                 return False
 
         new_token = await refresh_google_token(
             refresh_token,
-            proxy=proxy,
+            proxy=effective_proxy,
             client_id=account.get("client_id"),
             client_secret=account.get("client_secret"),
         )
