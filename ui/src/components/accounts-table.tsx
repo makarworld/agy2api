@@ -1,28 +1,74 @@
 import { useState } from 'react';
-import { LogIn, Pencil, AlertTriangle, X, RefreshCw, Gauge, CheckCircle2 } from 'lucide-react';
+import { LogIn, Pencil, AlertTriangle, X, RefreshCw, CheckCircle2, Trash2, Check } from 'lucide-react';
 import { type PoolAccount } from '../hooks/use-stats';
 import { useApiKey } from '../hooks/use-api-key';
 import { apiUrl } from '../lib/api';
+import { Button } from './ui/button';
+
+function formatTokens(n: number): string {
+  if (!n) return '0';
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
+  return n.toLocaleString();
+}
+
+function formatRelativeTime(unixSeconds: number | null | undefined): string {
+  if (!unixSeconds) return '—';
+  const sec = Number(unixSeconds);
+  if (isNaN(sec) || sec <= 0) return '—';
+  const diff = Math.max(0, Math.floor(Date.now() / 1000 - sec));
+  if (diff < 5) return 'только что';
+  if (diff < 60) return `${diff} с назад`;
+  if (diff < 3600) return `${Math.floor(diff / 60)} мин назад`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)} ч назад`;
+  return `${Math.floor(diff / 86400)} д назад`;
+}
 
 function formatPercent(val: number | null | undefined): string {
   if (val === null || val === undefined) return '—';
   return `${Math.round(val * 100)}%`;
 }
 
-function getQuotaColorClass(fraction: number | null | undefined): string {
-  if (fraction === null || fraction === undefined) return 'bg-muted text-muted-foreground border-border';
-  if (fraction > 0.5) return 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30';
-  if (fraction > 0.2) return 'bg-amber-500/15 text-amber-400 border-amber-500/30';
-  return 'bg-red-500/15 text-red-400 border-red-500/30';
+function QuotaItem({
+  label,
+  value5h,
+  valueWeekly,
+  title,
+}: {
+  label: string;
+  value5h?: number | null;
+  valueWeekly?: number | null;
+  title: string;
+}) {
+  if (value5h === undefined && valueWeekly === undefined) return null;
+
+  const minVal = Math.min(value5h ?? 1, valueWeekly ?? 1);
+  const dotColor = minVal > 0.5 ? 'bg-emerald-400' : minVal > 0.2 ? 'bg-amber-400' : 'bg-red-400';
+  const valColor = minVal > 0.5 ? 'text-emerald-400' : minVal > 0.2 ? 'text-amber-400' : 'text-red-400';
+
+  return (
+    <span
+      className="inline-flex items-center gap-1.5 px-1.5 py-0.5 rounded text-[10px] font-mono bg-muted/50 border border-border/70 select-none shadow-2xs hover:bg-muted transition-colors whitespace-nowrap"
+      title={title}
+    >
+      <span className={`w-1.5 h-1.5 rounded-full ${dotColor} shrink-0`} />
+      <span className="font-semibold text-foreground/85 font-sans tracking-tight text-[11px]">{label}</span>
+      <span className="text-muted-foreground/60 text-[10px]">5h:</span>
+      <span className={valColor}>{formatPercent(value5h)}</span>
+      <span className="text-muted-foreground/30 font-sans">/</span>
+      <span className="text-muted-foreground/60 text-[10px]">7d:</span>
+      <span className={valColor}>{formatPercent(valueWeekly)}</span>
+    </span>
+  );
 }
 
 function QuotaBadges({ quota }: { quota?: PoolAccount['quota'] }) {
-  if (!quota) return null;
+  if (!quota) return <span className="text-xs text-muted-foreground/40 font-mono">—</span>;
 
   const hasGemini = quota.gemini_5h !== undefined || quota.gemini_weekly !== undefined;
   const hasClaude = quota.claude_5h !== undefined || quota.claude_weekly !== undefined;
 
-  if (!hasGemini && !hasClaude) return null;
+  if (!hasGemini && !hasClaude) return <span className="text-xs text-muted-foreground/40 font-mono">—</span>;
 
   const g5hTitle = quota.gemini_5h_reset ? `Gemini 5h reset: ${new Date(quota.gemini_5h_reset).toLocaleTimeString()}` : 'Gemini 5h limit';
   const gWeeklyTitle = quota.gemini_weekly_reset ? `Gemini 7d reset: ${new Date(quota.gemini_weekly_reset).toLocaleDateString()}` : 'Gemini 7d limit';
@@ -30,32 +76,22 @@ function QuotaBadges({ quota }: { quota?: PoolAccount['quota'] }) {
   const cWeeklyTitle = quota.claude_weekly_reset ? `Claude 7d reset: ${new Date(quota.claude_weekly_reset).toLocaleDateString()}` : 'Claude 7d limit';
 
   return (
-    <div className="flex flex-wrap items-center gap-1.5 mt-1">
+    <div className="flex flex-col gap-1 min-w-[160px]">
       {hasGemini && (
-        <span
-          className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-mono border ${getQuotaColorClass(
-            quota.gemini_5h ?? quota.gemini_weekly
-          )}`}
+        <QuotaItem
+          label="Gemini"
+          value5h={quota.gemini_5h}
+          valueWeekly={quota.gemini_weekly}
           title={`${g5hTitle} | ${gWeeklyTitle}`}
-        >
-          <span className="font-semibold text-[9px] uppercase tracking-wider opacity-75">Gemini</span>
-          <span>5h: {formatPercent(quota.gemini_5h)}</span>
-          <span className="opacity-40">/</span>
-          <span>7d: {formatPercent(quota.gemini_weekly)}</span>
-        </span>
+        />
       )}
       {hasClaude && (
-        <span
-          className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-mono border ${getQuotaColorClass(
-            quota.claude_5h ?? quota.claude_weekly
-          )}`}
+        <QuotaItem
+          label="Claude"
+          value5h={quota.claude_5h}
+          valueWeekly={quota.claude_weekly}
           title={`${c5hTitle} | ${cWeeklyTitle}`}
-        >
-          <span className="font-semibold text-[9px] uppercase tracking-wider opacity-75">Claude</span>
-          <span>5h: {formatPercent(quota.claude_5h)}</span>
-          <span className="opacity-40">/</span>
-          <span>7d: {formatPercent(quota.claude_weekly)}</span>
-        </span>
+        />
       )}
     </div>
   );
@@ -65,21 +101,66 @@ function ModelCooldownBadges({ cooldowns }: { cooldowns?: Record<string, number>
   if (!cooldowns || Object.keys(cooldowns).length === 0) return null;
 
   return (
-    <div className="flex flex-wrap items-center gap-1 mt-1">
+    <div className="flex flex-wrap items-center gap-1 mt-0.5">
       {Object.entries(cooldowns).map(([model, until]) => {
         const secLeft = Math.max(0, Math.round(until - Date.now() / 1000));
         if (secLeft <= 0) return null;
         return (
           <span
             key={model}
-            className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-mono bg-red-500/15 text-red-400 border border-red-500/30"
-            title={`Cooldown until ${new Date(until * 1000).toLocaleTimeString()}`}
+            className="inline-flex items-center gap-1 px-1.5 py-0.2 rounded text-[10px] font-mono bg-red-500/10 text-red-400 border border-red-500/20"
+            title={`Кулдаун до ${new Date(until * 1000).toLocaleTimeString()}`}
           >
-            <span className="font-semibold text-[9px] uppercase">{model.replace('gemini-', '').replace('claude-', '')}</span>
-            <span>429 ({secLeft}s)</span>
+            <span className="font-semibold text-[9px] uppercase tracking-wider">{model.replace('gemini-', '').replace('claude-', '')}</span>
+            <span>429 ({secLeft}с)</span>
           </span>
         );
       })}
+    </div>
+  );
+}
+
+function AccountAvatar({
+  name,
+  email,
+  picture,
+  isActive,
+}: {
+  name?: string | null;
+  email?: string | null;
+  picture?: string | null;
+  isActive?: boolean;
+}) {
+  const [imgError, setImgError] = useState(false);
+  const initial = (name || email || '?')[0].toUpperCase();
+  const ringClass = isActive
+    ? 'ring-2 ring-emerald-500/80 ring-offset-1 ring-offset-background'
+    : 'border border-border/80';
+
+  if (picture && !imgError) {
+    return (
+      <div className="relative shrink-0">
+        <img
+          src={picture}
+          alt=""
+          onError={() => setImgError(true)}
+          className={`w-7 h-7 rounded-full object-cover ${ringClass} shadow-xs`}
+        />
+        {isActive && (
+          <span className="absolute -bottom-0.5 -right-0.5 w-2 h-2 rounded-full bg-emerald-500 border border-background" />
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div className="relative shrink-0">
+      <div className={`w-7 h-7 rounded-full bg-primary/10 text-primary ${ringClass} flex items-center justify-center text-xs font-bold select-none shadow-xs`}>
+        {initial}
+      </div>
+      {isActive && (
+        <span className="absolute -bottom-0.5 -right-0.5 w-2 h-2 rounded-full bg-emerald-500 border border-background" />
+      )}
     </div>
   );
 }
@@ -118,61 +199,47 @@ function AccountErrorsModal({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-4">
-      <div className="bg-card border rounded-xl shadow-xl w-full max-w-3xl max-h-[85vh] flex flex-col overflow-hidden animate-in fade-in zoom-in-95">
-        <div className="flex items-center justify-between p-4 border-b">
+      <div className="bg-card border border-border rounded-xl w-full max-w-2xl max-h-[80vh] flex flex-col shadow-2xl">
+        <div className="flex items-center justify-between p-4 border-b border-border">
           <div className="flex items-center gap-2">
-            <AlertTriangle className="w-5 h-5 text-amber-400" />
-            <div>
-              <h3 className="font-semibold text-foreground text-sm">
-                Recent Errors for "{account.label || account.id}"
-              </h3>
-              <p className="text-xs text-muted-foreground font-mono">{account.email || account.id}</p>
-            </div>
+            <AlertTriangle className="w-4 h-4 text-amber-400" />
+            <span className="font-semibold text-sm">
+              Recent Errors: {account.label} {account.email && `(${account.email})`}
+            </span>
           </div>
-          <button
-            onClick={onClose}
-            className="p-1 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
-          >
+          <button onClick={onClose} className="text-muted-foreground hover:text-foreground">
             <X className="w-4 h-4" />
           </button>
         </div>
-
-        <div className="p-4 overflow-y-auto flex-1 space-y-3">
+        <div className="overflow-y-auto p-4 flex-1 space-y-3">
           {loading ? (
-            <div className="flex items-center justify-center p-8 text-sm text-muted-foreground gap-2">
-              <RefreshCw className="w-4 h-4 animate-spin" />
-              Loading error history...
-            </div>
+            <div className="text-xs text-muted-foreground text-center py-6">Loading errors...</div>
           ) : errors.length === 0 ? (
-            <div className="text-center p-8 text-sm text-muted-foreground">
+            <div className="text-xs text-muted-foreground text-center py-6">
               No recent errors recorded for this account.
             </div>
           ) : (
             errors.map((err) => (
-              <div key={err.id} className="border border-destructive/30 bg-destructive/5 rounded-lg p-3 space-y-1.5 text-xs">
-                <div className="flex items-center justify-between flex-wrap gap-2">
-                  <div className="flex items-center gap-2">
-                    <span className="font-semibold text-destructive font-mono">#{err.id}</span>
-                    <span className="font-semibold text-foreground">{err.error_type || 'Error'}</span>
-                    <span className="px-1.5 py-0.5 rounded bg-muted font-mono text-[10px] text-muted-foreground">
-                      {err.model}
-                    </span>
-                    <span className="text-[10px] text-muted-foreground">
-                      {err.latency_ms}ms
-                    </span>
-                  </div>
-                  <span className="text-muted-foreground text-[11px]">
-                    {new Date(err.ts * 1000).toLocaleString()}
+              <div key={err.id} className="border border-border/80 rounded-lg p-3 text-xs bg-muted/20 space-y-1.5">
+                <div className="flex items-center justify-between text-[11px] text-muted-foreground font-mono">
+                  <span>{new Date(err.ts * 1000).toLocaleString()}</span>
+                  <span className="px-1.5 py-0.5 rounded bg-red-500/15 text-red-400 font-semibold border border-red-500/30">
+                    {err.error_type}
                   </span>
                 </div>
-                {err.response_preview && (
-                  <div className="bg-background/80 border rounded p-2 font-mono text-[11px] text-foreground whitespace-pre-wrap break-all">
-                    {err.response_preview}
+                <div className="text-muted-foreground font-mono text-[11px]">
+                  endpoint: <span className="text-foreground">{err.endpoint}</span> | model:{' '}
+                  <span className="text-foreground">{err.model}</span> | latency:{' '}
+                  <span className="text-foreground">{err.latency_ms}ms</span>
+                </div>
+                {err.prompt_preview && (
+                  <div className="text-muted-foreground font-mono text-[11px] truncate" title={err.prompt_preview}>
+                    prompt: {err.prompt_preview}
                   </div>
                 )}
-                {err.prompt_preview && (
-                  <div className="text-[11px] text-muted-foreground italic truncate" title={err.prompt_preview}>
-                    Prompt: {err.prompt_preview}
+                {err.response_preview && (
+                  <div className="p-2 rounded bg-background border border-border/60 text-destructive font-mono text-[11px] whitespace-pre-wrap break-all max-h-32 overflow-y-auto">
+                    {err.response_preview}
                   </div>
                 )}
               </div>
@@ -197,26 +264,22 @@ export function AccountsTable({
 }) {
   const { apiKey } = useApiKey();
   const [selectedErrorAcc, setSelectedErrorAcc] = useState<PoolAccount | null>(null);
-  const [checkingHealthId, setCheckingHealthId] = useState<string | null>(null);
   const [refreshingQuotaId, setRefreshingQuotaId] = useState<string | null>(null);
+  const [checkingHealthId, setCheckingHealthId] = useState<string | null>(null);
   const [activatingId, setActivatingId] = useState<string | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
   const [healthMsg, setHealthMsg] = useState<{ id: string; text: string; ok: boolean } | null>(null);
 
   const handleActivate = async (acc: PoolAccount) => {
-    if (acc.active || activatingId) return;
     setActivatingId(acc.id);
     try {
-      const res = await fetch(apiUrl(`/v1/accounts/${acc.id}/activate`), {
+      await fetch(apiUrl(`/v1/accounts/${acc.id}/activate`), {
         method: 'POST',
         headers: { Authorization: `Bearer ${apiKey}` },
       });
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        throw new Error(data.detail || 'Failed to activate account');
-      }
       onChanged();
-    } catch (e: any) {
-      alert(e.message || 'Failed to activate account');
+    } catch {
+      // ignore
     } finally {
       setActivatingId(null);
     }
@@ -239,10 +302,10 @@ export function AccountsTable({
 
   const editProxy = async (acc: PoolAccount) => {
     const next = window.prompt(
-      `Proxy for "${acc.label}" (e.g. http://user:pass@host:port). Leave empty to clear:`,
+      `Прокси для "${acc.label}" (например, http://user:pass@host:port). Оставьте пустым, чтобы очистить:`,
       acc.proxy || ''
     );
-    if (next === null) return; // cancelled
+    if (next === null) return;
     await fetch(apiUrl(`/v1/accounts/${acc.id}/proxy`), {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
@@ -262,28 +325,49 @@ export function AccountsTable({
       const data = await res.json();
       setHealthMsg({
         id: acc.id,
-        text: data.message || (data.recovered ? 'Account restored to healthy!' : 'Still rate-limited'),
+        text: data.message || (data.recovered ? 'Аккаунт восстановлен!' : 'Лимит ещё активен'),
         ok: !!data.recovered,
       });
       onChanged();
     } catch (e: any) {
-      setHealthMsg({ id: acc.id, text: e.message || 'Check failed', ok: false });
+      setHealthMsg({ id: acc.id, text: e.message || 'Ошибка проверки', ok: false });
     } finally {
       setCheckingHealthId(null);
     }
   };
 
+  const handleDelete = async (acc: PoolAccount) => {
+    const displayName = acc.name || (acc.label && acc.label !== acc.email ? acc.label : acc.email || acc.id);
+    if (!window.confirm(`Удалить аккаунт "${displayName}" из пула?`)) return;
+    setDeletingId(acc.id);
+    try {
+      const res = await fetch(apiUrl(`/v1/accounts/${acc.id}`), {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${apiKey}` },
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || 'Не удалось удалить аккаунт');
+      }
+      onChanged();
+    } catch (e: any) {
+      alert(e.message || 'Ошибка удаления');
+    } finally {
+      setDeletingId(null);
+    }
+  };
+
   if (!poolEnabled) {
     return (
-      <div className="border rounded-xl p-4 bg-card text-sm text-muted-foreground">
+      <div className="border border-border/80 rounded-xl p-4 bg-card text-sm text-muted-foreground">
         Account pool not configured (AGY_POOL_ENABLED=false).
       </div>
     );
   }
   if (accounts.length === 0) {
     return (
-      <div className="border rounded-xl p-4 bg-card text-sm text-muted-foreground">
-        No accounts in pool yet. Use "Add Account" above, or run <code>scripts/add_account_to_pool.py</code>.
+      <div className="border border-border/80 rounded-xl p-4 bg-card text-sm text-muted-foreground">
+        В пуле пока нет аккаунтов. Нажмите «Добавить аккаунт» выше для подключения.
       </div>
     );
   }
@@ -295,144 +379,207 @@ export function AccountsTable({
           onClose={() => setSelectedErrorAcc(null)}
         />
       )}
-      <div className="border rounded-xl bg-card overflow-hidden">
+      <div className="border border-border/80 rounded-xl bg-card shadow-xs">
         <table className="w-full text-sm">
-          <thead className="bg-muted/50 text-muted-foreground">
+          <thead className="bg-muted/40 text-muted-foreground border-b border-border/80 text-[11px] font-medium uppercase tracking-wider">
             <tr>
-              <th className="text-left p-3 font-medium">Label & Limits</th>
-              <th className="text-left p-3 font-medium">Status & Cooldown</th>
-              <th className="text-left p-3 font-medium">Proxy</th>
-              <th className="text-left p-3 font-medium">Requests</th>
-              <th className="text-left p-3 font-medium">Tokens IN/OUT</th>
-              <th className="text-left p-3 font-medium">Last used</th>
-              <th className="text-right p-3 font-medium">Actions</th>
+              <th className="text-left py-2.5 px-3 whitespace-nowrap">Аккаунт</th>
+              <th className="text-left py-2.5 px-3 whitespace-nowrap">Квоты</th>
+              <th className="text-left py-2.5 px-2.5 whitespace-nowrap">Статус</th>
+              <th className="text-left py-2.5 px-2.5 whitespace-nowrap">Прокси</th>
+              <th className="text-right py-2.5 px-2.5 whitespace-nowrap">Запросы</th>
+              <th className="text-right py-2.5 px-2.5 whitespace-nowrap">Токены</th>
+              <th className="text-right py-2.5 px-2.5 whitespace-nowrap">Активность</th>
+              <th className="text-right py-2.5 px-3 whitespace-nowrap">Действия</th>
             </tr>
           </thead>
-          <tbody>
+          <tbody className="divide-y divide-border/60">
             {accounts.map((acc) => (
-              <tr key={acc.id} className="border-t">
-                <td className="p-3">
-                  <div className="font-medium text-foreground flex items-center flex-wrap gap-1.5">
-                    <span>{acc.label || acc.id}</span>
-                    {acc.email && (
-                      <span className="text-xs font-mono text-muted-foreground">
-                        ({acc.email})
+              <tr key={acc.id} className="hover:bg-muted/20 transition-colors">
+                {/* 1. Account */}
+                <td className="py-2.5 px-3 align-middle">
+                  <div className="flex items-center gap-2.5">
+                    <AccountAvatar
+                      name={acc.name}
+                      email={acc.email}
+                      picture={acc.picture}
+                      isActive={acc.active}
+                    />
+                    <div className="flex flex-col min-w-0">
+                      <span className="font-semibold text-foreground text-sm leading-tight whitespace-nowrap">
+                        {acc.name || acc.label || acc.email || acc.id}
                       </span>
-                    )}
-                    {acc.active && (
-                      <span className="ml-1 inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-emerald-500/15 text-emerald-400 border border-emerald-500/30">
-                        ● active
-                      </span>
-                    )}
+                      {acc.email && (acc.name || (acc.label && acc.label !== acc.email)) ? (
+                        <span className="text-xs text-muted-foreground font-mono leading-tight mt-0.5 whitespace-nowrap">
+                          {acc.email}
+                        </span>
+                      ) : null}
+                    </div>
                   </div>
-                  <div className="flex items-center gap-1.5 flex-wrap">
+                </td>
+
+                {/* 2. Quotas */}
+                <td className="py-2.5 px-3 align-middle whitespace-nowrap">
+                  <div className="flex items-center gap-1.5">
                     <QuotaBadges quota={acc.quota} />
                     <button
                       onClick={() => refreshAccountQuota(acc)}
                       disabled={refreshingQuotaId === acc.id}
-                      className="inline-flex items-center gap-1 mt-1 px-1.5 py-0.5 text-[10px] font-medium rounded bg-secondary hover:bg-secondary/80 text-muted-foreground hover:text-foreground transition-colors border border-border/50 disabled:opacity-50"
-                      title="Check quota with Google for this account"
+                      className="p-1 rounded-md text-muted-foreground/60 hover:text-foreground hover:bg-muted/70 transition-colors disabled:opacity-50 cursor-pointer shrink-0"
+                      title="Обновить квоты в Google"
                     >
-                      <Gauge className={`w-3 h-3 ${refreshingQuotaId === acc.id ? 'animate-spin' : ''}`} />
-                      Check
+                      <RefreshCw className={`w-3.5 h-3.5 ${refreshingQuotaId === acc.id ? 'animate-spin text-primary' : ''}`} />
                     </button>
                   </div>
                 </td>
-                <td className="p-3">
+
+                {/* 3. Status */}
+                <td className="py-2.5 px-2.5 align-middle text-left whitespace-nowrap">
                   <div className="flex flex-col gap-1 items-start">
                     <div className="flex items-center gap-1.5">
-                      <span
-                        className={`px-2 py-0.5 rounded-full text-xs font-medium ${
-                          acc.status === 'healthy'
-                            ? 'bg-emerald-500/20 text-emerald-400'
-                            : acc.status === 'cooldown'
-                            ? 'bg-amber-500/20 text-amber-400'
-                            : 'bg-red-500/20 text-red-400'
-                        }`}
-                      >
-                        {acc.status}
-                      </span>
+                      {acc.status === 'healthy' ? (
+                        <span className="inline-flex items-center gap-1.5 text-xs text-emerald-400 font-medium bg-emerald-500/10 border border-emerald-500/20 px-2 py-0.5 rounded-md select-none whitespace-nowrap">
+                          <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+                          В норме
+                        </span>
+                      ) : acc.status === 'cooldown' ? (
+                        <span className="inline-flex items-center gap-1.5 text-xs text-amber-400 font-medium bg-amber-500/10 border border-amber-500/20 px-2 py-0.5 rounded-md select-none whitespace-nowrap">
+                          <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
+                          Кулдаун
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center gap-1.5 text-xs text-red-400 font-medium bg-red-500/10 border border-red-500/20 px-2 py-0.5 rounded-md select-none whitespace-nowrap">
+                          <span className="w-1.5 h-1.5 rounded-full bg-red-400" />
+                          Ошибка
+                        </span>
+                      )}
                       {acc.status !== 'healthy' && (
                         <button
                           onClick={() => runHealthCheck(acc)}
                           disabled={checkingHealthId === acc.id}
-                          className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[11px] font-medium rounded bg-secondary hover:bg-secondary/80 text-foreground transition-colors"
-                          title="Check with Google if quota has recovered and reset cooldown"
+                          className="p-1 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted transition-colors cursor-pointer"
+                          title="Проверить восстановление аккаунта в Google"
                         >
-                          <RefreshCw className={`w-3 h-3 ${checkingHealthId === acc.id ? 'animate-spin' : ''}`} />
-                          Check
+                          <RefreshCw className={`w-3 h-3 ${checkingHealthId === acc.id ? 'animate-spin text-primary' : ''}`} />
                         </button>
                       )}
                     </div>
                     {acc.cooldown_until && acc.cooldown_until > Date.now() / 1000 && (
-                      <span className="text-[10px] text-muted-foreground font-mono">
-                        until {new Date(acc.cooldown_until * 1000).toLocaleTimeString()}
+                      <span className="text-[10px] text-muted-foreground font-mono whitespace-nowrap">
+                        до {new Date(acc.cooldown_until * 1000).toLocaleTimeString()}
                       </span>
                     )}
                     {healthMsg && healthMsg.id === acc.id && (
-                      <span className={`text-[10px] ${healthMsg.ok ? 'text-emerald-400' : 'text-amber-400'}`}>
+                      <span className={`text-[10px] whitespace-nowrap ${healthMsg.ok ? 'text-emerald-400' : 'text-amber-400'}`}>
                         {healthMsg.text}
                       </span>
                     )}
                     <ModelCooldownBadges cooldowns={acc.model_cooldowns} />
                   </div>
                 </td>
-                <td className="p-3">
+
+                {/* 4. Proxy */}
+                <td className="py-2.5 px-2.5 align-middle text-left whitespace-nowrap">
                   <button
                     onClick={() => editProxy(acc)}
-                    className="flex items-center gap-1.5 text-muted-foreground hover:text-foreground transition-colors"
-                    title="Edit proxy"
+                    className="group inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs hover:bg-muted/60 transition-colors text-left cursor-pointer border border-transparent hover:border-border/60"
+                    title="Нажмите, чтобы изменить прокси"
                   >
-                    <Pencil className="w-3 h-3" />
                     {acc.proxy ? (
-                      <span className="font-mono text-xs">{acc.proxy}</span>
+                      <span className="font-mono text-xs text-foreground/90 bg-muted/60 px-1 py-0.5 rounded border border-border/50 max-w-[120px] truncate">
+                        {acc.proxy}
+                      </span>
                     ) : (
-                      <span className="text-xs italic">none</span>
+                      <span className="text-muted-foreground/40 text-xs font-mono">—</span>
                     )}
+                    <Pencil className="w-3 h-3 text-muted-foreground/40 group-hover:text-foreground transition-colors shrink-0" />
                   </button>
                 </td>
-                <td className="p-3">{acc.total_requests}</td>
-                <td className="p-3">
-                  {acc.total_prompt_tokens.toLocaleString()} / {acc.total_completion_tokens.toLocaleString()}
+
+                {/* 5. Requests */}
+                <td className="py-2.5 px-2.5 align-middle text-right font-mono text-xs font-medium text-foreground whitespace-nowrap">
+                  {acc.total_requests.toLocaleString()}
                 </td>
-                <td className="p-3 text-muted-foreground">
-                  {acc.last_used_ts ? new Date(acc.last_used_ts * 1000).toLocaleString() : '—'}
+
+                {/* 6. Tokens */}
+                <td className="py-2.5 px-2.5 align-middle text-right whitespace-nowrap">
+                  <div
+                    className="flex flex-col text-xs font-mono leading-tight gap-0.5 items-end"
+                    title={`Входные: ${acc.total_prompt_tokens.toLocaleString()} | Выходные: ${acc.total_completion_tokens.toLocaleString()}`}
+                  >
+                    <span className="text-foreground/90 font-medium whitespace-nowrap">↓{formatTokens(acc.total_prompt_tokens)}</span>
+                    <span className="text-muted-foreground text-[10px] whitespace-nowrap">↑{formatTokens(acc.total_completion_tokens)}</span>
+                  </div>
                 </td>
-                <td className="p-3 text-right">
-                  <div className="inline-flex items-center gap-1.5">
-                    {!acc.active && (
-                      <button
+
+                {/* 7. Last used */}
+                <td
+                  className="py-2.5 px-2.5 align-middle text-right text-xs text-muted-foreground whitespace-nowrap"
+                  title={acc.last_used_ts ? new Date(acc.last_used_ts * 1000).toLocaleString() : undefined}
+                >
+                  {formatRelativeTime(acc.last_used_ts)}
+                </td>
+
+                {/* 8. Actions */}
+                <td className="py-2.5 px-3 align-middle text-right whitespace-nowrap">
+                  <div className="flex items-center justify-end gap-1">
+                    {acc.active ? (
+                      <span className="inline-flex items-center justify-center gap-1 h-7 min-w-[72px] px-2 text-xs font-medium rounded-md bg-emerald-500/10 text-emerald-400 border border-emerald-500/25 select-none font-sans">
+                        <Check className="w-3.5 h-3.5" />
+                        <span>Активен</span>
+                      </span>
+                    ) : (
+                      <Button
+                        variant="outline"
+                        size="sm"
                         onClick={() => handleActivate(acc)}
                         disabled={activatingId === acc.id}
-                        className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium rounded-md bg-emerald-600/15 hover:bg-emerald-600/25 text-emerald-400 border border-emerald-500/30 transition-colors cursor-pointer disabled:opacity-50"
-                        title="Set as active account for subsequent requests"
+                        className="h-7 min-w-[72px] text-xs px-2 gap-1 text-emerald-400 border-emerald-500/30 bg-emerald-500/5 hover:bg-emerald-500/15 cursor-pointer"
+                        title="Сделать активным аккаунтом"
                       >
                         {activatingId === acc.id ? (
-                          <RefreshCw className="w-3 h-3 animate-spin" />
+                          <RefreshCw className="w-3.5 h-3.5 animate-spin" />
                         ) : (
-                          <CheckCircle2 className="w-3 h-3" />
+                          <CheckCircle2 className="w-3.5 h-3.5" />
                         )}
-                        Activate
-                      </button>
+                        <span>Выбрать</span>
+                      </Button>
                     )}
-                    <button
+                    <Button
+                      variant="outline"
+                      size="sm"
                       onClick={() => setSelectedErrorAcc(acc)}
-                      className="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium rounded-md bg-secondary hover:bg-secondary/80 text-secondary-foreground transition-colors"
-                      title="View recent error logs for this account"
+                      className="h-7 w-7 p-0 text-muted-foreground hover:text-foreground cursor-pointer shrink-0"
+                      title="Логи ошибок аккаунта"
                     >
-                      <AlertTriangle className="w-3 h-3 text-amber-400" />
-                      Errors
-                    </button>
+                      <AlertTriangle className="w-3.5 h-3.5 text-amber-400/80" />
+                    </Button>
                     {onRelogin && (
-                      <button
+                      <Button
+                        variant="outline"
+                        size="sm"
                         onClick={() => onRelogin(acc)}
-                        className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium rounded-md bg-primary hover:bg-primary/90 text-primary-foreground transition-colors"
-                        title="Relogin and refresh OAuth tokens for this account"
+                        className="h-7 text-xs px-2 gap-1 text-primary border-primary/30 bg-primary/5 hover:bg-primary/15 cursor-pointer"
+                        title="Релогин через Google OAuth"
                       >
-                        <LogIn className="w-3 h-3" />
-                        Relogin
-                      </button>
+                        <LogIn className="w-3.5 h-3.5" />
+                        <span>Релогин</span>
+                      </Button>
                     )}
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => handleDelete(acc)}
+                      disabled={deletingId === acc.id}
+                      className="h-7 w-7 p-0 text-muted-foreground hover:text-destructive hover:border-destructive/40 hover:bg-destructive/10 cursor-pointer shrink-0"
+                      title="Удалить аккаунт"
+                    >
+                      {deletingId === acc.id ? (
+                        <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                      ) : (
+                        <Trash2 className="w-3.5 h-3.5" />
+                      )}
+                    </Button>
                   </div>
                 </td>
               </tr>
@@ -443,4 +590,3 @@ export function AccountsTable({
     </>
   );
 }
-

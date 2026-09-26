@@ -100,19 +100,11 @@ function IntegrationGuide() {
             </div>
           </div>
 
-          {/* Special Headers */}
           <div className="p-3 rounded-lg bg-muted/40 border space-y-1.5 text-xs">
-            <div className="flex items-center gap-1.5 text-muted-foreground font-medium">
-              <BookOpen className="w-3.5 h-3.5 text-primary" />
-              Спец-хедеры управления (опционально):
-            </div>
-            <div className="flex flex-wrap gap-2 text-[11px] font-mono">
-              <span className="px-2 py-1 rounded bg-card border text-foreground">
-                <span className="text-primary">X-Skip-Classifier:</span> true
-                <span className="text-muted-foreground font-sans ml-1">(пропустить классификатор и слать сразу в LLM)</span>
-              </span>
-            </div>
+            <div className="flex items-center gap-1.5 text-muted-foreground font-medium"><BookOpen className="w-3.5 h-3.5 text-primary" />Спец-хедеры управления (опционально):</div>
+            <div className="flex flex-wrap gap-2 text-[11px] font-mono"><span className="px-2 py-1 rounded bg-card border text-foreground"><span className="text-primary">X-Skip-Classifier:</span> true <span className="text-muted-foreground font-sans ml-1">(пропустить классификатор и слать сразу в LLM)</span></span></div>
           </div>
+
         </div>
       )}
     </div>
@@ -317,8 +309,8 @@ export function ApiKeysPage() {
   };
 
   return (
-    <div className="flex-1 p-8 overflow-auto">
-      <div className="max-w-5xl mx-auto space-y-8">
+    <div className="flex-1 p-6 md:p-8 overflow-auto">
+      <div className="max-w-6xl mx-auto w-full space-y-6">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">API Keys</h1>
           <p className="text-sm text-muted-foreground mt-1">
@@ -523,15 +515,15 @@ export function ApiKeysPage() {
                           {k.expires_at ? new Date(k.expires_at * 1000).toLocaleDateString() : 'Never'}
                         </td>
                         <td className="p-3 text-right whitespace-nowrap">
-                          <div className="flex items-center justify-end gap-1">
+                          <div className="flex items-center justify-end gap-1.5">
                             <Button
-                              variant="ghost"
+                              variant="outline"
                               size="sm"
                               onClick={() => handleToggleActive(k)}
-                              className={`h-8 px-2 text-xs gap-1 ${
+                              className={`h-7 px-2 text-xs gap-1 cursor-pointer ${
                                 k.is_active
-                                  ? 'text-muted-foreground hover:text-amber-500'
-                                  : 'text-emerald-500 hover:text-emerald-400'
+                                  ? 'text-muted-foreground hover:text-amber-400'
+                                  : 'text-emerald-400 border-emerald-500/30 bg-emerald-500/5 hover:bg-emerald-500/15'
                               }`}
                               title={k.is_active ? 'Deactivate Key' : 'Activate Key'}
                             >
@@ -539,14 +531,13 @@ export function ApiKeysPage() {
                               {k.is_active ? 'Disable' : 'Enable'}
                             </Button>
                             <Button
-                              variant="ghost"
+                              variant="outline"
                               size="sm"
                               onClick={() => handleDeleteKey(k.key)}
-                              className="h-8 px-2 text-xs text-muted-foreground hover:text-destructive gap-1"
+                              className="h-7 w-7 p-0 text-muted-foreground hover:text-destructive hover:border-destructive/40 hover:bg-destructive/10 cursor-pointer shrink-0"
                               title="Delete Key"
                             >
                               <Trash2 className="w-3.5 h-3.5" />
-                              Delete
                             </Button>
                           </div>
                         </td>

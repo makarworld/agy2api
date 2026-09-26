@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import re
 import time
 import uuid
 from typing import Any, AsyncIterator, List, Optional
@@ -19,6 +20,7 @@ from app.core.cloudcode_common import (
 from app.core.http_tools_bridge import (
     anthropic_tools_to_gemini,
     extract_parts_from_response,
+    extract_stream_parts_from_response,
     finalize_pending_tool_calls,
     http_debug_enabled,
     ingest_stream_tool_calls,
@@ -397,8 +399,10 @@ async def stream_completion(
     allow_thought_text = thought_as_text_enabled(tools_present=tools_present, param_override=thought_as_text)
     if _suppress_thought_text(system, messages):
         allow_thought_text = False
-    thought_prefix, thought_suffix = thought_text_wrappers()
-    max_output_tokens = int(os.environ.get("AGY_HTTP_MAX_OUTPUT_TOKENS", "65536"))
+    thought_prefix_raw, thought_suffix_raw = thought_text_wrappers()
+    thought_prefix = thought_prefix_raw.replace("\\n", "\n")
+    thought_suffix = thought_suffix_raw.replace("\\n", "\n")
+    max_output_tokens = int(os.environ.get("AGY_HTTP_MAX_OUTPUT_TOKENS") or "65536")
     cascade_id = str(uuid.uuid4())
     trajectory_id = str(uuid.uuid4())
     step = 1
@@ -438,9 +442,44 @@ async def stream_completion(
         last_sse_obj: Optional[dict] = None
         retried_auth = False
         rate_limit_detail: Optional[str] = None
-        in_think_block = False
         serialized_text_buffer = ""
         buffering_serialized_text = False
+
+        thought_buffer = ""
+        trailing_ws = ""
+        text_stream_started = False
+
+        def _flush_thoughts() -> list[dict]:
+            nonlocal thought_buffer
+            if not allow_thought_text or not thought_buffer.strip():
+                thought_buffer = ""
+                return []
+            cleaned = re.sub(r"[\r\n]+", " ", thought_buffer).strip()
+            thought_buffer = ""
+            if not cleaned:
+                return []
+            formatted = f"{thought_prefix}{cleaned}{thought_suffix}"
+            return [{"delta": formatted}]
+
+        def _process_visible_text(text: str) -> list[dict]:
+            nonlocal trailing_ws, text_stream_started
+            if not text:
+                return []
+            out = _flush_thoughts()
+            if not text_stream_started:
+                text = text.lstrip()
+                if not text:
+                    return out
+                text_stream_started = True
+            combined = trailing_ws + text
+            trailing_ws = ""
+            stripped = combined.rstrip(" \t\r\n")
+            if stripped:
+                trailing_ws = combined[len(stripped) :]
+                out.append({"delta": stripped})
+            else:
+                trailing_ws = combined
+            return out
 
         record_attempt(raw_request=body, pool_account=account_id)
 
@@ -510,17 +549,20 @@ async def stream_completion(
                             if usage_meta:
                                 final_usage = _map_usage(usage_meta)
 
-                            delta_text, tool_calls, finish_reason = extract_parts_from_response(
+                            (
+                                delta_text,
+                                thought_chunk,
+                                tool_calls,
+                                finish_reason,
+                            ) = extract_stream_parts_from_response(
                                 obj,
                                 allow_thought_text=allow_thought_text,
                             )
                             if finish_reason:
                                 last_finish_reason = finish_reason
 
-                            # Wrap thinking text in <think>...</think> when thought_as_text is enabled
-                            candidates = (obj.get("response") or obj).get("candidates") or []
-                            parts = candidates[0].get("content", {}).get("parts") if candidates else []
-                            is_thought_chunk = bool(parts and isinstance(parts[0], dict) and parts[0].get("thought"))
+                            if thought_chunk:
+                                thought_buffer += thought_chunk
 
                             if delta_text:
                                 if tools_present and (
@@ -530,24 +572,18 @@ async def stream_completion(
                                     serialized_text_buffer += delta_text
                                     full_text += delta_text
                                     continue
-                                if allow_thought_text:
-                                    if is_thought_chunk and not in_think_block:
-                                        in_think_block = True
-                                        yield {"delta": thought_prefix}
-                                        full_text += thought_prefix
-                                        yielded_any_content = True
-                                    elif not is_thought_chunk and in_think_block:
-                                        in_think_block = False
-                                        yield {"delta": thought_suffix}
-                                        full_text += thought_suffix
-                                        yielded_any_content = True
 
-                                full_text += delta_text
-                                yield {"delta": delta_text}
-                                yielded_any_content = True
+                                for item in _process_visible_text(delta_text):
+                                    full_text += item["delta"]
+                                    yield item
+                                    yielded_any_content = True
 
                             new_calls = ingest_stream_tool_calls(tool_calls, pending_tool_calls)
                             if new_calls:
+                                for item in _flush_thoughts():
+                                    full_text += item["delta"]
+                                    yield item
+                                    yielded_any_content = True
                                 yield {"tool_calls": new_calls}
                                 yielded_any_content = True
                         _log_http_response(
@@ -602,10 +638,11 @@ async def stream_completion(
                         pass
                 raise
 
-        if in_think_block:
-            in_think_block = False
-            yield {"delta": thought_suffix}
-            full_text += thought_suffix
+        for item in _flush_thoughts():
+            full_text += item["delta"]
+            yield item
+            yielded_any_content = True
+        full_text = full_text.strip()
 
         if rate_limit_detail is not None:
             cooldown = int(os.environ.get("AGY_POOL_COOLDOWN_SECONDS", "3600"))
@@ -650,7 +687,11 @@ async def stream_completion(
                 all_tool_calls = parsed_calls
             elif serialized_text_buffer:
                 buffering_serialized_text = False
-                yield {"delta": serialized_text_buffer}
+                clean_serialized = serialized_text_buffer.strip()
+                if clean_serialized:
+                    yield {"delta": clean_serialized}
+                    full_text = clean_serialized
+        full_text = full_text.strip()
         if not full_text and not all_tool_calls:
             _log_empty_stream_debug(
                 finish_reason=last_finish_reason,

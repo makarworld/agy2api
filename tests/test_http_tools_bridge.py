@@ -14,6 +14,7 @@ from app.core.http_tools_bridge import (
     messages_to_gemini_contents,
     parse_text_serialized_tool_call,
     stream_tool_call_key,
+    strip_thought_tags,
     thought_text_wrappers,
     tool_choice_to_gemini_mode,
 )
@@ -31,6 +32,49 @@ class TestHttpToolsBridge(unittest.TestCase):
             clear=True,
         ):
             self.assertEqual(thought_text_wrappers(), ("[reasoning]", ""))
+
+    def test_strip_thought_tags_by_configured_template(self):
+        with mock.patch.dict(
+            os.environ,
+            {"AGY_THOUGHT_TEXT_PREFIX": "</*~*/>", "AGY_THOUGHT_TEXT_SUFFIX": "</*~*/>"},
+            clear=True,
+        ):
+            raw = '</*~*/>Ввод: "привет". Мысли модели.</*~*/>\n\nНа связи. Какая задача?'
+            self.assertEqual(strip_thought_tags(raw), "На связи. Какая задача?")
+
+    def test_strip_thought_tags_with_trailing_newlines_in_suffix(self):
+        with mock.patch.dict(
+            os.environ,
+            {"AGY_THOUGHT_TEXT_PREFIX": "-->", "AGY_THOUGHT_TEXT_SUFFIX": "<--\n\n"},
+            clear=True,
+        ):
+            raw = "-->some model thoughts<--\n\nActual response text"
+            self.assertEqual(strip_thought_tags(raw), "Actual response text")
+
+    def test_strip_thought_tags_think_fallback(self):
+        with mock.patch.dict(
+            os.environ,
+            {"AGY_THOUGHT_TEXT_PREFIX": "<think>\n", "AGY_THOUGHT_TEXT_SUFFIX": "\n</think>\n\n"},
+            clear=True,
+        ):
+            raw = "<think>\ninternal reasoning\n</think>\n\nHello from assistant"
+            self.assertEqual(strip_thought_tags(raw), "Hello from assistant")
+
+    def test_messages_to_gemini_contents_strips_assistant_thoughts(self):
+        with mock.patch.dict(
+            os.environ,
+            {"AGY_THOUGHT_TEXT_PREFIX": "</*~*/>", "AGY_THOUGHT_TEXT_SUFFIX": "</*~*/>"},
+            clear=True,
+        ):
+            messages = [
+                {"role": "user", "content": "привет"},
+                {"role": "assistant", "content": "</*~*/>мысли</*~*/>\n\nПривет! Чем помочь?"},
+                {"role": "user", "content": "как дела"},
+            ]
+            contents = messages_to_gemini_contents(messages)
+            self.assertEqual(len(contents), 3)
+            self.assertEqual(contents[1]["role"], "model")
+            self.assertEqual(contents[1]["parts"][0]["text"], "Привет! Чем помочь?")
 
     def test_parses_text_serialized_tool_call(self):
         text = "{'text': '', 'usage': {'output_tokens': 43}, 'tool_calls': [{'id': 'call_1', 'name': 'Bash', 'input': {'command': 'pwd'}}], 'stop_reason': 'tool_use'}"
@@ -52,11 +96,10 @@ class TestHttpToolsBridge(unittest.TestCase):
 
     def test_extracts_text_serialized_tool_call_from_sse_part(self):
         text = "{'text': '', 'tool_calls': [{'id': 'call_1', 'name': 'Read', 'input': {'file_path': 'x'}}], 'stop_reason': 'tool_use'}"
-        visible, calls, _ = extract_parts_from_response(
-            {"candidates": [{"content": {"parts": [{"text": text}]}}]}
-        )
+        visible, calls, _ = extract_parts_from_response({"candidates": [{"content": {"parts": [{"text": text}]}}]})
         self.assertEqual(visible, "")
         self.assertEqual(calls[0]["name"], "Read")
+
     def test_anthropic_tools_to_gemini(self):
         tools = [
             {

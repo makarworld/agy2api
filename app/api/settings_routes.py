@@ -23,9 +23,11 @@ CONFIG_KEYS = [
     "AGY_HTTP_EMPTY_AS_EMPTY_CONTENT",
     "AGY_AUTO_CLASSIFIER_MODEL",
     "AGY_AUTO_CLASSIFIER_EFFORT",
+    "AGY_AUTO_CLASSIFIER_SHORTCUT",
     "AGY_OAUTH_REFRESH_ENABLED",
     "AGY_SSL_VERIFY",
     "AGY_HTTP_DEBUG",
+    "AGY_POOL_GIT_AUTOSYNC",
     # String / numeric values
     "AGY_TRANSPORT",
     "AGY_FORCE_MODEL",
@@ -36,6 +38,11 @@ CONFIG_KEYS = [
     "AGY_WARM_MAX_SESSIONS",
     "AGY_OAUTH_REFRESH_SKEW_SECONDS",
     "AGY_MODEL_ALIASES",
+    "AGY_HTTP_MAX_OUTPUT_TOKENS",
+    "AGY_HTTP_MAX_TOOL_RESULT_CHARS",
+    "AGY_HTTP_OLD_TOOL_RESULT_CHARS",
+    "AGY_HTTP_RETRY_TOOL_RESULT_CHARS",
+    "AGY_POOL_GIT_AUTOSYNC_INTERVAL_SECONDS",
 ]
 
 BOOLEAN_KEYS = {
@@ -43,9 +50,11 @@ BOOLEAN_KEYS = {
     "AGY_THOUGHT_AS_TEXT",
     "AGY_HTTP_TRIM_TOOL_RESULTS",
     "AGY_HTTP_EMPTY_AS_EMPTY_CONTENT",
+    "AGY_AUTO_CLASSIFIER_SHORTCUT",
     "AGY_OAUTH_REFRESH_ENABLED",
     "AGY_SSL_VERIFY",
     "AGY_HTTP_DEBUG",
+    "AGY_POOL_GIT_AUTOSYNC",
 }
 
 
@@ -53,20 +62,68 @@ def _env_path() -> str:
     return os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".env"))
 
 
+_last_env_mtime: float = 0.0
+_last_loaded_keys: set[str] = set()
+
+try:
+    _p = _env_path()
+    if os.path.exists(_p):
+        _last_env_mtime = os.path.getmtime(_p)
+except OSError:
+    pass
+
+
+def reload_env_if_modified(force: bool = False) -> bool:
+    """Reload environment variables from .env if the file has been modified on disk."""
+    global _last_env_mtime, _last_loaded_keys
+    path = _env_path()
+    if not os.path.exists(path):
+        return False
+    try:
+        mtime = os.path.getmtime(path)
+    except OSError:
+        return False
+
+    if not force and mtime == _last_env_mtime:
+        return False
+
+    try:
+        from dotenv import dotenv_values
+
+        vals = dotenv_values(path)
+        for k, v in vals.items():
+            if v is not None:
+                os.environ[k] = str(v)
+            elif k in os.environ:
+                del os.environ[k]
+
+        current_keys = set(vals.keys())
+        if _last_loaded_keys:
+            for removed_key in _last_loaded_keys - current_keys:
+                if removed_key in os.environ and (removed_key.startswith("AGY_") or removed_key in CONFIG_KEYS):
+                    del os.environ[removed_key]
+
+        _last_loaded_keys = current_keys
+        _last_env_mtime = mtime
+        logger.info(f"[settings] Applied environment changes from .env (mtime={mtime})")
+        return True
+    except Exception as e:
+        logger.warning(f"Failed to reload .env: {e}")
+        return False
+
+
 def _read_env_file() -> Dict[str, str]:
     path = _env_path()
-    env_vars = {}
     if not os.path.exists(path):
-        return env_vars
-    with open(path, "r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if not line or line.startswith("#"):
-                continue
-            if "=" in line:
-                k, v = line.split("=", 1)
-                env_vars[k.strip()] = v.strip().strip("'\"")
-    return env_vars
+        return {}
+    try:
+        from dotenv import dotenv_values
+
+        vals = dotenv_values(path)
+        return {k: str(v) for k, v in vals.items() if v is not None}
+    except Exception as e:
+        logger.warning(f"Failed to read .env via dotenv_values: {e}")
+        return {}
 
 
 def _update_env_file(updates: Dict[str, str]) -> None:
@@ -112,6 +169,7 @@ class SettingsUpdateRequest(BaseModel):
 
 @router.get("/settings", summary="Get runtime environment settings")
 async def get_settings(api_key: str = Depends(get_api_key)):
+    reload_env_if_modified()
     file_vars = _read_env_file()
     result = {}
     for k in CONFIG_KEYS:
@@ -131,6 +189,8 @@ async def update_settings(req: SettingsUpdateRequest, api_key: str = Depends(get
             continue
         if k in BOOLEAN_KEYS:
             str_val = "true" if bool(v) else "false"
+        elif k in {"AGY_THOUGHT_TEXT_PREFIX", "AGY_THOUGHT_TEXT_SUFFIX"}:
+            str_val = str(v) if v is not None else ""
         else:
             str_val = str(v).strip() if v is not None else ""
 
@@ -139,8 +199,20 @@ async def update_settings(req: SettingsUpdateRequest, api_key: str = Depends(get
 
     try:
         _update_env_file(updates_str)
+        path = _env_path()
+        if os.path.exists(path):
+            global _last_env_mtime
+            _last_env_mtime = os.path.getmtime(path)
     except Exception as e:
         logger.error(f"Failed to update .env file: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to persist .env file: {e}")
+
+    if "AGY_POOL_ENABLED" in updates_str:
+        try:
+            from app.core import pool_manager
+
+            await pool_manager.init_pool_state()
+        except Exception as e:
+            logger.warning(f"Failed to re-sync pool state after settings update: {e}")
 
     return {"status": "ok", "updated": list(updates_str.keys())}

@@ -1,7 +1,22 @@
 import { useState, useEffect } from 'react';
-import { Settings as SettingsIcon, Save, RefreshCw, CheckCircle2, AlertCircle, Plus, Trash2 } from 'lucide-react';
+import {
+  Settings as SettingsIcon,
+  Save,
+  RefreshCw,
+  CheckCircle2,
+  AlertCircle,
+  Plus,
+  Trash2,
+  Cpu,
+  Users,
+  Sliders,
+  ShieldCheck,
+  Layers,
+} from 'lucide-react';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
+import { Switch } from '../components/ui/switch';
+import { Select } from '../components/ui/select';
 import { useApiKey } from '../hooks/use-api-key';
 import { apiUrl } from '../lib/api';
 import { buildThoughtTemplate, parseThoughtTemplate } from '../lib/thought-template';
@@ -67,6 +82,28 @@ function serializeAliases(rows: ModelAliasRow[]): string {
     .join(', ');
 }
 
+interface SettingToggleRowProps {
+  title: string;
+  description: string;
+  checked: boolean;
+  onCheckedChange: () => void;
+}
+
+function SettingToggleRow({ title, description, checked, onCheckedChange }: SettingToggleRowProps) {
+  return (
+    <div
+      onClick={onCheckedChange}
+      className="flex items-center justify-between p-3 rounded-lg border border-border/50 bg-muted/20 hover:bg-muted/40 dark:bg-black/20 dark:hover:bg-black/35 hover:border-border/80 transition-all cursor-pointer select-none"
+    >
+      <div className="pr-4">
+        <div className="text-sm font-medium leading-none">{title}</div>
+        <div className="text-xs text-muted-foreground mt-1 leading-snug">{description}</div>
+      </div>
+      <Switch checked={checked} onCheckedChange={onCheckedChange} onClick={(e) => e.stopPropagation()} />
+    </div>
+  );
+}
+
 export function SettingsPage() {
   const { apiKey } = useApiKey();
   const [settings, setSettings] = useState<Record<string, any>>({});
@@ -101,7 +138,6 @@ export function SettingsPage() {
         ),
       );
       setAliases(parsedAliases);
-      // Ensure serialized string is present in settings state right away
       setSettings({
         ...loaded,
         AGY_MODEL_ALIASES: serializeAliases(parsedAliases),
@@ -137,6 +173,10 @@ export function SettingsPage() {
 
   const handleChange = (key: string, val: string) => {
     setSettings((prev) => ({ ...prev, [key]: val }));
+  };
+
+  const handleClassifierModelChange = (model: string) => {
+    setSettings((prev) => ({ ...prev, AGY_AUTO_CLASSIFIER_MODEL: model, AGY_AUTO_CLASSIFIER_EFFORT: 'low' }));
   };
 
   const handleAliasChange = (index: number, field: 'alias' | 'target', value: string) => {
@@ -191,6 +231,7 @@ export function SettingsPage() {
         AGY_MODEL_ALIASES: serializeAliases(aliases),
         AGY_THOUGHT_TEXT_PREFIX: thoughtWrappers.prefix,
         AGY_THOUGHT_TEXT_SUFFIX: thoughtWrappers.suffix,
+        AGY_AUTO_CLASSIFIER_EFFORT: settings.AGY_AUTO_CLASSIFIER_MODEL && settings.AGY_AUTO_CLASSIFIER_MODEL !== 'skip' ? 'low' : settings.AGY_AUTO_CLASSIFIER_EFFORT || 'low',
       };
       const res = await fetch(apiUrl('/v1/settings'), {
         method: 'PUT',
@@ -219,46 +260,47 @@ export function SettingsPage() {
   }
 
   return (
-    <div className="flex flex-col flex-1 h-full p-8 overflow-auto">
-      <div className="flex items-center justify-between mb-6">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight flex items-center gap-2">
-            <SettingsIcon className="w-6 h-6 text-primary" />
-            Настройки
-          </h1>
-          <p className="text-sm text-muted-foreground mt-1">
-            Управление параметрами окружения и переключателями в реальном времени.
-          </p>
+    <div className="flex-1 p-6 md:p-8 overflow-auto">
+      <div className="max-w-6xl mx-auto w-full space-y-6">
+        <div className="flex items-center justify-between">
+          <div>
+            <h1 className="text-2xl font-semibold tracking-tight flex items-center gap-2.5">
+              <SettingsIcon className="w-6 h-6 text-primary" />
+              Настройки
+            </h1>
+            <p className="text-sm text-muted-foreground mt-1">
+              Управление параметрами окружения и переключателями в реальном времени.
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            <Button variant="outline" size="sm" onClick={loadSettings} disabled={loading} className="gap-1.5 cursor-pointer">
+              <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
+              Обновить
+            </Button>
+            <Button
+              size="sm"
+              onClick={handleSave}
+              disabled={saving || !parseThoughtTemplate(thoughtTemplate)}
+              className="gap-1.5 shadow-sm cursor-pointer"
+            >
+              <Save className="w-4 h-4" />
+              {saving ? 'Сохранение...' : 'Сохранить изменения'}
+            </Button>
+          </div>
         </div>
-        <div className="flex items-center gap-2">
-          <Button variant="outline" size="sm" onClick={loadSettings} disabled={loading} className="gap-1.5">
-            <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
-            Обновить
-          </Button>
-          <Button
-            size="sm"
-            onClick={handleSave}
-            disabled={saving || !parseThoughtTemplate(thoughtTemplate)}
-            className="gap-1.5"
-          >
-            <Save className="w-4 h-4" />
-            {saving ? 'Сохранение...' : 'Сохранить изменения'}
-          </Button>
-        </div>
-      </div>
 
       {statusMsg && (
         <div
-          className={`p-3 rounded-lg text-sm flex items-center gap-2 mb-6 ${
+          className={`p-3.5 rounded-xl text-sm flex items-center gap-2.5 mb-6 transition-all ${
             statusMsg.type === 'success'
               ? 'bg-green-500/10 text-green-700 dark:text-green-300 border border-green-500/20'
               : 'bg-destructive/10 text-destructive border border-destructive/20'
           }`}
         >
           {statusMsg.type === 'success' ? (
-            <CheckCircle2 className="w-4 h-4 shrink-0" />
+            <CheckCircle2 className="w-4 h-4 shrink-0 text-green-600 dark:text-green-400" />
           ) : (
-            <AlertCircle className="w-4 h-4 shrink-0" />
+            <AlertCircle className="w-4 h-4 shrink-0 text-destructive" />
           )}
           <span>{statusMsg.text}</span>
         </div>
@@ -266,241 +308,218 @@ export function SettingsPage() {
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         {/* Group 1: Transport & Models */}
-        <div className="border rounded-xl p-5 bg-card space-y-4">
-          <h2 className="text-sm font-semibold tracking-wide uppercase text-muted-foreground border-b pb-2">
-            Транспорт и Модели
-          </h2>
+        <div className="border border-border/70 rounded-xl p-5 bg-card dark:border-border/50 dark:bg-zinc-950/40 shadow-xs space-y-4">
+          <div className="flex items-center gap-2 border-b border-border/60 pb-3">
+            <Cpu className="w-4 h-4 text-primary" />
+            <h2 className="text-xs font-semibold tracking-wider uppercase text-muted-foreground">
+              Транспорт и Модели
+            </h2>
+          </div>
           <div>
-            <label className="text-xs font-medium">AGY_TRANSPORT (http / warm / cli)</label>
+            <label className="text-xs font-medium text-foreground/90">AGY_TRANSPORT (http / warm / cli)</label>
             <Input
               value={settings.AGY_TRANSPORT || ''}
               onChange={(e) => handleChange('AGY_TRANSPORT', e.target.value)}
               placeholder="http"
-              className="mt-1 font-mono text-sm"
+              className="mt-1.5 font-mono text-sm"
             />
           </div>
           <div>
-            <label className="text-xs font-medium">AGY_FORCE_MODEL (Принудительная модель)</label>
+            <label className="text-xs font-medium text-foreground/90">AGY_FORCE_MODEL (Принудительная модель)</label>
             <Input
               value={settings.AGY_FORCE_MODEL || ''}
               onChange={(e) => handleChange('AGY_FORCE_MODEL', e.target.value)}
               placeholder="max-gem"
-              className="mt-1 font-mono text-sm"
+              className="mt-1.5 font-mono text-sm"
             />
           </div>
           <div>
-            <label className="text-xs font-medium">AGY_WARM_IDLE_TIMEOUT_SECONDS</label>
+            <label className="text-xs font-medium text-foreground/90">AGY_WARM_IDLE_TIMEOUT_SECONDS</label>
             <Input
               value={settings.AGY_WARM_IDLE_TIMEOUT_SECONDS || ''}
               onChange={(e) => handleChange('AGY_WARM_IDLE_TIMEOUT_SECONDS', e.target.value)}
               placeholder="600"
-              className="mt-1 font-mono text-sm"
+              className="mt-1.5 font-mono text-sm"
             />
           </div>
           <div>
-            <label className="text-xs font-medium">AGY_WARM_MAX_SESSIONS</label>
+            <label className="text-xs font-medium text-foreground/90">AGY_WARM_MAX_SESSIONS</label>
             <Input
               value={settings.AGY_WARM_MAX_SESSIONS || ''}
               onChange={(e) => handleChange('AGY_WARM_MAX_SESSIONS', e.target.value)}
               placeholder="20"
-              className="mt-1 font-mono text-sm"
+              className="mt-1.5 font-mono text-sm"
             />
           </div>
         </div>
 
         {/* Group 2: Account Pool */}
-        <div className="border rounded-xl p-5 bg-card space-y-4">
-          <h2 className="text-sm font-semibold tracking-wide uppercase text-muted-foreground border-b pb-2">
-            Пул Аккаунтов (Account Pool)
-          </h2>
-          <div className="flex items-center justify-between py-1">
-            <div>
-              <div className="text-sm font-medium">AGY_POOL_ENABLED</div>
-              <div className="text-xs text-muted-foreground">Использовать пул аккаунтов для ротации</div>
-            </div>
-            <input
-              type="checkbox"
-              checked={!!settings.AGY_POOL_ENABLED}
-              onChange={() => handleToggle('AGY_POOL_ENABLED')}
-              className="w-5 h-5 rounded accent-primary cursor-pointer"
-            />
+        <div className="border border-border/70 rounded-xl p-5 bg-card dark:border-border/50 dark:bg-zinc-950/40 shadow-xs space-y-4">
+          <div className="flex items-center gap-2 border-b border-border/60 pb-3">
+            <Users className="w-4 h-4 text-primary" />
+            <h2 className="text-xs font-semibold tracking-wider uppercase text-muted-foreground">
+              Пул Аккаунтов (Account Pool)
+            </h2>
           </div>
+          <SettingToggleRow
+            title="AGY_POOL_ENABLED"
+            description="Использовать пул аккаунтов для ротации"
+            checked={!!settings.AGY_POOL_ENABLED}
+            onCheckedChange={() => handleToggle('AGY_POOL_ENABLED')}
+          />
           <div>
-            <label className="text-xs font-medium">AGY_POOL_COOLDOWN_SECONDS (Кулдаун при 429)</label>
+            <label className="text-xs font-medium text-foreground/90">AGY_POOL_COOLDOWN_SECONDS (Кулдаун при 429)</label>
             <Input
               value={settings.AGY_POOL_COOLDOWN_SECONDS || ''}
               onChange={(e) => handleChange('AGY_POOL_COOLDOWN_SECONDS', e.target.value)}
               placeholder="3600"
-              className="mt-1 font-mono text-sm"
+              className="mt-1.5 font-mono text-sm"
             />
           </div>
           <div>
-            <label className="text-xs font-medium">AGY_POOL_MAX_RETRIES</label>
+            <label className="text-xs font-medium text-foreground/90">AGY_POOL_MAX_RETRIES</label>
             <Input
               value={settings.AGY_POOL_MAX_RETRIES || ''}
               onChange={(e) => handleChange('AGY_POOL_MAX_RETRIES', e.target.value)}
               placeholder="3"
-              className="mt-1 font-mono text-sm"
+              className="mt-1.5 font-mono text-sm"
             />
           </div>
         </div>
 
         {/* Group 3: HTTP, Tools & Response Tuning */}
-        <div className="border rounded-xl p-5 bg-card space-y-4">
-          <h2 className="text-sm font-semibold tracking-wide uppercase text-muted-foreground border-b pb-2">
-            HTTP и Форматирование
-          </h2>
-          <div className="flex items-center justify-between py-1">
-            <div>
-              <div className="text-sm font-medium">AGY_THOUGHT_AS_TEXT</div>
-              <div className="text-xs text-muted-foreground">Выводить рассуждения (thinking) в текст</div>
-            </div>
-            <input
-              type="checkbox"
-              checked={!!settings.AGY_THOUGHT_AS_TEXT}
-              onChange={() => handleToggle('AGY_THOUGHT_AS_TEXT')}
-              className="w-5 h-5 rounded accent-primary cursor-pointer"
-            />
+        <div className="border border-border/70 rounded-xl p-5 bg-card dark:border-border/50 dark:bg-zinc-950/40 shadow-xs space-y-3.5">
+          <div className="flex items-center gap-2 border-b border-border/60 pb-3">
+            <Sliders className="w-4 h-4 text-primary" />
+            <h2 className="text-xs font-semibold tracking-wider uppercase text-muted-foreground">
+              HTTP и Форматирование
+            </h2>
           </div>
-          <div>
-            <label className="text-sm font-medium">Шаблон блока рассуждений</label>
+
+          <SettingToggleRow
+            title="AGY_THOUGHT_AS_TEXT"
+            description="Выводить рассуждения (thinking) в текст"
+            checked={!!settings.AGY_THOUGHT_AS_TEXT}
+            onCheckedChange={() => handleToggle('AGY_THOUGHT_AS_TEXT')}
+          />
+
+          <div className="p-3 rounded-lg border border-border/50 bg-muted/10 dark:bg-black/20 space-y-1.5">
+            <label className="text-xs font-medium text-foreground/90">Шаблон блока рассуждений</label>
             <Input
               value={thoughtTemplate}
               onChange={(e) => setThoughtTemplate(e.target.value)}
-              className="mt-1 font-mono text-sm"
+              className="font-mono text-sm"
               aria-invalid={!parseThoughtTemplate(thoughtTemplate)}
             />
-            <div className="mt-1 text-xs text-muted-foreground">
+            <div className="text-[11px] text-muted-foreground">
               Маркер {'{...}'} обязателен и обозначает текст рассуждений. Перенос строки: \\n
             </div>
             {!parseThoughtTemplate(thoughtTemplate) && (
-              <div className="mt-1 text-xs text-destructive">Нужен ровно один неизменённый маркер {'{...}'}</div>
+              <div className="text-[11px] text-destructive font-medium">
+                Нужен ровно один неизменённый маркер {'{...}'}
+              </div>
             )}
           </div>
-          <div className="flex items-center justify-between py-1">
-            <div>
-              <div className="text-sm font-medium">AGY_HTTP_TRIM_TOOL_RESULTS</div>
-              <div className="text-xs text-muted-foreground">Обрезать большие результаты инструментов</div>
-            </div>
-            <input
-              type="checkbox"
-              checked={!!settings.AGY_HTTP_TRIM_TOOL_RESULTS}
-              onChange={() => handleToggle('AGY_HTTP_TRIM_TOOL_RESULTS')}
-              className="w-5 h-5 rounded accent-primary cursor-pointer"
-            />
+
+          <SettingToggleRow
+            title="AGY_HTTP_TRIM_TOOL_RESULTS"
+            description="Обрезать большие результаты инструментов"
+            checked={!!settings.AGY_HTTP_TRIM_TOOL_RESULTS}
+            onCheckedChange={() => handleToggle('AGY_HTTP_TRIM_TOOL_RESULTS')}
+          />
+
+          <SettingToggleRow
+            title="AGY_HTTP_EMPTY_AS_EMPTY_CONTENT"
+            description="Возвращать пустой ответ вместо ошибки STOP"
+            checked={!!settings.AGY_HTTP_EMPTY_AS_EMPTY_CONTENT}
+            onCheckedChange={() => handleToggle('AGY_HTTP_EMPTY_AS_EMPTY_CONTENT')}
+          />
+
+          <div className="p-3 rounded-lg border border-border/50 bg-muted/10 dark:bg-black/20 space-y-2">
+            <div><div className="text-sm font-medium leading-none">AGY_AUTO_CLASSIFIER_MODEL</div><div className="text-xs text-muted-foreground mt-1 leading-snug">Модель для авто-классификатора</div></div>
+            <Select value={settings.AGY_AUTO_CLASSIFIER_MODEL || 'skip'} onChange={(e) => handleClassifierModelChange(e.target.value)}>
+              <option value="skip">Разрешить всё (skip)</option>
+              <option value="gemini-3.8-flash">Gemini 3.8 Flash</option>
+              <option value="gemini-3.7-flash">Gemini 3.7 Flash</option>
+              <option value="gemini-3.6-flash">Gemini 3.6 Flash</option>
+              <option value="claude-sonnet-4-6">Claude Sonnet 4.6</option>
+              <option value="claude-opus-4-6-thinking">Claude Opus 4.6 Thinking</option>
+              <option value="gemini-pro-agent">Gemini Pro Agent</option>
+              <option value="gpt-oss-120b-medium">GPT-OSS 120B</option>
+            </Select>
           </div>
-          <div className="flex items-center justify-between py-1">
-            <div>
-              <div className="text-sm font-medium">AGY_HTTP_EMPTY_AS_EMPTY_CONTENT</div>
-              <div className="text-xs text-muted-foreground">Возвращать пустой ответ вместо ошибки STOP</div>
-            </div>
-            <input
-              type="checkbox"
-              checked={!!settings.AGY_HTTP_EMPTY_AS_EMPTY_CONTENT}
-              onChange={() => handleToggle('AGY_HTTP_EMPTY_AS_EMPTY_CONTENT')}
-              className="w-5 h-5 rounded accent-primary cursor-pointer"
-            />
-          </div>
-          <div className="flex items-center justify-between py-1">
-            <div>
-              <div className="text-sm font-medium">AGY_AUTO_CLASSIFIER_MODEL</div>
-              <div className="text-xs text-muted-foreground">Модель для авто-классификатора</div>
-            </div>
-            <select
-              value={settings.AGY_AUTO_CLASSIFIER_MODEL || 'skip'}
-              onChange={(e) => handleChange('AGY_AUTO_CLASSIFIER_MODEL', e.target.value)}
-              className="border rounded-md bg-background px-3 py-2 text-sm min-w-64"
-            >
-              <option value="skip">Разрешить всё</option>
-              <option value="gemini-3.8-flash">Gemini 3.8</option><option value="gemini-3.7-flash">Gemini 3.7</option>
-              <option value="gemini-3.6-flash">Gemini 3.6</option><option value="claude-sonnet-4-6">Claude Sonnet 4.6</option>
-              <option value="claude-opus-4-6-thinking">Claude Opus 4.6</option><option value="gemini-pro-agent">Gemini Pro</option>
-              <option value="gpt-oss-120b-medium">GPT-OSS</option>
-            </select>
-            <select value={settings.AGY_AUTO_CLASSIFIER_EFFORT || 'low'} onChange={(e) => handleChange('AGY_AUTO_CLASSIFIER_EFFORT', e.target.value)} className="border rounded-md bg-background px-3 py-2 text-sm">
-              <option value="0">0</option><option value="low">low</option><option value="medium">medium</option><option value="high">high</option>
-            </select>
-          </div>
-          <div className="flex items-center justify-between py-1">
-            <div>
-              <div className="text-sm font-medium">AGY_HTTP_DEBUG</div>
-              <div className="text-xs text-muted-foreground">Подробное логирование HTTP запросов</div>
-            </div>
-            <input
-              type="checkbox"
-              checked={!!settings.AGY_HTTP_DEBUG}
-              onChange={() => handleToggle('AGY_HTTP_DEBUG')}
-              className="w-5 h-5 rounded accent-primary cursor-pointer"
-            />
-          </div>
+
+          <SettingToggleRow
+            title="AGY_HTTP_DEBUG"
+            description="Подробное логирование HTTP запросов"
+            checked={!!settings.AGY_HTTP_DEBUG}
+            onCheckedChange={() => handleToggle('AGY_HTTP_DEBUG')}
+          />
         </div>
 
         {/* Group 4: Proxy & OAuth */}
-        <div className="border rounded-xl p-5 bg-card space-y-4">
-          <h2 className="text-sm font-semibold tracking-wide uppercase text-muted-foreground border-b pb-2">
-            Прокси и OAuth
-          </h2>
+        <div className="border border-border/70 rounded-xl p-5 bg-card dark:border-border/50 dark:bg-zinc-950/40 shadow-xs space-y-3.5">
+          <div className="flex items-center gap-2 border-b border-border/60 pb-3">
+            <ShieldCheck className="w-4 h-4 text-primary" />
+            <h2 className="text-xs font-semibold tracking-wider uppercase text-muted-foreground">
+              Прокси и OAuth
+            </h2>
+          </div>
           <div>
-            <label className="text-xs font-medium">AGY_GOOGLE_PROXY (Глобальный прокси)</label>
+            <label className="text-xs font-medium text-foreground/90">AGY_GOOGLE_PROXY (Глобальный прокси)</label>
             <Input
               value={settings.AGY_GOOGLE_PROXY || ''}
               onChange={(e) => handleChange('AGY_GOOGLE_PROXY', e.target.value)}
               placeholder="http://user:pass@host:port"
-              className="mt-1 font-mono text-sm"
+              className="mt-1.5 font-mono text-sm"
             />
           </div>
-          <div className="flex items-center justify-between py-1">
-            <div>
-              <div className="text-sm font-medium">AGY_OAUTH_REFRESH_ENABLED</div>
-              <div className="text-xs text-muted-foreground">Автоматический рефреш OAuth токенов</div>
-            </div>
-            <input
-              type="checkbox"
-              checked={!!settings.AGY_OAUTH_REFRESH_ENABLED}
-              onChange={() => handleToggle('AGY_OAUTH_REFRESH_ENABLED')}
-              className="w-5 h-5 rounded accent-primary cursor-pointer"
-            />
-          </div>
-          <div className="flex items-center justify-between py-1">
-            <div>
-              <div className="text-sm font-medium">AGY_SSL_VERIFY</div>
-              <div className="text-xs text-muted-foreground">Проверка SSL сертификатов (выключите для HTTP Toolkit)</div>
-            </div>
-            <input
-              type="checkbox"
-              checked={!!settings.AGY_SSL_VERIFY}
-              onChange={() => handleToggle('AGY_SSL_VERIFY')}
-              className="w-5 h-5 rounded accent-primary cursor-pointer"
-            />
-          </div>
+
+          <SettingToggleRow
+            title="AGY_OAUTH_REFRESH_ENABLED"
+            description="Автоматический рефреш OAuth токенов"
+            checked={!!settings.AGY_OAUTH_REFRESH_ENABLED}
+            onCheckedChange={() => handleToggle('AGY_OAUTH_REFRESH_ENABLED')}
+          />
+
+          <SettingToggleRow
+            title="AGY_SSL_VERIFY"
+            description="Проверка SSL сертификатов (выключите для HTTP Toolkit)"
+            checked={!!settings.AGY_SSL_VERIFY}
+            onCheckedChange={() => handleToggle('AGY_SSL_VERIFY')}
+          />
+
           <div>
-            <label className="text-xs font-medium">AGY_OAUTH_REFRESH_SKEW_SECONDS</label>
+            <label className="text-xs font-medium text-foreground/90">AGY_OAUTH_REFRESH_SKEW_SECONDS</label>
             <Input
               value={settings.AGY_OAUTH_REFRESH_SKEW_SECONDS || ''}
               onChange={(e) => handleChange('AGY_OAUTH_REFRESH_SKEW_SECONDS', e.target.value)}
               placeholder="120"
-              className="mt-1 font-mono text-sm"
+              className="mt-1.5 font-mono text-sm"
             />
           </div>
         </div>
 
         {/* Group 5: Custom Model Aliases */}
-        <div className="border rounded-xl p-5 bg-card space-y-4">
-          <div className="flex items-center justify-between border-b pb-2">
-            <div>
-              <h2 className="text-sm font-semibold tracking-wide uppercase text-muted-foreground">
-                Собственные алиасы моделей
-              </h2>
-              <p className="text-xs text-muted-foreground mt-0.5">
-                Задайте псевдоним (алиас), по которому клиенты могут обращаться к целевой модели бэкенда.
-              </p>
+        <div className="border border-border/70 rounded-xl p-5 bg-card dark:border-border/50 dark:bg-zinc-950/40 shadow-xs space-y-4 md:col-span-2">
+          <div className="flex items-center justify-between border-b border-border/60 pb-3">
+            <div className="flex items-center gap-2">
+              <Layers className="w-4 h-4 text-primary" />
+              <div>
+                <h2 className="text-xs font-semibold tracking-wider uppercase text-muted-foreground">
+                  Собственные алиасы моделей
+                </h2>
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  Задайте псевдоним (алиас), по которому клиенты могут обращаться к целевой модели бэкенда.
+                </p>
+              </div>
             </div>
             <Button
               type="button"
               variant="outline"
               size="sm"
               onClick={handleAddAlias}
-              className="gap-1 text-xs"
+              className="gap-1.5 text-xs h-8"
             >
               <Plus className="w-3.5 h-3.5" />
               Добавить алиас
@@ -508,18 +527,18 @@ export function SettingsPage() {
           </div>
 
           {aliases.length === 0 ? (
-            <div className="text-center py-4 text-xs text-muted-foreground border border-dashed rounded-lg">
+            <div className="text-center py-6 text-xs text-muted-foreground border border-dashed border-border/70 rounded-lg">
               Пользовательские алиасы не настроены. Нажмите «Добавить алиас» выше.
             </div>
           ) : (
             <div className="space-y-2.5">
-              <div className="grid grid-cols-12 gap-2 text-xs font-medium text-muted-foreground px-1">
+              <div className="grid grid-cols-12 gap-2.5 text-xs font-medium text-muted-foreground px-1">
                 <div className="col-span-5">Алиас (что шлёт клиент)</div>
                 <div className="col-span-6">Целевая модель бэкенда</div>
                 <div className="col-span-1 text-right">Удалить</div>
               </div>
               {aliases.map((row, idx) => (
-                <div key={idx} className="grid grid-cols-12 gap-2 items-center">
+                <div key={idx} className="grid grid-cols-12 gap-2.5 items-center">
                   <div className="col-span-5">
                     <Input
                       value={row.alias}
@@ -529,10 +548,10 @@ export function SettingsPage() {
                     />
                   </div>
                   <div className="col-span-6">
-                    <select
+                    <Select
                       value={row.target}
                       onChange={(e) => handleAliasChange(idx, 'target', e.target.value)}
-                      className="w-full h-9 rounded-md border border-input bg-background px-3 py-1 font-mono text-xs shadow-xs transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                      className="font-mono text-xs"
                     >
                       <option value="">Выберите модель...</option>
                       {availableModels.map((mId) => (
@@ -543,7 +562,7 @@ export function SettingsPage() {
                       {row.target && !availableModels.includes(row.target) && (
                         <option value={row.target}>{row.target} (кастомная)</option>
                       )}
-                    </select>
+                    </Select>
                   </div>
                   <div className="col-span-1 flex justify-end">
                     <Button
@@ -551,7 +570,7 @@ export function SettingsPage() {
                       variant="ghost"
                       size="sm"
                       onClick={() => handleRemoveAlias(idx)}
-                      className="h-8 w-8 p-0 text-muted-foreground hover:text-destructive"
+                      className="h-8 w-8 p-0 text-muted-foreground hover:text-destructive hover:bg-destructive/10"
                       title="Удалить"
                     >
                       <Trash2 className="w-4 h-4" />
@@ -564,5 +583,6 @@ export function SettingsPage() {
         </div>
       </div>
     </div>
+  </div>
   );
 }

@@ -7,6 +7,7 @@ from typing import AsyncIterator, List, Optional, Union, Any
 from app.core import pool_manager
 from app.core import stats_store
 from app.core import agy_http_client
+from app.core.http_tools_bridge import strip_thought_tags
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +25,10 @@ def flatten_messages(system: Optional[str], messages: List[dict]) -> str:
         role = m.get("role", "user")
         content = m.get("content", "")
         if isinstance(content, str) and content:
-            lines.append(f"{role.capitalize()}: {content}")
+            if role in ("assistant", "model"):
+                content = strip_thought_tags(content)
+            if content:
+                lines.append(f"{role.capitalize()}: {content}")
         for tc in m.get("tool_calls") or []:
             lines.append(f"{role.capitalize()} [tool_use {tc.get('name')}: {json.dumps(tc.get('input', {}))}]")
         for tr in m.get("tool_results") or []:
@@ -86,6 +90,7 @@ async def _stream_cli(messages: List[dict], system: Optional[str], model: Option
     text = ""
     if isinstance(result, dict):
         text = result.get("text") or result.get("content") or result.get("response") or ""
+    text = text.strip()
     async for piece in fake_chunk_text(text):
         yield {"delta": piece}
     yield {"usage": result.get("usage", {}) if isinstance(result, dict) else {}, "text": text}
@@ -143,6 +148,7 @@ async def _run_http_completion(
                 final["tool_calls"] = chunk["tool_calls"]
             if chunk.get("stop_reason"):
                 final["stop_reason"] = chunk["stop_reason"]
+    final["text"] = final["text"].strip()
     return final
 
 

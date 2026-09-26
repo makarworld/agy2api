@@ -15,7 +15,7 @@ from app.api.anthropic_routes import router as anthropic_router
 from app.api.keys_routes import router as keys_router
 from app.api.mcp_routes import router as mcp_router
 from app.api.routes import router as api_router
-from app.api.settings_routes import router as settings_router
+from app.api.settings_routes import reload_env_if_modified, router as settings_router
 from app.api.stats_routes import router as stats_router
 from app.core import account_store, pool_manager, stats_store
 from app.core.logging_setup import setup_logging, trace_id_var
@@ -114,16 +114,18 @@ async def anthropic_style_http_exception_handler(request: Request, exc: HTTPExce
 
 @app.middleware("http")
 async def trace_log_middleware(request: Request, call_next):
+    reload_env_if_modified()
+
     trace_id = uuid.uuid4().hex[:8]
     trace_id_var.set(trace_id)
 
-    logger.info(f"Incoming request: {request.method} {request.url.path}")
     start_time = time.time()
 
     try:
         response = await call_next(request)
         process_time = time.time() - start_time
-        logger.info(f"Completed request: {response.status_code} in {process_time:.3f}s")
+        if response.status_code >= 400 or process_time >= 1:
+            logger.info(f"{request.method} {request.url.path} -> {response.status_code} in {process_time:.3f}s")
         response.headers["X-Trace-ID"] = trace_id
         return response
     except Exception as e:

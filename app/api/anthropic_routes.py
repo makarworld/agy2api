@@ -19,7 +19,7 @@ from app.core.auto_classifier import (
     shortcut_response,
 )
 from app.core.file_handler import TempFileManager
-from app.core.http_tools_bridge import stream_tool_call_key
+from app.core.http_tools_bridge import stream_tool_call_key, strip_thought_tags
 from app.core.key_manager import record_key_output_tokens
 from app.core.model_manager import get_force_model, resolve_backend_model, resolve_http_model
 from app.core.request_tracer import get_current_trace, start_trace
@@ -122,6 +122,8 @@ def _build_messages(system, messages, file_mgr: TempFileManager):
         content = msg.content
 
         if isinstance(content, str):
+            if role == "assistant":
+                content = strip_thought_tags(content)
             normalized.append({"role": role, "content": content})
             continue
 
@@ -133,7 +135,10 @@ def _build_messages(system, messages, file_mgr: TempFileManager):
         for block in content:
             btype = block.get("type")
             if btype == "text":
-                text_parts.append(block.get("text", ""))
+                text = block.get("text", "")
+                if role == "assistant":
+                    text = strip_thought_tags(text)
+                text_parts.append(text)
             elif btype == "image":
                 source = block.get("source", {})
                 media_type = source.get("media_type", "image/png")
@@ -234,7 +239,6 @@ async def _stream_classifier_shortcut(
 ):
     msg_id = f"msg_{uuid.uuid4().hex[:24]}"
     completion_tokens = max(1, len(response_text) // 4)
-
     yield _sse(
         "message_start",
         {
@@ -247,29 +251,17 @@ async def _stream_classifier_shortcut(
                 "model": client_model,
                 "stop_reason": None,
                 "stop_sequence": None,
-                "usage": {
-                    "input_tokens": prompt_tokens,
-                    "output_tokens": 0,
-                    "cache_read_input_tokens": 0,
-                },
+                "usage": {"input_tokens": prompt_tokens, "output_tokens": 0, "cache_read_input_tokens": 0},
             },
         },
     )
     yield _sse(
         "content_block_start",
-        {
-            "type": "content_block_start",
-            "index": 0,
-            "content_block": {"type": "text", "text": ""},
-        },
+        {"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}},
     )
     yield _sse(
         "content_block_delta",
-        {
-            "type": "content_block_delta",
-            "index": 0,
-            "delta": {"type": "text_delta", "text": response_text},
-        },
+        {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": response_text}},
     )
     yield _sse("content_block_stop", {"type": "content_block_stop", "index": 0})
     yield _sse(
@@ -281,7 +273,6 @@ async def _stream_classifier_shortcut(
         },
     )
     yield _sse("message_stop", {"type": "message_stop"})
-
     await stats_store.record_request(
         endpoint="anthropic-classifier-shortcut",
         model=client_model,
@@ -439,7 +430,7 @@ async def _stream_response(
                 if piece.get("stop_reason"):
                     stop_reason = piece["stop_reason"]
                 if piece.get("error"):
-                    error_message = piece["error"]
+                    raise RuntimeError(piece["error"])
                 if piece.get("tool_calls"):
                     for tc in piece["tool_calls"]:
                         tool_key = _tool_dedupe_key(tc)
@@ -469,55 +460,16 @@ async def _stream_response(
             raw_response=trace.raw_response_str if trace else None,
             response_status=trace.response_status if trace and trace.response_status is not None else 500,
         )
-        if isinstance(e, ProQuotaExhaustedError):
-            error_message = str(e)
-        elif not assistant_chunks and not tool_calls_collected:
-            # Drop connection so client retries instead of treating error text as assistant message
-            raise
-        if text_block_open:
-            yield _sse("content_block_stop", {"type": "content_block_stop", "index": 0})
-
-        yield _sse(
-            "message_delta",
-            {
-                "type": "message_delta",
-                "delta": {"stop_reason": "end_turn", "stop_sequence": None},
-                "usage": {"output_tokens": max(1, len(err_str) // 4)},
-            },
-        )
-        yield _sse("message_stop", {"type": "message_stop"})
-        return
+        raise
 
     assistant_text = "".join(assistant_chunks)
     if tool_calls_collected:
         stop_reason = "tool_use"
 
-    if not error_message and not assistant_text and not tool_calls_collected:
+    if not assistant_text and not tool_calls_collected:
         # Empty response from upstream model: emit no content blocks and end_turn with 0 tokens.
         # Claude Code treats empty content [] as invisible output and automatically retries.
         stop_reason = "end_turn"
-    elif error_message:
-        if not assistant_text:
-            yield _sse(
-                "content_block_start",
-                {
-                    "type": "content_block_start",
-                    "index": 0,
-                    "content_block": {"type": "text", "text": ""},
-                },
-            )
-            assistant_chunks.append(error_message)
-            yield _sse(
-                "content_block_delta",
-                {
-                    "type": "content_block_delta",
-                    "index": 0,
-                    "delta": {"type": "text_delta", "text": error_message},
-                },
-            )
-            text_block_open = True
-            assistant_text = error_message
-        stop_reason = "error"
 
     prompt_tokens = final_usage.get("input_tokens", fallback_prompt_tokens)
     completion_tokens = final_usage.get("output_tokens", 0) + final_usage.get("thinking_tokens", 0)
@@ -572,7 +524,6 @@ async def create_message(
     request: Request,
     api_key: str = Depends(get_anthropic_api_key),
 ):
-    logger.info(f"[anthropic] Processing message request for model: {req.model}")
     start_time = time.time()
     start_trace()
     file_mgr = TempFileManager()
@@ -583,6 +534,7 @@ async def create_message(
     display_model = (
         f"{req.model} · {resolve_http_model(agy_model)[0]} · {os.environ.get('AGY_HTTP_MAX_OUTPUT_TOKENS', '8192')}"
     )
+    logger.info(f"[anthropic] Processing message request for model: {req.model}")
     if get_force_model():
         logger.info(f"[anthropic] Force model: requested={req.model} backend={agy_model}")
 
@@ -604,7 +556,6 @@ async def create_message(
     if classifier_request and selected_classifier_model.lower() == "skip":
         response_text = shortcut_response()
         prompt_tokens = max(1, sum(_message_char_len(m) for m in messages) // 4)
-        logger.info("[anthropic] auto-classifier shortcut -> %s", response_text)
         if req.stream:
             return StreamingResponse(
                 _stream_classifier_shortcut(
@@ -619,7 +570,6 @@ async def create_message(
                 ),
                 media_type="text/event-stream",
             )
-
         completion_tokens = max(1, len(response_text) // 4)
         await stats_store.record_request(
             endpoint="anthropic-classifier-shortcut",
@@ -654,10 +604,10 @@ async def create_message(
             }
         )
 
+    classifier_effort_value = None
     if classifier_request and selected_classifier_model:
         agy_model = await resolve_backend_model(selected_classifier_model)
         classifier_effort_value = classifier_effort()
-        logger.info("[anthropic] auto-classifier model -> %s", agy_model)
 
     thought_param = req.thought_as_text if req.thought_as_text is not None else req.include_thoughts
     request_tools = _tools_for_model(req.model, req.tools)
@@ -724,24 +674,18 @@ async def create_message(
                 status_code=503,
                 detail="Upstream model capacity exhausted; retry the request",
             ) from e
-        return JSONResponse(
-            content={
-                "id": f"msg_{uuid.uuid4().hex[:24]}",
-                "type": "message",
-                "role": "assistant",
-                "model": req.model,
-                "content": [{"type": "text", "text": f"Error: {err_str}"}],
-                "stop_reason": "end_turn",
-                "stop_sequence": None,
-                "usage": {
-                    "input_tokens": 0,
-                    "output_tokens": out_tokens,
-                    "cache_read_input_tokens": 0,
-                },
-            }
+        raise HTTPException(
+            status_code=502,
+            detail=f"Upstream provider error: {err_str}",
+        ) from e
+
+    if isinstance(agy_response, dict) and agy_response.get("error"):
+        raise HTTPException(
+            status_code=502,
+            detail=f"Upstream provider error: {agy_response['error']}",
         )
 
-    assistant_text = _extract_text(agy_response)
+    assistant_text = _extract_text(agy_response).strip()
     tool_calls = agy_response.get("tool_calls", []) if isinstance(agy_response, dict) else []
     stop_reason = agy_response.get("stop_reason", "end_turn") if isinstance(agy_response, dict) else "end_turn"
 

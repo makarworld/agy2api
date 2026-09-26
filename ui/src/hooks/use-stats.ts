@@ -42,6 +42,8 @@ export interface AccountQuota {
 export interface PoolAccount {
   id: string;
   label: string;
+  name?: string | null;
+  picture?: string | null;
   email?: string | null;
   added_at: number;
   proxy: string | null;

@@ -163,6 +163,58 @@ class TestApiEndpoints(unittest.TestCase):
 
         asyncio.run(run_test())
 
+    @patch("app.api.routes.stream_agy_completion")
+    def test_chat_completions_stream_midstream_error_raises(self, mock_stream):
+        async def failing_stream(*args, **kwargs):
+            yield {"delta": "Hello "}
+            raise httpx.ReadError("Simulated midstream connection drop")
+
+        mock_stream.side_effect = failing_stream
+
+        payload = {
+            "model": "gemini-2.5-flash",
+            "messages": [{"role": "user", "content": "Hi"}],
+            "stream": True,
+        }
+        with self.assertRaises(Exception):
+            self.client.post("/v1/chat/completions", json=payload, headers=self.headers)
+
+    @patch("app.api.anthropic_routes.stream_agy_completion")
+    def test_anthropic_stream_midstream_error_raises(self, mock_stream):
+        async def failing_stream(*args, **kwargs):
+            yield {"delta": "Hello "}
+            raise httpx.ReadError("Simulated midstream connection drop")
+
+        mock_stream.side_effect = failing_stream
+
+        payload = {
+            "model": "claude-3-5-sonnet",
+            "messages": [{"role": "user", "content": "Hi"}],
+            "stream": True,
+        }
+        with self.assertRaises(Exception):
+            self.client.post(
+                "/anthropic/v1/messages",
+                json=payload,
+                headers={"x-api-key": API_KEY, "anthropic-version": "2023-06-01"},
+            )
+
+    @patch("app.api.anthropic_routes.run_completion", new_callable=AsyncMock)
+    def test_anthropic_non_stream_error_returns_502(self, mock_run):
+        mock_run.side_effect = RuntimeError("Upstream connection failure")
+
+        payload = {
+            "model": "claude-3-5-sonnet",
+            "messages": [{"role": "user", "content": "Hi"}],
+            "stream": False,
+        }
+        resp = self.client.post(
+            "/anthropic/v1/messages",
+            json=payload,
+            headers={"x-api-key": API_KEY, "anthropic-version": "2023-06-01"},
+        )
+        self.assertEqual(resp.status_code, 502)
+
 
 if __name__ == "__main__":
     unittest.main()

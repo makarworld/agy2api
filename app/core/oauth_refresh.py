@@ -1,3 +1,4 @@
+import base64
 import json
 import logging
 import os
@@ -595,9 +596,7 @@ async def retrieve_account_quota(
                 )
                 refreshed = False
                 if sqlite_account:
-                    refreshed = await ensure_fresh_sqlite_account(
-                        pool_account_id, proxy=proxy, force=True
-                    )
+                    refreshed = await ensure_fresh_sqlite_account(pool_account_id, proxy=proxy, force=True)
                     if refreshed:
                         target_token = read_sqlite_access_token(pool_account_id)
                 elif account_dir:
@@ -624,9 +623,7 @@ async def retrieve_account_quota(
                         parsed = _parse_quota_buckets(r2.json())
                         new_key = _quota_cache_key(target_token, pool_account_id)
                         _quota_summary_cache[new_key] = (time.time() + _QUOTA_CACHE_TTL_SECONDS, parsed)
-                        _verify_cache[_access_token_suffix(target_token)] = (
-                            time.time() + _VERIFY_CACHE_TTL_SECONDS
-                        )
+                        _verify_cache[_access_token_suffix(target_token)] = time.time() + _VERIFY_CACHE_TTL_SECONDS
                         return dict(parsed)
 
         except Exception as e:
@@ -967,6 +964,21 @@ async def ensure_fresh_sqlite_account(
             expiry_ts,
             project_id=account.get("project_id"),
         )
+        id_token = new_token.get("id_token")
+        name = None
+        picture = None
+        if id_token:
+            try:
+                parts = id_token.split(".")
+                if len(parts) >= 2:
+                    padded = parts[1] + "=" * ((4 - len(parts[1]) % 4) % 4)
+                    jwt_data = json.loads(base64.urlsafe_b64decode(padded.encode()).decode("utf-8"))
+                    name = jwt_data.get("name")
+                    picture = jwt_data.get("picture")
+            except Exception:
+                pass
+        if name or picture:
+            account_store.update_account_profile(account_id, name=name, picture=picture)
         invalidate_verify_cache(account.get("access_token"))
         logger.info("[oauth] SQLite account %s access token refreshed", account_id)
         return True

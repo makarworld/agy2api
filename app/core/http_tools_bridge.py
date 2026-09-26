@@ -4,6 +4,7 @@ import ast
 import json
 import logging
 import os
+import re
 from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
@@ -128,10 +129,47 @@ def thought_as_text_enabled(*, tools_present: bool = False, param_override: Opti
 
 
 def thought_text_wrappers() -> tuple[str, str]:
+    try:
+        from app.api.settings_routes import reload_env_if_modified
+
+        reload_env_if_modified()
+    except Exception:
+        pass
     return (
         os.environ.get("AGY_THOUGHT_TEXT_PREFIX", "<think>\n"),
         os.environ.get("AGY_THOUGHT_TEXT_SUFFIX", "\n</think>\n\n"),
     )
+
+
+def strip_thought_tags(text: str) -> str:
+    """Strip thought blocks according to the template in 'Шаблон блока рассуждений'."""
+    if not text or not isinstance(text, str):
+        return text
+
+    prefix, suffix = thought_text_wrappers()
+    p = prefix.replace("\\n", "\n") if prefix else ""
+    s = suffix.replace("\\n", "\n") if suffix else ""
+
+    p_clean = p.strip()
+    s_clean = s.strip()
+
+    if p_clean and s_clean:
+        pattern = re.escape(p_clean) + r"[\s\S]*?" + re.escape(s_clean) + r"[ \t]*(?:\r?\n)*"
+        text = re.sub(pattern, "", text)
+    elif p_clean and not s_clean:
+        pattern = re.escape(p_clean) + r"[\s\S]*?[ \t]*(?:\r?\n)*"
+        text = re.sub(pattern, "", text)
+    elif p and s:
+        pattern = re.escape(p) + r"[\s\S]*?" + re.escape(s) + r"[ \t]*(?:\r?\n)*"
+        text = re.sub(pattern, "", text)
+
+    # Fallback to standard markers if template differs
+    if p_clean != "</*~*/>" or s_clean != "</*~*/>":
+        text = re.sub(r"</?\*\~\*/>[\s\S]*?</?\*\~\*/>[ \t]*(?:\r?\n)*", "", text)
+    if p_clean != "<think>" or s_clean != "</think>":
+        text = re.sub(r"<think>[\s\S]*?</think>[ \t]*(?:\r?\n)*", "", text)
+
+    return text
 
 
 def tool_result_trim_enabled() -> bool:
@@ -451,7 +489,10 @@ def messages_to_gemini_contents(
             parts: List[dict] = []
             text = msg.get("content")
             if text:
-                parts.append({"text": text})
+                if isinstance(text, str):
+                    text = strip_thought_tags(text)
+                if text:
+                    parts.append({"text": text})
             for tc in msg.get("tool_calls") or []:
                 if not isinstance(tc, dict):
                     continue
@@ -489,22 +530,25 @@ def messages_to_gemini_contents(
                 )
         text = msg.get("content", "")
         if text:
-            parts.append({"text": text})
+            if role in ("assistant", "model") and isinstance(text, str):
+                text = strip_thought_tags(text)
+            if text:
+                parts.append({"text": text})
         if parts:
             contents.append({"role": api_role, "parts": parts})
     return contents
 
 
-def extract_parts_from_response(
+def extract_stream_parts_from_response(
     obj: dict,
     *,
     allow_thought_text: bool = False,
-) -> Tuple[str, List[dict], Optional[str]]:
-    """Extract visible text and tool_calls from a streamGenerateContent SSE object."""
+) -> Tuple[str, str, List[dict], Optional[str]]:
+    """Extract (visible_text, thought_text, tool_calls, finish_reason) from a streamGenerateContent SSE object."""
     response = obj.get("response") or obj
     candidates = response.get("candidates") or []
     if not candidates:
-        return "", [], None
+        return "", "", [], None
 
     parts = candidates[0].get("content", {}).get("parts") or []
     finish_reason = candidates[0].get("finishReason") or candidates[0].get("finish_reason")
@@ -555,12 +599,26 @@ def extract_parts_from_response(
             visible_text = parsed_text
             tool_calls.extend(parsed_calls)
 
-    if not visible_text and not tool_calls and thought_chunks and allow_thought_text:
-        visible_text = "".join(thought_chunks)
+    thought_text = "".join(thought_chunks) if (thought_chunks and allow_thought_text) else ""
 
-    if finish_reason and not visible_text and not tool_calls:
-        logger.warning("[http] empty stream chunk finishReason=%s", finish_reason)
+    if finish_reason and not visible_text and not tool_calls and not thought_text:
+        logger.debug("[http] empty stream chunk finishReason=%s", finish_reason)
 
+    return visible_text, thought_text, tool_calls, finish_reason
+
+
+def extract_parts_from_response(
+    obj: dict,
+    *,
+    allow_thought_text: bool = False,
+) -> Tuple[str, List[dict], Optional[str]]:
+    """Extract visible text and tool_calls from a streamGenerateContent SSE object."""
+    visible_text, thought_text, tool_calls, finish_reason = extract_stream_parts_from_response(
+        obj,
+        allow_thought_text=allow_thought_text,
+    )
+    if not visible_text and not tool_calls and thought_text:
+        visible_text = thought_text
     return visible_text, tool_calls, finish_reason
 
 

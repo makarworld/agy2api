@@ -26,6 +26,7 @@ import {
 import ReactMarkdown from 'react-markdown';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
+import { Select } from '../components/ui/select';
 import { useRequests, type ChatItem, type RequestItem } from '../hooks/use-requests';
 
 function formatTokens(n: number) {
@@ -163,22 +164,102 @@ function collectPromptPaths(obj: any, path = 'root', paths: string[] = []): stri
   return paths;
 }
 
+function collectAllBlockPaths(obj: any, path = 'root', paths: string[] = []): string[] {
+  if (!obj || typeof obj !== 'object') return paths;
+  paths.push(path);
+  if (Array.isArray(obj)) {
+    obj.forEach((item, idx) => {
+      if (item && typeof item === 'object') {
+        collectAllBlockPaths(item, `${path}[${idx}]`, paths);
+      }
+    });
+  } else {
+    for (const [k, v] of Object.entries(obj)) {
+      if (v && typeof v === 'object') {
+        collectAllBlockPaths(v, `${path}.${k}`, paths);
+      }
+    }
+  }
+  return paths;
+}
+
+function collectInitialCollapsedPaths(obj: any, path = 'root', depth = 0, paths: string[] = []): string[] {
+  if (!obj || typeof obj !== 'object') return paths;
+  if (depth >= 2 && path !== 'root') {
+    paths.push(path);
+  }
+  if (Array.isArray(obj)) {
+    obj.forEach((item, idx) => {
+      if (item && typeof item === 'object') {
+        collectInitialCollapsedPaths(item, `${path}[${idx}]`, depth + 1, paths);
+      }
+    });
+  } else {
+    for (const [k, v] of Object.entries(obj)) {
+      if (v && typeof v === 'object') {
+        collectInitialCollapsedPaths(v, `${path}.${k}`, depth + 1, paths);
+      }
+    }
+  }
+  return paths;
+}
+
+function getObjectPreview(obj: Record<string, any>): string {
+  const keys = Object.keys(obj);
+  if (keys.length === 0) return '{}';
+  const previewKeys = keys.slice(0, 3).map((k) => {
+    const v = obj[k];
+    if (v === null) return `${k}: null`;
+    if (typeof v === 'string') {
+      const s = v.length > 14 ? `${v.slice(0, 11)}…` : v;
+      return `${k}: "${s}"`;
+    }
+    if (typeof v === 'number' || typeof v === 'boolean') return `${k}: ${v}`;
+    if (Array.isArray(v)) return `${k}: [${v.length}]`;
+    if (typeof v === 'object') return `${k}: {…}`;
+    return k;
+  });
+  const more = keys.length > 3 ? `, … (+${keys.length - 3})` : '';
+  return `{ ${previewKeys.join(', ')}${more} }`;
+}
+
+function getArrayPreview(arr: any[]): string {
+  if (arr.length === 0) return '[]';
+  const previewItems = arr.slice(0, 3).map((v) => {
+    if (v === null) return 'null';
+    if (typeof v === 'string') {
+      const s = v.length > 12 ? `${v.slice(0, 9)}…` : v;
+      return `"${s}"`;
+    }
+    if (typeof v === 'number' || typeof v === 'boolean') return String(v);
+    if (Array.isArray(v)) return `[${v.length}]`;
+    if (typeof v === 'object') return '{…}';
+    return String(v);
+  });
+  const more = arr.length > 3 ? `, … (+${arr.length - 3})` : '';
+  return `Array(${arr.length}) [ ${previewItems.join(', ')}${more} ]`;
+}
+
 function JsonNodeViewer({
   value,
   keyName,
   path = 'root',
   depth = 0,
   isLast = true,
-  expandedPaths,
-  onTogglePath,
+  expandedPromptPaths,
+  onTogglePromptPath,
+  collapsedBlockPaths,
+  onToggleBlockPath,
 }: {
   value: any;
   keyName?: string | number;
   path?: string;
   depth?: number;
   isLast?: boolean;
-  expandedPaths: Set<string>;
-  onTogglePath: (path: string) => void;
+  expandedPromptPaths: Set<string>;
+  onTogglePromptPath: (path: string) => void;
+  collapsedBlockPaths: Set<string>;
+  onToggleBlockPath: (path: string) => void;
 }) {
   const indent = '  '.repeat(depth);
 
@@ -192,10 +273,13 @@ function JsonNodeViewer({
     );
   };
 
+  const spacer = <span className="w-3.5 mr-1 shrink-0 inline-block" />;
+
   if (value === null) {
     return (
-      <div>
+      <div className="flex items-center">
         <span>{indent}</span>
+        {spacer}
         {renderKey()}
         <span className="text-muted-foreground font-semibold">null</span>
         {!isLast && <span className="text-muted-foreground">,</span>}
@@ -205,8 +289,9 @@ function JsonNodeViewer({
 
   if (typeof value === 'boolean') {
     return (
-      <div>
+      <div className="flex items-center">
         <span>{indent}</span>
+        {spacer}
         {renderKey()}
         <span className="text-amber-400 font-semibold">{value ? 'true' : 'false'}</span>
         {!isLast && <span className="text-muted-foreground">,</span>}
@@ -216,8 +301,9 @@ function JsonNodeViewer({
 
   if (typeof value === 'number') {
     return (
-      <div>
+      <div className="flex items-center">
         <span>{indent}</span>
+        {spacer}
         {renderKey()}
         <span className="text-purple-400 font-semibold">{value}</span>
         {!isLast && <span className="text-muted-foreground">,</span>}
@@ -230,17 +316,18 @@ function JsonNodeViewer({
       (typeof keyName === 'string' && isPromptKey(keyName)) ||
       (path.includes('contents') && keyName === 'text') ||
       (path.includes('systemInstruction') && keyName === 'text');
-    const isExpanded = expandedPaths.has(path);
+    const isExpanded = expandedPromptPaths.has(path);
 
     if (isPrompt) {
       if (!isExpanded) {
         return (
           <div className="flex items-center flex-wrap">
             <span>{indent}</span>
+            {spacer}
             {renderKey()}
             <button
               type="button"
-              onClick={() => onTogglePath(path)}
+              onClick={() => onTogglePromptPath(path)}
               className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-xs font-mono bg-primary/10 hover:bg-primary/20 text-primary border border-primary/30 transition-colors cursor-pointer select-none my-0.5"
               title="Click to expand prompt"
             >
@@ -256,10 +343,11 @@ function JsonNodeViewer({
         <div>
           <div className="flex items-center gap-2">
             <span>{indent}</span>
+            {spacer}
             {renderKey()}
             <button
               type="button"
-              onClick={() => onTogglePath(path)}
+              onClick={() => onTogglePromptPath(path)}
               className="text-[11px] text-primary hover:underline cursor-pointer font-sans"
             >
               [collapse]
@@ -271,8 +359,61 @@ function JsonNodeViewer({
           >
             {value}
           </div>
-          <div>
+          <div className="flex items-center">
             <span>{indent}</span>
+            {spacer}
+            {!isLast && <span className="text-muted-foreground">,</span>}
+          </div>
+        </div>
+      );
+    }
+
+    if (value.length > 200) {
+      if (!isExpanded) {
+        return (
+          <div className="flex items-center flex-wrap">
+            <span>{indent}</span>
+            {spacer}
+            {renderKey()}
+            <span className="text-emerald-400 dark:text-emerald-300 break-all">
+              "{value.slice(0, 40)}…"
+            </span>
+            <button
+              type="button"
+              onClick={() => onTogglePromptPath(path)}
+              className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-mono bg-muted/80 hover:bg-muted text-muted-foreground border border-border/60 mx-1 cursor-pointer select-none"
+              title="Click to expand full text"
+            >
+              <span>... ({value.length.toLocaleString()} chars)</span>
+            </button>
+            {!isLast && <span className="text-muted-foreground">,</span>}
+          </div>
+        );
+      }
+
+      return (
+        <div>
+          <div className="flex items-center gap-2">
+            <span>{indent}</span>
+            {spacer}
+            {renderKey()}
+            <button
+              type="button"
+              onClick={() => onTogglePromptPath(path)}
+              className="text-[11px] text-primary hover:underline cursor-pointer font-sans"
+            >
+              [collapse]
+            </button>
+          </div>
+          <div
+            style={{ paddingLeft: `${(depth + 1) * 16}px` }}
+            className="my-1.5 p-3 rounded-lg bg-muted/40 border border-border/70 text-emerald-400 dark:text-emerald-300 font-mono text-xs whitespace-pre-wrap break-all select-text max-h-[40vh] overflow-y-auto"
+          >
+            {JSON.stringify(value)}
+          </div>
+          <div className="flex items-center">
+            <span>{indent}</span>
+            {spacer}
             {!isLast && <span className="text-muted-foreground">,</span>}
           </div>
         </div>
@@ -280,8 +421,9 @@ function JsonNodeViewer({
     }
 
     return (
-      <div>
+      <div className="flex items-center flex-wrap">
         <span>{indent}</span>
+        {spacer}
         {renderKey()}
         <span className="text-emerald-400 dark:text-emerald-300 break-all">{JSON.stringify(value)}</span>
         {!isLast && <span className="text-muted-foreground">,</span>}
@@ -292,8 +434,9 @@ function JsonNodeViewer({
   if (Array.isArray(value)) {
     if (value.length === 0) {
       return (
-        <div>
+        <div className="flex items-center">
           <span>{indent}</span>
+          {spacer}
           {renderKey()}
           <span className="text-muted-foreground">[]</span>
           {!isLast && <span className="text-muted-foreground">,</span>}
@@ -301,28 +444,75 @@ function JsonNodeViewer({
       );
     }
 
-    return (
-      <div>
-        <div>
+    const isCollapsed = collapsedBlockPaths.has(path);
+
+    if (isCollapsed) {
+      return (
+        <div
+          className="flex items-center flex-wrap cursor-pointer hover:bg-muted/40 rounded px-1 -mx-1 transition-colors group select-none"
+          onClick={() => onToggleBlockPath(path)}
+        >
           <span>{indent}</span>
+          <button
+            type="button"
+            className="p-0.5 -ml-1 mr-0.5 rounded hover:bg-muted text-muted-foreground/70 group-hover:text-foreground cursor-pointer transition-colors"
+            title="Expand block"
+          >
+            <ChevronRight className="w-3.5 h-3.5" />
+          </button>
           {renderKey()}
           <span className="text-muted-foreground">[</span>
-        </div>
-        {value.map((item, idx) => (
-          <JsonNodeViewer
-            key={idx}
-            value={item}
-            path={`${path}[${idx}]`}
-            depth={depth + 1}
-            isLast={idx === value.length - 1}
-            expandedPaths={expandedPaths}
-            onTogglePath={onTogglePath}
-          />
-        ))}
-        <div>
-          <span>{indent}</span>
+          <span className="text-sky-400/90 dark:text-sky-300/90 mx-1 text-[11px] font-sans italic bg-muted/70 px-1.5 py-0.5 rounded border border-border/50 hover:bg-muted select-none">
+            {getArrayPreview(value)}
+          </span>
           <span className="text-muted-foreground">]</span>
           {!isLast && <span className="text-muted-foreground">,</span>}
+        </div>
+      );
+    }
+
+    return (
+      <div>
+        <div
+          className="flex items-center flex-wrap cursor-pointer hover:bg-muted/40 rounded px-1 -mx-1 transition-colors group select-none"
+          onClick={() => onToggleBlockPath(path)}
+        >
+          <span>{indent}</span>
+          <button
+            type="button"
+            className="p-0.5 -ml-1 mr-0.5 rounded hover:bg-muted text-muted-foreground/70 group-hover:text-foreground cursor-pointer transition-colors"
+            title="Collapse block"
+          >
+            <ChevronDown className="w-3.5 h-3.5" />
+          </button>
+          {renderKey()}
+          <span className="text-muted-foreground">[</span>
+          <span className="text-muted-foreground/50 text-[10px] ml-1.5 font-sans">({value.length})</span>
+        </div>
+        <div className="border-l border-border/30 hover:border-primary/40 transition-colors ml-[5px]">
+          {value.map((item, idx) => (
+            <JsonNodeViewer
+              key={idx}
+              value={item}
+              path={`${path}[${idx}]`}
+              depth={depth + 1}
+              isLast={idx === value.length - 1}
+              expandedPromptPaths={expandedPromptPaths}
+              onTogglePromptPath={onTogglePromptPath}
+              collapsedBlockPaths={collapsedBlockPaths}
+              onToggleBlockPath={onToggleBlockPath}
+            />
+          ))}
+        </div>
+        <div
+          className="flex items-center cursor-pointer hover:bg-muted/40 rounded px-1 -mx-1 transition-colors text-muted-foreground hover:text-foreground select-none"
+          onClick={() => onToggleBlockPath(path)}
+          title="Click to collapse"
+        >
+          <span>{indent}</span>
+          {spacer}
+          <span>]</span>
+          {!isLast && <span>,</span>}
         </div>
       </div>
     );
@@ -332,8 +522,9 @@ function JsonNodeViewer({
     const entries = Object.entries(value);
     if (entries.length === 0) {
       return (
-        <div>
+        <div className="flex items-center">
           <span>{indent}</span>
+          {spacer}
           {renderKey()}
           <span className="text-muted-foreground">&#123;&#125;</span>
           {!isLast && <span className="text-muted-foreground">,</span>}
@@ -341,29 +532,76 @@ function JsonNodeViewer({
       );
     }
 
-    return (
-      <div>
-        <div>
+    const isCollapsed = collapsedBlockPaths.has(path);
+
+    if (isCollapsed) {
+      return (
+        <div
+          className="flex items-center flex-wrap cursor-pointer hover:bg-muted/40 rounded px-1 -mx-1 transition-colors group select-none"
+          onClick={() => onToggleBlockPath(path)}
+        >
           <span>{indent}</span>
+          <button
+            type="button"
+            className="p-0.5 -ml-1 mr-0.5 rounded hover:bg-muted text-muted-foreground/70 group-hover:text-foreground cursor-pointer transition-colors"
+            title="Expand block"
+          >
+            <ChevronRight className="w-3.5 h-3.5" />
+          </button>
           {renderKey()}
           <span className="text-muted-foreground">&#123;</span>
-        </div>
-        {entries.map(([k, v], idx) => (
-          <JsonNodeViewer
-            key={k}
-            value={v}
-            keyName={k}
-            path={`${path}.${k}`}
-            depth={depth + 1}
-            isLast={idx === entries.length - 1}
-            expandedPaths={expandedPaths}
-            onTogglePath={onTogglePath}
-          />
-        ))}
-        <div>
-          <span>{indent}</span>
+          <span className="text-amber-400/90 dark:text-amber-300/90 mx-1 text-[11px] font-sans italic bg-muted/70 px-1.5 py-0.5 rounded border border-border/50 hover:bg-muted select-none">
+            {getObjectPreview(value)}
+          </span>
           <span className="text-muted-foreground">&#125;</span>
           {!isLast && <span className="text-muted-foreground">,</span>}
+        </div>
+      );
+    }
+
+    return (
+      <div>
+        <div
+          className="flex items-center flex-wrap cursor-pointer hover:bg-muted/40 rounded px-1 -mx-1 transition-colors group select-none"
+          onClick={() => onToggleBlockPath(path)}
+        >
+          <span>{indent}</span>
+          <button
+            type="button"
+            className="p-0.5 -ml-1 mr-0.5 rounded hover:bg-muted text-muted-foreground/70 group-hover:text-foreground cursor-pointer transition-colors"
+            title="Collapse block"
+          >
+            <ChevronDown className="w-3.5 h-3.5" />
+          </button>
+          {renderKey()}
+          <span className="text-muted-foreground">&#123;</span>
+          <span className="text-muted-foreground/50 text-[10px] ml-1.5 font-sans">({entries.length})</span>
+        </div>
+        <div className="border-l border-border/30 hover:border-primary/40 transition-colors ml-[5px]">
+          {entries.map(([k, v], idx) => (
+            <JsonNodeViewer
+              key={k}
+              value={v}
+              keyName={k}
+              path={`${path}.${k}`}
+              depth={depth + 1}
+              isLast={idx === entries.length - 1}
+              expandedPromptPaths={expandedPromptPaths}
+              onTogglePromptPath={onTogglePromptPath}
+              collapsedBlockPaths={collapsedBlockPaths}
+              onToggleBlockPath={onToggleBlockPath}
+            />
+          ))}
+        </div>
+        <div
+          className="flex items-center cursor-pointer hover:bg-muted/40 rounded px-1 -mx-1 transition-colors text-muted-foreground hover:text-foreground select-none"
+          onClick={() => onToggleBlockPath(path)}
+          title="Click to collapse"
+        >
+          <span>{indent}</span>
+          {spacer}
+          <span>&#125;</span>
+          {!isLast && <span>,</span>}
         </div>
       </div>
     );
@@ -427,26 +665,82 @@ function RequestAndResponseView({ request }: { request: RequestItem }) {
   }, [request.raw_response]);
 
   const allPromptPaths = useMemo(() => collectPromptPaths(parsedRequest), [parsedRequest]);
-  const [expandedPaths, setExpandedPaths] = useState<Set<string>>(new Set());
+  const allBlockPaths = useMemo(() => collectAllBlockPaths(parsedRequest), [parsedRequest]);
 
-  const togglePath = (path: string) => {
-    setExpandedPaths((prev) => {
+  const [expandedPromptPaths, setExpandedPromptPaths] = useState<Set<string>>(new Set());
+  const [collapsedBlockPaths, setCollapsedBlockPaths] = useState<Set<string>>(() => {
+    return new Set(collectInitialCollapsedPaths(parsedRequest));
+  });
+
+  const togglePromptPath = (path: string) => {
+    setExpandedPromptPaths((prev) => {
       const next = new Set(prev);
-      if (next.has(path)) {
-        next.delete(path);
-      } else {
-        next.add(path);
-      }
+      if (next.has(path)) next.delete(path);
+      else next.add(path);
       return next;
     });
   };
 
-  const allExpanded = allPromptPaths.length > 0 && expandedPaths.size === allPromptPaths.length;
-  const toggleAll = () => {
-    if (allExpanded) {
-      setExpandedPaths(new Set());
+  const toggleBlockPath = (path: string) => {
+    setCollapsedBlockPaths((prev) => {
+      const next = new Set(prev);
+      if (next.has(path)) next.delete(path);
+      else next.add(path);
+      return next;
+    });
+  };
+
+  const allPromptsExpanded = allPromptPaths.length > 0 && expandedPromptPaths.size === allPromptPaths.length;
+  const toggleAllPrompts = () => {
+    if (allPromptsExpanded) {
+      setExpandedPromptPaths(new Set());
     } else {
-      setExpandedPaths(new Set(allPromptPaths));
+      setExpandedPromptPaths(new Set(allPromptPaths));
+    }
+  };
+
+  const allBlocksExpanded = collapsedBlockPaths.size === 0;
+  const toggleAllBlocks = () => {
+    if (allBlocksExpanded) {
+      setCollapsedBlockPaths(new Set(allBlockPaths.filter((p) => p !== 'root')));
+    } else {
+      setCollapsedBlockPaths(new Set());
+    }
+  };
+
+  // Response paths & state
+  const allResponsePromptPaths = useMemo(() => collectPromptPaths(parsedResponse), [parsedResponse]);
+  const allResponseBlockPaths = useMemo(() => collectAllBlockPaths(parsedResponse), [parsedResponse]);
+
+  const [expandedResponsePromptPaths, setExpandedResponsePromptPaths] = useState<Set<string>>(new Set());
+  const [collapsedResponseBlockPaths, setCollapsedResponseBlockPaths] = useState<Set<string>>(() => {
+    return new Set(collectInitialCollapsedPaths(parsedResponse));
+  });
+
+  const toggleResponsePromptPath = (path: string) => {
+    setExpandedResponsePromptPaths((prev) => {
+      const next = new Set(prev);
+      if (next.has(path)) next.delete(path);
+      else next.add(path);
+      return next;
+    });
+  };
+
+  const toggleResponseBlockPath = (path: string) => {
+    setCollapsedResponseBlockPaths((prev) => {
+      const next = new Set(prev);
+      if (next.has(path)) next.delete(path);
+      else next.add(path);
+      return next;
+    });
+  };
+
+  const allResponseBlocksExpanded = collapsedResponseBlockPaths.size === 0;
+  const toggleAllResponseBlocks = () => {
+    if (allResponseBlocksExpanded) {
+      setCollapsedResponseBlockPaths(new Set(allResponseBlockPaths.filter((p) => p !== 'root')));
+    } else {
+      setCollapsedResponseBlockPaths(new Set());
     }
   };
 
@@ -481,14 +775,32 @@ function RequestAndResponseView({ request }: { request: RequestItem }) {
           </div>
 
           <div className="flex items-center gap-2">
+            {allBlockPaths.length > 1 && (
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-7 text-xs px-2.5 gap-1.5 cursor-pointer"
+                onClick={toggleAllBlocks}
+              >
+                {allBlocksExpanded ? (
+                  <>
+                    <ChevronRight className="w-3.5 h-3.5" /> Collapse Blocks
+                  </>
+                ) : (
+                  <>
+                    <ChevronDown className="w-3.5 h-3.5" /> Expand Blocks
+                  </>
+                )}
+              </Button>
+            )}
             {allPromptPaths.length > 0 && (
               <Button
                 variant="outline"
                 size="sm"
                 className="h-7 text-xs px-2.5 gap-1.5 cursor-pointer"
-                onClick={toggleAll}
+                onClick={toggleAllPrompts}
               >
-                {allExpanded ? 'Collapse All Prompts' : `Expand All Prompts (${allPromptPaths.length})`}
+                {allPromptsExpanded ? 'Collapse All Prompts' : `Expand All Prompts (${allPromptPaths.length})`}
               </Button>
             )}
             {rawRequestString && <CopyButton text={rawRequestString} label="Copy JSON" />}
@@ -499,8 +811,10 @@ function RequestAndResponseView({ request }: { request: RequestItem }) {
           <div className="p-4 max-h-[50vh] overflow-y-auto rounded-xl bg-muted/40 border border-border/80 text-xs font-mono overflow-x-auto text-foreground select-text">
             <JsonNodeViewer
               value={parsedRequest}
-              expandedPaths={expandedPaths}
-              onTogglePath={togglePath}
+              expandedPromptPaths={expandedPromptPaths}
+              onTogglePromptPath={togglePromptPath}
+              collapsedBlockPaths={collapsedBlockPaths}
+              onToggleBlockPath={toggleBlockPath}
             />
           </div>
         ) : request.raw_request ? (
@@ -533,14 +847,56 @@ function RequestAndResponseView({ request }: { request: RequestItem }) {
             )}
           </div>
 
-          {rawResponseString && <CopyButton text={rawResponseString} label="Copy Response" />}
+          <div className="flex items-center gap-2">
+            {allResponseBlockPaths.length > 1 && (
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-7 text-xs px-2.5 gap-1.5 cursor-pointer"
+                onClick={toggleAllResponseBlocks}
+              >
+                {allResponseBlocksExpanded ? (
+                  <>
+                    <ChevronRight className="w-3.5 h-3.5" /> Collapse Blocks
+                  </>
+                ) : (
+                  <>
+                    <ChevronDown className="w-3.5 h-3.5" /> Expand Blocks
+                  </>
+                )}
+              </Button>
+            )}
+            {allResponsePromptPaths.length > 0 && (
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-7 text-xs px-2.5 gap-1.5 cursor-pointer"
+                onClick={() => {
+                  if (expandedResponsePromptPaths.size === allResponsePromptPaths.length) {
+                    setExpandedResponsePromptPaths(new Set());
+                  } else {
+                    setExpandedResponsePromptPaths(new Set(allResponsePromptPaths));
+                  }
+                }}
+              >
+                {expandedResponsePromptPaths.size === allResponsePromptPaths.length
+                  ? 'Collapse All Prompts'
+                  : `Expand All Prompts (${allResponsePromptPaths.length})`}
+              </Button>
+            )}
+            {rawResponseString && <CopyButton text={rawResponseString} label="Copy Response" />}
+          </div>
         </div>
 
         <div className="p-4 max-h-[45vh] overflow-y-auto rounded-xl bg-muted/30 border border-border/80 text-xs font-mono overflow-x-auto text-foreground select-text">
           {parsedResponse ? (
-            <pre className="whitespace-pre-wrap break-words">
-              {JSON.stringify(parsedResponse, null, 2)}
-            </pre>
+            <JsonNodeViewer
+              value={parsedResponse}
+              expandedPromptPaths={expandedResponsePromptPaths}
+              onTogglePromptPath={toggleResponsePromptPath}
+              collapsedBlockPaths={collapsedResponseBlockPaths}
+              onToggleBlockPath={toggleResponseBlockPath}
+            />
           ) : request.raw_response ? (
             <pre className="whitespace-pre-wrap break-words">{request.raw_response}</pre>
           ) : request.response_preview ? (
@@ -1031,39 +1387,40 @@ export function RequestsPage() {
   }, [filters.viewMode, totalChats, totalRequests, filters.pageSize]);
 
   return (
-    <div className="flex flex-col flex-1 h-full p-8 overflow-auto bg-background text-foreground">
-      {/* Top Header */}
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6">
-        <div>
-          <h1 className="text-2xl font-bold tracking-tight">Requests</h1>
-          <p className="text-sm text-muted-foreground mt-1">
-            Monitor API requests, token stats, and conversation sessions grouped by chat.
-          </p>
-        </div>
-
-        <div className="flex items-center gap-2.5 flex-wrap">
-          {/* Auto Refresh Select */}
-          <div className="flex items-center gap-1.5 text-xs text-muted-foreground bg-card border rounded-lg px-2.5 py-1.5">
-            <span>Auto:</span>
-            <select
-              value={autoRefreshInterval}
-              onChange={(e) => setAutoRefreshInterval(Number(e.target.value))}
-              className="bg-transparent text-foreground outline-none cursor-pointer font-medium"
-            >
-              <option value={0} className="bg-card">Off</option>
-              <option value={5000} className="bg-card">5s</option>
-              <option value={15000} className="bg-card">15s</option>
-              <option value={30000} className="bg-card">30s</option>
-            </select>
+    <div className="flex-1 p-6 md:p-8 overflow-auto bg-background text-foreground">
+      <div className="max-w-7xl mx-auto w-full space-y-6">
+        {/* Top Header */}
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+          <div>
+            <h1 className="text-2xl font-bold tracking-tight">Requests</h1>
+            <p className="text-sm text-muted-foreground mt-1">
+              Monitor API requests, token stats, and conversation sessions grouped by chat.
+            </p>
           </div>
 
-          <Button
-            onClick={refresh}
-            disabled={loading}
-            variant="outline"
-            size="sm"
-            className="gap-2"
-          >
+          <div className="flex items-center gap-2.5 flex-wrap">
+            {/* Auto Refresh Select */}
+            <div className="flex items-center gap-1.5 text-xs text-muted-foreground bg-card border rounded-lg px-2.5 py-1.5">
+              <span>Auto:</span>
+              <select
+                value={autoRefreshInterval}
+                onChange={(e) => setAutoRefreshInterval(Number(e.target.value))}
+                className="bg-transparent text-foreground outline-none cursor-pointer font-medium"
+              >
+                <option value={0} className="bg-card">Off</option>
+                <option value={5000} className="bg-card">5s</option>
+                <option value={15000} className="bg-card">15s</option>
+                <option value={30000} className="bg-card">30s</option>
+              </select>
+            </div>
+
+            <Button
+              onClick={refresh}
+              disabled={loading}
+              variant="outline"
+              size="sm"
+              className="gap-2 cursor-pointer"
+            >
             <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
             Refresh
           </Button>
@@ -1176,10 +1533,11 @@ export function RequestsPage() {
         {/* Dropdown Filters Row */}
         <div className="flex items-center gap-2.5 flex-wrap pt-1 text-xs">
           {/* Endpoint select */}
-          <select
+          <Select
             value={filters.endpoint}
             onChange={(e) => updateFilters({ endpoint: e.target.value })}
-            className="bg-muted border border-border text-foreground rounded-lg px-2.5 py-1.5 outline-none font-medium cursor-pointer"
+            wrapperClassName="w-auto min-w-[170px]"
+            className="h-8 text-xs font-medium"
           >
             <option value="">All Endpoints</option>
             <option value="openai-chat">OpenAI Chat (/v1/chat/completions)</option>
@@ -1187,14 +1545,15 @@ export function RequestsPage() {
             <option value="image-generation">Image Gen (/v1/images/generations)</option>
             <option value="audio-speech">TTS (/v1/audio/speech)</option>
             <option value="audio-transcription">STT (/v1/audio/transcriptions)</option>
-          </select>
+          </Select>
 
           {/* Model select */}
           {overview?.models && overview.models.length > 0 && (
-            <select
+            <Select
               value={filters.model}
               onChange={(e) => updateFilters({ model: e.target.value })}
-              className="bg-muted border border-border text-foreground rounded-lg px-2.5 py-1.5 outline-none font-medium cursor-pointer font-mono"
+              wrapperClassName="w-auto min-w-[150px]"
+              className="h-8 text-xs font-medium font-mono"
             >
               <option value="">All Models</option>
               {overview.models.map((m) => (
@@ -1202,31 +1561,33 @@ export function RequestsPage() {
                   {m.model} ({m.count})
                 </option>
               ))}
-            </select>
+            </Select>
           )}
 
           {/* Status select */}
-          <select
+          <Select
             value={filters.status}
             onChange={(e) => updateFilters({ status: e.target.value as any })}
-            className="bg-muted border border-border text-foreground rounded-lg px-2.5 py-1.5 outline-none font-medium cursor-pointer"
+            wrapperClassName="w-auto min-w-[130px]"
+            className="h-8 text-xs font-medium"
           >
             <option value="all">All Status</option>
             <option value="success">Success only</option>
             <option value="failed">Failed only</option>
-          </select>
+          </Select>
 
           {/* Time Window */}
-          <select
+          <Select
             value={filters.windowHours === null ? '' : String(filters.windowHours)}
             onChange={(e) => updateFilters({ windowHours: e.target.value ? Number(e.target.value) : null })}
-            className="bg-muted border border-border text-foreground rounded-lg px-2.5 py-1.5 outline-none font-medium cursor-pointer"
+            wrapperClassName="w-auto min-w-[120px]"
+            className="h-8 text-xs font-medium"
           >
             <option value="">All Time</option>
             <option value="1">Last 1 Hour</option>
             <option value="24">Last 24 Hours</option>
             <option value="168">Last 7 Days</option>
-          </select>
+          </Select>
 
           {/* Reset Filters button */}
           {(filters.search || filters.endpoint || filters.model || filters.status !== 'all' || filters.windowHours) && (
@@ -1390,16 +1751,17 @@ export function RequestsPage() {
 
         <div className="flex items-center gap-2">
           {/* Page size select */}
-          <select
+          <Select
             value={filters.pageSize}
             onChange={(e) => updateFilters({ pageSize: Number(e.target.value), page: 1 })}
-            className="bg-card border border-border text-foreground rounded-lg px-2 py-1 outline-none cursor-pointer"
+            wrapperClassName="w-auto min-w-[95px]"
+            className="h-7 text-xs py-0.5"
           >
             <option value={10}>10 / page</option>
             <option value={20}>20 / page</option>
             <option value={50}>50 / page</option>
             <option value={100}>100 / page</option>
-          </select>
+          </Select>
 
           {/* Page navigation */}
           <Button
@@ -1424,6 +1786,7 @@ export function RequestsPage() {
             Next
           </Button>
         </div>
+      </div>
       </div>
 
       {/* Detail Modal */}

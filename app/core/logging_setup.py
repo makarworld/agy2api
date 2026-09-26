@@ -79,6 +79,8 @@ def setup_logging():
     file_handler.setFormatter(formatter)
     file_handler.addFilter(TraceLogFilter())
     root_logger.addHandler(file_handler)
+
+    logging.getLogger("httpx").setLevel(logging.WARNING)
     
     # Apply filter to uvicorn loggers to ensure they don't crash if they try to log with our formatter
     for logger_name in ("uvicorn", "uvicorn.error", "uvicorn.access", "fastapi"):

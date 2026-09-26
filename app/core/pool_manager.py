@@ -137,6 +137,26 @@ def get_account_token_and_proxy(account_id: str) -> Tuple[Optional[str], Optiona
     return token, proxy, account_dir
 
 
+def _extract_account_jwt(account_id: str) -> dict:
+    account_dir = os.path.join(_pool_dir(), "accounts", account_id)
+    oauth_path = os.path.join(account_dir, "oauth_creds.json")
+    if not os.path.exists(oauth_path) and account_id in ("active", "default"):
+        oauth_path = os.path.join(_gemini_home(), "oauth_creds.json")
+    if os.path.exists(oauth_path):
+        try:
+            with open(oauth_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                id_token = data.get("id_token")
+                if id_token:
+                    parts = id_token.split(".")
+                    if len(parts) >= 2:
+                        padded = parts[1] + "=" * ((4 - len(parts[1]) % 4) % 4)
+                        return json.loads(base64.urlsafe_b64decode(padded.encode()).decode("utf-8"))
+        except Exception:
+            pass
+    return {}
+
+
 def _extract_account_email(account_id: str) -> Optional[str]:
     """Helper to get email from google_accounts.json or oauth_creds.json in account dir."""
     account_dir = os.path.join(_pool_dir(), "accounts", account_id)
@@ -150,42 +170,48 @@ def _extract_account_email(account_id: str) -> Optional[str]:
                     return email
         except Exception:
             pass
-    oauth_path = os.path.join(account_dir, "oauth_creds.json")
-    if os.path.exists(oauth_path):
-        try:
-            with open(oauth_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                id_token = data.get("id_token")
-                if id_token:
-                    parts = id_token.split(".")
-                    if len(parts) >= 2:
-                        padded = parts[1] + "=" * ((4 - len(parts[1]) % 4) % 4)
-                        decoded_jwt = json.loads(base64.urlsafe_b64decode(padded.encode()).decode("utf-8"))
-                        return decoded_jwt.get("email")
-        except Exception:
-            pass
-    return None
+    jwt = _extract_account_jwt(account_id)
+    return jwt.get("email")
 
 
 def list_accounts() -> List[dict]:
     if account_store.has_accounts():
-        return [
-            {
-                "id": acc["id"],
-                "label": acc.get("email") or acc["id"],
-                "email": acc.get("email"),
-                "proxy": acc.get("proxy"),
-                "added_at": acc.get("created_at"),
-            }
-            for acc in account_store.get_all_accounts()
-        ]
+        res = []
+        for acc in account_store.get_all_accounts():
+            name = acc.get("name")
+            picture = acc.get("picture")
+            jwt = {}
+            if not name or not picture:
+                jwt = _extract_account_jwt(acc["id"])
+                name = name or jwt.get("name")
+                picture = picture or jwt.get("picture")
+            email = acc.get("email") or jwt.get("email")
+            label = name or email or acc["id"]
+            res.append(
+                {
+                    "id": acc["id"],
+                    "label": label,
+                    "name": name,
+                    "picture": picture,
+                    "email": email,
+                    "proxy": acc.get("proxy"),
+                    "added_at": acc.get("created_at"),
+                }
+            )
+        return res
 
     accounts = _load_manifest().get("accounts", [])
     for acc in accounts:
+        jwt = _extract_account_jwt(acc["id"])
         if not acc.get("email"):
-            acc_email = _extract_account_email(acc["id"])
+            acc_email = jwt.get("email") or _extract_account_email(acc["id"])
             if acc_email:
                 acc["email"] = acc_email
+        if jwt.get("name") and not acc.get("name"):
+            acc["name"] = jwt.get("name")
+            acc["label"] = jwt.get("name")
+        if jwt.get("picture") and not acc.get("picture"):
+            acc["picture"] = jwt.get("picture")
     return accounts
 
 
@@ -441,8 +467,10 @@ async def complete_oauth_flow(
     expires_in = int(payload.get("expires_in", 3600))
     expiry_date = int((time.time() + expires_in) * 1000)
 
-    # Parse email from id_token or userinfo if missing
+    # Parse email, name, picture from id_token or userinfo if missing
     email = None
+    name = None
+    picture = None
     if id_token:
         try:
             parts = id_token.split(".")
@@ -450,10 +478,12 @@ async def complete_oauth_flow(
                 padded = parts[1] + "=" * ((4 - len(parts[1]) % 4) % 4)
                 decoded_jwt = json.loads(base64.urlsafe_b64decode(padded.encode()).decode("utf-8"))
                 email = decoded_jwt.get("email")
+                name = decoded_jwt.get("name")
+                picture = decoded_jwt.get("picture")
         except Exception as e:
-            logger.warning(f"[pool] Failed decoding email from id_token: {e}")
+            logger.warning(f"[pool] Failed decoding id_token: {e}")
 
-    if not email and access_token:
+    if (not email or not name or not picture) and access_token:
         try:
             async with httpx.AsyncClient(**httpx_client_kwargs(proxy=req_proxy, timeout=10.0)) as client:
                 ui_resp = await client.get(
@@ -461,7 +491,10 @@ async def complete_oauth_flow(
                     headers={"Authorization": f"Bearer {access_token}"},
                 )
                 if ui_resp.status_code == 200:
-                    email = ui_resp.json().get("email")
+                    info = ui_resp.json()
+                    email = email or info.get("email")
+                    name = name or info.get("name")
+                    picture = picture or info.get("picture")
         except Exception as e:
             logger.warning(f"[pool] Failed fetching email from userinfo: {e}")
 
@@ -472,13 +505,15 @@ async def complete_oauth_flow(
         acc_label = (
             label.strip()
             if label and label.strip()
-            else existing_acc.get("label", email.split("@")[0] if email else "account")
+            else (name or existing_acc.get("label", email.split("@")[0] if email else "account"))
         )
         account_dir = os.path.join(_pool_dir(), "accounts", account_id)
         os.makedirs(account_dir, exist_ok=True)
         is_update = True
     else:
-        acc_label = label.strip() if label and label.strip() else (email.split("@")[0] if email else "account")
+        acc_label = (
+            label.strip() if label and label.strip() else (name or (email.split("@")[0] if email else "account"))
+        )
         account_id = f"{_slugify(acc_label)}-{uuid.uuid4().hex[:6]}"
         account_dir = os.path.join(_pool_dir(), "accounts", account_id)
         os.makedirs(account_dir, exist_ok=True)
@@ -527,6 +562,10 @@ async def complete_oauth_flow(
                     acc["label"] = acc_label
                 if email:
                     acc["email"] = email
+                if name:
+                    acc["name"] = name
+                if picture:
+                    acc["picture"] = picture
                 if req_proxy is not None:
                     if req_proxy:
                         acc["proxy"] = req_proxy
@@ -535,12 +574,26 @@ async def complete_oauth_flow(
                 record = acc
                 break
         else:
-            record = {"id": account_id, "label": acc_label, "email": email, "added_at": time.time()}
+            record = {
+                "id": account_id,
+                "label": acc_label,
+                "email": email,
+                "name": name,
+                "picture": picture,
+                "added_at": time.time(),
+            }
             if req_proxy:
                 record["proxy"] = req_proxy
             accounts_list.append(record)
     else:
-        record = {"id": account_id, "label": acc_label, "email": email, "added_at": time.time()}
+        record = {
+            "id": account_id,
+            "label": acc_label,
+            "email": email,
+            "name": name,
+            "picture": picture,
+            "added_at": time.time(),
+        }
         if req_proxy:
             record["proxy"] = req_proxy
         accounts_list.append(record)
@@ -557,6 +610,8 @@ async def complete_oauth_flow(
             client_secret=client_secret,
             access_token=access_token or "",
             token_expiry=time.time() + expires_in,
+            name=name or "",
+            picture=picture or "",
         )
         # Successful OAuth relogin makes SQLite account usable immediately.
         # OAuth refresh must clear the old request cooldown as well as stats state.
@@ -722,6 +777,11 @@ async def sync_back_credentials(account_id: str) -> None:
     Never raises -- a failure here must not break the actual API response.
     """
     try:
+        active_id = get_active_account_id()
+        if active_id and active_id != account_id:
+            logger.debug(f"[pool] Skipping sync_back_credentials for {account_id}: active account is {active_id}")
+            return
+
         account_dir = os.path.join(_pool_dir(), "accounts", account_id)
         gemini_home = _gemini_home()
         os.makedirs(account_dir, exist_ok=True)
@@ -762,18 +822,35 @@ async def snapshot_current_session_to_account(label: str, proxy: Optional[str] =
             "run `agy auth login` first, then retry."
         )
 
+    jwt = _extract_account_jwt(account_id)
+    email = jwt.get("email") or _extract_account_email(account_id)
+    name = jwt.get("name")
+    picture = jwt.get("picture")
+
     manifest = _load_manifest()
-    record = {"id": account_id, "label": label, "added_at": time.time()}
+    record = {
+        "id": account_id,
+        "label": label,
+        "email": email,
+        "name": name,
+        "picture": picture,
+        "added_at": time.time(),
+    }
     if proxy:
         record["proxy"] = proxy
     manifest.setdefault("accounts", []).append(record)
     _save_manifest(manifest)
+    try:
+        account_store.sync_accounts_from_pool_manifest()
+    except Exception as e:
+        logger.warning(f"[pool] Failed to sync account store after snapshot: {e}")
     await stats_store.upsert_pool_account_state(account_id, status="healthy")
     logger.info(f"[pool] Snapshotted current session as new account {account_id} ({label})")
     return record
 
 
 async def delete_account(account_id: str) -> None:
+    account_store.delete_account(account_id)
     manifest = _load_manifest()
     manifest["accounts"] = [a for a in manifest.get("accounts", []) if a["id"] != account_id]
     _save_manifest(manifest)

@@ -15,7 +15,7 @@ _JSON_ACCOUNTS_FILE = os.environ.get("ACCOUNTS_FILE", os.path.join(_DATA_DIR, "a
 
 
 def get_db_connection() -> sqlite3.Connection:
-    return get_connection()
+    return get_connection(_DB_PATH)
 
 
 def init_accounts_table() -> None:
@@ -32,6 +32,8 @@ def init_accounts_table() -> None:
                 access_token TEXT,
                 token_expiry REAL DEFAULT 0,
                 project_id TEXT,
+                name TEXT,
+                picture TEXT,
                 status TEXT NOT NULL DEFAULT 'healthy',
                 backoff_until REAL DEFAULT 0,
                 last_used_at REAL DEFAULT 0,
@@ -41,6 +43,11 @@ def init_accounts_table() -> None:
             );
             """
         )
+        for col in ("name", "picture"):
+            try:
+                conn.execute(f"ALTER TABLE accounts ADD COLUMN {col} TEXT;")
+            except sqlite3.OperationalError:
+                pass
         conn.execute("CREATE INDEX IF NOT EXISTS idx_accounts_status ON accounts(status, backoff_until);")
         conn.commit()
 
@@ -79,6 +86,8 @@ def sync_accounts_from_json(json_path: Optional[str] = None) -> int:
                 continue
 
             email = item.get("email") or ""
+            name = item.get("name") or ""
+            picture = item.get("picture") or ""
             proxy = item.get("proxy") or ""
             client_id = item.get("client_id") or (
                 item.get("credentials", {}).get("client_id") if isinstance(item.get("credentials"), dict) else ""
@@ -103,19 +112,21 @@ def sync_accounts_from_json(json_path: Optional[str] = None) -> int:
                     UPDATE accounts
                     SET email = ?, proxy = ?, refresh_token = ?, client_id = ?, client_secret = ?,
                         project_id = COALESCE(NULLIF(?, ''), project_id),
+                        name = COALESCE(NULLIF(?, ''), name),
+                        picture = COALESCE(NULLIF(?, ''), picture),
                         updated_at = ?
                     WHERE id = ?
                     """,
-                    (email, proxy, refresh_token, client_id, client_secret, project_id, now, acc_id),
+                    (email, proxy, refresh_token, client_id, client_secret, project_id, name, picture, now, acc_id),
                 )
             else:
                 conn.execute(
                     """
                     INSERT INTO accounts (
                         id, email, proxy, refresh_token, client_id, client_secret,
-                        access_token, token_expiry, project_id, status, backoff_until,
+                        access_token, token_expiry, project_id, name, picture, status, backoff_until,
                         last_used_at, consecutive_errors, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'healthy', 0, 0, 0, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'healthy', 0, 0, 0, ?, ?)
                     """,
                     (
                         acc_id,
@@ -127,6 +138,8 @@ def sync_accounts_from_json(json_path: Optional[str] = None) -> int:
                         access_token,
                         0,
                         project_id,
+                        name,
+                        picture,
                         now,
                         now,
                     ),
@@ -194,6 +207,15 @@ def select_next_healthy_account(exclude_ids: Optional[set] = None) -> Optional[D
             if acc["id"] not in exclude:
                 return acc
     return None
+
+
+def delete_account(account_id: str) -> bool:
+    init_accounts_table()
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM accounts WHERE id = ?", (account_id,))
+        conn.commit()
+        return cursor.rowcount > 0
 
 
 def update_account_tokens(
@@ -264,6 +286,27 @@ def mark_account_healthy(account_id: str) -> None:
         conn.commit()
 
 
+def update_account_profile(
+    account_id: str,
+    *,
+    name: Optional[str] = None,
+    picture: Optional[str] = None,
+) -> None:
+    now = time.time()
+    with get_db_connection() as conn:
+        conn.execute(
+            """
+            UPDATE accounts
+            SET name = COALESCE(NULLIF(?, ''), name),
+                picture = COALESCE(NULLIF(?, ''), picture),
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (name, picture, now, account_id),
+        )
+        conn.commit()
+
+
 def upsert_account(
     *,
     account_id: str,
@@ -275,6 +318,8 @@ def upsert_account(
     access_token: str = "",
     token_expiry: float = 0,
     project_id: str = "",
+    name: str = "",
+    picture: str = "",
 ) -> None:
     """Insert or update a single account row in SQLite."""
     duplicate = find_account_by_refresh_token(refresh_token, exclude_account_id=account_id)
@@ -296,6 +341,8 @@ def upsert_account(
                     access_token = COALESCE(NULLIF(?, ''), access_token),
                     token_expiry = CASE WHEN ? > 0 THEN ? ELSE token_expiry END,
                     project_id = COALESCE(NULLIF(?, ''), project_id),
+                    name = COALESCE(NULLIF(?, ''), name),
+                    picture = COALESCE(NULLIF(?, ''), picture),
                     updated_at = ?
                 WHERE id = ?
                 """,
@@ -309,6 +356,8 @@ def upsert_account(
                     token_expiry,
                     token_expiry,
                     project_id,
+                    name,
+                    picture,
                     now,
                     account_id,
                 ),
@@ -318,9 +367,9 @@ def upsert_account(
                 """
                 INSERT INTO accounts (
                     id, email, proxy, refresh_token, client_id, client_secret,
-                    access_token, token_expiry, project_id, status, backoff_until,
+                    access_token, token_expiry, project_id, name, picture, status, backoff_until,
                     last_used_at, consecutive_errors, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'healthy', 0, 0, 0, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'healthy', 0, 0, 0, ?, ?)
                 """,
                 (
                     account_id,
@@ -332,6 +381,8 @@ def upsert_account(
                     access_token,
                     token_expiry,
                     project_id,
+                    name,
+                    picture,
                     now,
                     now,
                 ),
@@ -404,6 +455,8 @@ def sync_accounts_from_pool_manifest(pool_dir: Optional[str] = None) -> int:
                 refresh_token=creds["refresh_token"],
                 access_token=creds.get("access_token") or "",
                 token_expiry=float(creds.get("token_expiry") or 0),
+                name=str(item.get("name") or ""),
+                picture=str(item.get("picture") or ""),
             )
         except ValueError as exc:
             logger.warning("[account_store] Skipping pool account %s: %s", acc_id, exc)

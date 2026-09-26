@@ -204,6 +204,8 @@ async def _openai_stream(
             if piece is None:
                 yield ": ping\n\n"
                 continue
+            if piece.get("error"):
+                raise RuntimeError(piece["error"])
             if "tool_calls" in piece and "usage" not in piece:
                 for tc in piece["tool_calls"]:
                     tool_key = _tool_dedupe_key(tc)
@@ -291,12 +293,7 @@ async def _openai_stream(
             raw_response=trace.raw_response_str if trace else None,
             response_status=trace.response_status if trace and trace.response_status is not None else 500,
         )
-        if not assistant_chunks:
-            raise
-        yield f"data: {json.dumps(_chunk({'content': f'Error: {err_str}'}))}\n\n"
-        yield f"data: {json.dumps(_chunk({}, finish_reason='stop'))}\n\n"
-        yield "data: [DONE]\n\n"
-        return
+        raise
 
     assistant_text = "".join(assistant_chunks)
     final_prompt_len = sum(len(m.get("content") or "") for m in messages)
@@ -371,8 +368,7 @@ async def chat_completions(
     display_model = (
         f"{req.model} · {resolve_http_model(agy_model)[0]} · {os.environ.get('AGY_HTTP_MAX_OUTPUT_TOKENS', '8192')}"
     )
-    if get_force_model():
-        logger.info(f"Force model: requested={req.model} backend={agy_model}")
+    logger.info(f"POST /v1/chat/completions model={req.model} backend={agy_model}")
 
     # Convert OpenAI tools format to Anthropic/internal format if provided
     converted_tools = None
@@ -453,7 +449,9 @@ async def chat_completions(
     finish_reason = "stop"
 
     if isinstance(agy_response, dict):
-        assistant_text = agy_response.get("text") or agy_response.get("content") or agy_response.get("response") or ""
+        assistant_text = (
+            agy_response.get("text") or agy_response.get("content") or agy_response.get("response") or ""
+        ).strip()
         if agy_response.get("tool_calls"):
             finish_reason = "tool_calls"
             tool_calls = []
@@ -474,7 +472,7 @@ async def chat_completions(
                     }
                 )
     else:
-        assistant_text = str(agy_response)
+        assistant_text = str(agy_response).strip()
 
     agy_usage = agy_response.get("usage") if isinstance(agy_response, dict) else None
     final_prompt_len = sum(len(m.get("content") or "") for m in messages)

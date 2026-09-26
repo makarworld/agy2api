@@ -15,7 +15,9 @@ router = APIRouter()
 _quota_refresh_tasks: dict[str, asyncio.Task] = {}
 
 
-async def _refresh_account_quota(account_id: str, token: Optional[str], proxy: Optional[str], account_dir: Optional[str]):
+async def _refresh_account_quota(
+    account_id: str, token: Optional[str], proxy: Optional[str], account_dir: Optional[str]
+):
     try:
         quota = await oauth_refresh.retrieve_account_quota(
             account_dir=account_dir,
@@ -28,7 +30,9 @@ async def _refresh_account_quota(account_id: str, token: Optional[str], proxy: O
         logger.debug("[accounts] Background quota refresh failed for %s: %s", account_id, e)
 
 
-def _schedule_quota_refresh(account_id: str, token: Optional[str], proxy: Optional[str], account_dir: Optional[str]) -> None:
+def _schedule_quota_refresh(
+    account_id: str, token: Optional[str], proxy: Optional[str], account_dir: Optional[str]
+) -> None:
     if account_id in _quota_refresh_tasks:
         return
     task = asyncio.create_task(_refresh_account_quota(account_id, token, proxy, account_dir))
@@ -86,6 +90,8 @@ async def list_accounts(api_key: str = Depends(get_api_key)):
             {
                 "id": acc_id,
                 "label": acc.get("label"),
+                "name": acc.get("name"),
+                "picture": acc.get("picture"),
                 "email": acc.get("email"),
                 "added_at": acc.get("added_at"),
                 "proxy": acc.get("proxy"),

@@ -122,72 +122,73 @@ export function PoolPage() {
   };
 
   return (
-    <div className="flex flex-col flex-1 h-full p-8 overflow-auto">
-      <div className="flex items-center justify-between mb-6">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight">Account Pool</h1>
-          <p className="text-sm text-muted-foreground mt-1">
-            Google Antigravity accounts connected for automatic rotation and quota sharing.
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
-          <Button
-            onClick={refreshAllQuotas}
-            disabled={loading || refreshingQuotas}
-            variant="outline"
-            size="sm"
-            className="gap-2"
-            title="Force query Google API to refresh remaining quota limits for all accounts"
-          >
-            <Gauge className={`w-4 h-4 ${refreshingQuotas ? 'animate-spin' : ''}`} />
-            Refresh Quotas
-          </Button>
-          <Button onClick={refresh} disabled={loading} variant="outline" size="sm" className="gap-2">
-            <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
-            Refresh
-          </Button>
-        </div>
-      </div>
-
-      <div className="border rounded-xl p-5 bg-card mb-6 space-y-4">
-        <h2 className="text-sm font-semibold tracking-wide flex items-center gap-2">
-          <UserPlus className="w-4 h-4 text-primary" />
-          Add Account via Google OAuth
-        </h2>
-
-        <div className="grid grid-cols-1 md:grid-cols-12 gap-3 items-end">
-          <div className="md:col-span-4">
-            <label className="text-xs text-muted-foreground uppercase tracking-wide">
-              Account Label (optional)
-            </label>
-            <Input
-              value={label}
-              onChange={(e) => setLabel(e.target.value)}
-              placeholder="e.g. personal, work-2"
-              className="mt-1"
-            />
+    <div className="flex-1 p-8 overflow-auto">
+      <div className="max-w-7xl mx-auto w-full space-y-6">
+        <div className="flex items-center justify-between">
+          <div>
+            <h1 className="text-2xl font-semibold tracking-tight">Account Pool</h1>
+            <p className="text-sm text-muted-foreground mt-1">
+              Google Antigravity accounts connected for automatic rotation and quota sharing.
+            </p>
           </div>
-          <div className="md:col-span-5">
-            <label className="text-xs text-muted-foreground uppercase tracking-wide">
-              Proxy (optional)
-            </label>
-            <Input
-              value={proxy}
-              onChange={(e) => setProxy(e.target.value)}
-              placeholder="http://user:pass@host:port"
-              className="mt-1"
-            />
-          </div>
-          <div className="md:col-span-3">
+          <div className="flex items-center gap-2">
             <Button
-              onClick={() => startOAuth()}
-              disabled={generatingUrl}
-              className="w-full gap-2"
+              onClick={refreshAllQuotas}
+              disabled={loading || refreshingQuotas}
+              variant="outline"
+              size="sm"
+              className="gap-2 cursor-pointer"
+              title="Force query Google API to refresh remaining quota limits for all accounts"
             >
-              {generatingUrl ? 'Generating...' : authUrl ? 'Regenerate Link' : 'Generate Login Link'}
+              <Gauge className={`w-4 h-4 ${refreshingQuotas ? 'animate-spin' : ''}`} />
+              Refresh Quotas
+            </Button>
+            <Button onClick={refresh} disabled={loading} variant="outline" size="sm" className="gap-2 cursor-pointer">
+              <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
+              Refresh
             </Button>
           </div>
         </div>
+
+        <div className="border border-border/80 rounded-xl p-5 bg-card space-y-4 shadow-xs">
+          <h2 className="text-sm font-semibold tracking-wide flex items-center gap-2">
+            <UserPlus className="w-4 h-4 text-primary" />
+            Add Account via Google OAuth
+          </h2>
+
+          <div className="grid grid-cols-1 md:grid-cols-12 gap-3 items-end">
+            <div className="md:col-span-4">
+              <label className="text-xs text-muted-foreground uppercase tracking-wide font-medium">
+                Account Label (optional)
+              </label>
+              <Input
+                value={label}
+                onChange={(e) => setLabel(e.target.value)}
+                placeholder="e.g. personal, work-2"
+                className="mt-1"
+              />
+            </div>
+            <div className="md:col-span-5">
+              <label className="text-xs text-muted-foreground uppercase tracking-wide font-medium">
+                Proxy (optional)
+              </label>
+              <Input
+                value={proxy}
+                onChange={(e) => setProxy(e.target.value)}
+                placeholder="http://user:pass@host:port"
+                className="mt-1"
+              />
+            </div>
+            <div className="md:col-span-3">
+              <Button
+                onClick={() => startOAuth()}
+                disabled={generatingUrl}
+                className="w-full gap-2 font-medium cursor-pointer"
+              >
+                {generatingUrl ? 'Generating...' : authUrl ? 'Regenerate Link' : 'Generate Login Link'}
+              </Button>
+            </div>
+          </div>
 
         {authUrl && (
           <div className="space-y-4 border-t pt-4">
@@ -252,12 +253,13 @@ export function PoolPage() {
         )}
       </div>
 
-      <AccountsTable
-        accounts={accounts}
-        poolEnabled={poolEnabled}
-        onChanged={refresh}
-        onRelogin={handleRelogin}
-      />
+        <AccountsTable
+          accounts={accounts}
+          poolEnabled={poolEnabled}
+          onChanged={refresh}
+          onRelogin={handleRelogin}
+        />
+      </div>
     </div>
   );
 }
