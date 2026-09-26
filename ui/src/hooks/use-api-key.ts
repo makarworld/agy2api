@@ -2,11 +2,11 @@ import { useState, useEffect } from 'react';
 
 export function useApiKey() {
   const [apiKey, setApiKey] = useState<string>(() => {
-    return localStorage.getItem('AGY_API_KEY') || localStorage.getItem('agy_api_key') || '';
+    return localStorage.getItem('AGY_API_KEY') || localStorage.getItem('agy_api_key') || 'agy-secret-key-12345';
   });
 
   useEffect(() => {
-    const key = localStorage.getItem('AGY_API_KEY') || localStorage.getItem('agy_api_key') || '';
+    const key = localStorage.getItem('AGY_API_KEY') || localStorage.getItem('agy_api_key') || 'agy-secret-key-12345';
     setApiKey(key);
   }, []);
 

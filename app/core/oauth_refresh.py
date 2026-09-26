@@ -94,17 +94,17 @@ def access_token_from_path(path: str) -> Optional[str]:
     return view.get("access_token")
 
 
+DEFAULT_ANTIGRAVITY_CLIENT_ID = "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com"
+DEFAULT_ANTIGRAVITY_CLIENT_SECRET = "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"
+
+
 def _client_id(_kind: CredentialKind) -> str:
-    value = os.environ.get("ANTIGRAVITY_CLIENT_ID", "").strip()
-    if not value:
-        raise RuntimeError("ANTIGRAVITY_CLIENT_ID is not set (required for OAuth refresh)")
+    value = os.environ.get("ANTIGRAVITY_CLIENT_ID", "").strip() or DEFAULT_ANTIGRAVITY_CLIENT_ID
     return value
 
 
 def _client_secret(_kind: CredentialKind) -> str:
-    value = os.environ.get("ANTIGRAVITY_CLIENT_SECRET", "").strip()
-    if not value:
-        raise RuntimeError("ANTIGRAVITY_CLIENT_SECRET is not set (required for OAuth refresh)")
+    value = os.environ.get("ANTIGRAVITY_CLIENT_SECRET", "").strip() or DEFAULT_ANTIGRAVITY_CLIENT_SECRET
     return value
 
 

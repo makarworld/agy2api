@@ -2,6 +2,7 @@ import logging
 import json
 import os
 import re
+import sys
 from typing import Any, Dict
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -59,6 +60,8 @@ BOOLEAN_KEYS = {
 
 
 def _env_path() -> str:
+    if getattr(sys, "frozen", False):
+        return os.path.join(os.path.dirname(sys.executable), ".env")
     return os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".env"))
 
 

@@ -60,8 +60,15 @@ _SESSION_AFFINITY: Dict[str, Tuple[str, float]] = {}
 _AFFINITY_TTL = 300.0  # 5 minutes
 
 
+DEFAULT_ANTIGRAVITY_CLIENT_ID = "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com"
+DEFAULT_ANTIGRAVITY_CLIENT_SECRET = "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"
+
+
 def pool_enabled() -> bool:
-    return os.environ.get("AGY_POOL_ENABLED", "false").strip().lower() == "true"
+    val = os.environ.get("AGY_POOL_ENABLED")
+    if val is not None:
+        return val.strip().lower() in ("true", "1", "yes")
+    return True
 
 
 def _pool_dir() -> str:
@@ -347,9 +354,7 @@ _OAUTH_FLOW_TTL = 900  # 15 min
 
 def generate_oauth_auth_url(proxy: Optional[str] = None) -> dict:
     """Generate PKCE auth URL for Antigravity Google OAuth."""
-    client_id = os.environ.get("ANTIGRAVITY_CLIENT_ID", "").strip()
-    if not client_id:
-        raise RuntimeError("ANTIGRAVITY_CLIENT_ID must be set in .env to generate OAuth URLs")
+    client_id = (os.environ.get("ANTIGRAVITY_CLIENT_ID") or "").strip() or DEFAULT_ANTIGRAVITY_CLIENT_ID
 
     # Generate PKCE verifier & challenge
     code_verifier = secrets.token_urlsafe(32)
@@ -420,10 +425,12 @@ async def complete_oauth_flow(
         raise ValueError("Missing code_verifier (expired or invalid flow_id)")
 
     redirect_uri = flow.get("redirect_uri") if flow else "https://antigravity.google/oauth-callback"
-    client_id = (flow.get("client_id") if flow else None) or os.environ.get("ANTIGRAVITY_CLIENT_ID", "").strip()
-    client_secret = os.environ.get("ANTIGRAVITY_CLIENT_SECRET", "").strip()
-    if not client_id or not client_secret:
-        raise RuntimeError("ANTIGRAVITY_CLIENT_ID and ANTIGRAVITY_CLIENT_SECRET must be set in .env")
+    client_id = (
+        (flow.get("client_id") if flow else None)
+        or (os.environ.get("ANTIGRAVITY_CLIENT_ID") or "").strip()
+        or DEFAULT_ANTIGRAVITY_CLIENT_ID
+    )
+    client_secret = (os.environ.get("ANTIGRAVITY_CLIENT_SECRET") or "").strip() or DEFAULT_ANTIGRAVITY_CLIENT_SECRET
 
     req_proxy = proxy or (flow.get("proxy") if flow else None)
     effective_proxy = get_google_proxy(req_proxy)

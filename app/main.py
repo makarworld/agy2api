@@ -2,6 +2,7 @@ import asyncio
 import logging
 import os
 import shutil
+import sys
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -140,14 +141,17 @@ async def health_check():
 
 
 # Serve UI if dist folder exists
+meipass = getattr(sys, "_MEIPASS", "")
 base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ui_candidates = [
+    os.path.join(meipass, "ui", "dist") if meipass else "",
+    os.path.join(meipass, "dist") if meipass else "",
     os.path.join(base_dir, "ui", "dist"),
     os.path.join(base_dir, "dist"),
     os.path.join(os.path.dirname(__file__), "..", "ui", "dist"),
     "/app/ui/dist",
 ]
-ui_dist = next((p for p in ui_candidates if os.path.exists(p)), ui_candidates[0])
+ui_dist = next((p for p in ui_candidates if p and os.path.exists(p)), ui_candidates[2])
 
 
 def _check_ui_access(request: Request) -> bool:
