@@ -1,0 +1,622 @@
+<!DOCTYPE html>
+<html lang="ru" class="scroll-smooth">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+  <!-- Primary Meta Tags -->
+  <title>AGY2API — OpenAI & Anthropic шлюз для Antigravity с пулом аккаунтов и Standalone EXE</title>
+  <meta name="title" content="AGY2API — OpenAI & Anthropic шлюз для Antigravity с пулом аккаунтов и Standalone EXE">
+  <meta name="description" content="Бесплатный высокопроизводительный шлюз Antigravity CLI в OpenAI & Anthropic API. Ротация пула Google аккаунтов, обход лимитов 429, поддержка Claude Code, Cursor, одиночный EXE без зависимостей и изоляция прокси.">
+  <meta name="keywords" content="agy2api, antigravity cli, gemini to openai, gemini to anthropic, claude code gemini, cursor free gemini, gemini 2.5 flash, gemini 3.8 flash, max-gem, proxy pool, llm proxy gateway, ai api proxy">
+  <meta name="author" content="makarworld">
+  <meta name="robots" content="index, follow">
+  <link rel="canonical" href="https://makarworld.github.io/agy2api/">
+
+  <!-- Open Graph / Facebook -->
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://makarworld.github.io/agy2api/">
+  <meta property="og:title" content="AGY2API — Шлюз Antigravity в OpenAI & Anthropic API">
+  <meta property="og:description" content="Подключайте неограниченное число аккаунтов Google, обходите 429 лимиты и используйте Gemini в Claude Code и Cursor. Готовый Standalone .EXE в один клик.">
+  <meta property="og:image" content="https://makarworld.github.io/agy2api/favicon.svg">
+
+  <!-- Twitter -->
+  <meta property="twitter:card" content="summary_large_image">
+  <meta property="twitter:url" content="https://makarworld.github.io/agy2api/">
+  <meta property="twitter:title" content="AGY2API — Шлюз Antigravity в OpenAI & Anthropic API">
+  <meta property="twitter:description" content="Подключайте неограниченное число аккаунтов Google, обходите 429 лимиты и используйте Gemini в Claude Code и Cursor. Готовый Standalone .EXE в один клик.">
+  <meta property="twitter:image" content="https://makarworld.github.io/agy2api/favicon.svg">
+
+  <!-- Favicon -->
+  <link rel="icon" type="image/svg+xml" href="favicon.svg">
+  <link rel="alternate icon" href="favicon.ico">
+
+  <!-- Schema.org JSON-LD -->
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "SoftwareApplication",
+    "name": "AGY2API",
+    "operatingSystem": "Windows, Linux, macOS",
+    "applicationCategory": "DeveloperApplication",
+    "offers": {
+      "@type": "Offer",
+      "price": "0",
+      "priceCurrency": "USD"
+    },
+    "description": "API Gateway and Account Pool manager converting Google Antigravity CLI to OpenAI and Anthropic compatible APIs with zero-config standalone executable.",
+    "url": "https://makarworld.github.io/agy2api/",
+    "softwareVersion": "1.1.0",
+    "author": {
+      "@type": "Person",
+      "name": "makarworld",
+      "url": "https://github.com/makarworld"
+    }
+  }
+  </script>
+
+  <!-- Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            brand: {
+              50: '#f5f2ff',
+              100: '#ede6ff',
+              200: '#dcd0ff',
+              300: '#c2aaff',
+              400: '#a375ff',
+              500: '#863bff',
+              600: '#761af5',
+              700: '#670edd',
+              800: '#560db7',
+              900: '#470d94',
+            },
+            dark: {
+              bg: '#090a0f',
+              card: '#12141c',
+              border: '#1e2230',
+              hover: '#1a1d29'
+            }
+          },
+          fontFamily: {
+            sans: ['Inter', 'system-ui', '-apple-system', 'BlinkMacSystemFont', 'Segoe UI', 'Roboto', 'sans-serif'],
+            mono: ['JetBrains Mono', 'Fira Code', 'monospace']
+          }
+        }
+      }
+    }
+  </script>
+
+  <!-- Google Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+
+  <style>
+    body {
+      background-color: #08090d;
+      color: #e2e8f0;
+      font-family: 'Inter', sans-serif;
+    }
+    .gradient-text {
+      background: linear-gradient(135deg, #a855f7 0%, #6366f1 50%, #38bdf8 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+    .gradient-border {
+      position: relative;
+      border: 1px solid transparent;
+      background-clip: padding-box;
+    }
+    .gradient-border::after {
+      position: absolute;
+      top: -1px; bottom: -1px; left: -1px; right: -1px;
+      background: linear-gradient(135deg, rgba(168, 85, 247, 0.4), rgba(99, 102, 241, 0.2), rgba(56, 189, 248, 0.1));
+      content: '';
+      z-index: -1;
+      border-radius: inherit;
+    }
+    .glow-blob {
+      position: absolute;
+      width: 500px;
+      height: 500px;
+      background: radial-gradient(circle, rgba(134, 59, 255, 0.15) 0%, rgba(99, 102, 241, 0.05) 50%, transparent 70%);
+      border-radius: 50%;
+      pointer-events: none;
+      filter: blur(40px);
+    }
+    pre, code {
+      font-family: 'JetBrains Mono', monospace;
+    }
+  </style>
+</head>
+<body class="min-h-screen flex flex-col antialiased selection:bg-brand-500 selection:text-white relative overflow-x-hidden">
+
+  <!-- Background decorative glows -->
+  <div class="glow-blob -top-40 -left-40"></div>
+  <div class="glow-blob top-1/3 -right-40"></div>
+  <div class="glow-blob bottom-1/4 left-1/3"></div>
+
+  <!-- Header -->
+  <header class="sticky top-0 z-50 backdrop-blur-md bg-dark-bg/80 border-b border-dark-border/80">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
+      <div class="flex items-center gap-3">
+        <a href="#" class="flex items-center gap-2.5 group">
+          <div class="w-8 h-8 rounded-lg bg-brand-500/10 border border-brand-500/30 flex items-center justify-center p-1 group-hover:border-brand-500 transition-colors">
+            <svg class="w-full h-full text-brand-400" viewBox="0 0 48 46" fill="currentColor">
+              <path d="M25.946 44.938c-.664.845-2.021.375-2.021-.698V33.937a2.26 2.26 0 0 0-2.262-2.262H10.287c-.92 0-1.456-1.04-.92-1.788l7.48-10.471c1.07-1.497 0-3.578-1.842-3.578H1.237c-.92 0-1.456-1.04-.92-1.788L10.013.474c.214-.297.556-.474.92-.474h28.894c.92 0 1.456 1.04.92 1.788l-7.48 10.471c-1.07 1.498 0 3.579 1.842 3.579h11.377c.943 0 1.473 1.088.89 1.83L25.947 44.94z"/>
+            </svg>
+          </div>
+          <span class="font-bold text-lg tracking-tight text-white flex items-center gap-1.5">
+            AGY2API
+            <span class="text-[10px] font-mono font-medium px-1.5 py-0.5 rounded bg-brand-500/20 text-brand-300 border border-brand-500/30">v1.1.0</span>
+          </span>
+        </a>
+      </div>
+
+      <!-- Desktop Nav -->
+      <nav class="hidden md:flex items-center gap-6 text-sm font-medium text-slate-300">
+        <a href="#features" class="hover:text-white transition-colors">Возможности</a>
+        <a href="#quickstart" class="hover:text-white transition-colors">Быстрый старт</a>
+        <a href="#integration" class="hover:text-white transition-colors">Интеграции</a>
+        <a href="#comparison" class="hover:text-white transition-colors">Сравнение</a>
+        <a href="#faq" class="hover:text-white transition-colors">FAQ</a>
+      </nav>
+
+      <!-- Action buttons -->
+      <div class="hidden sm:flex items-center gap-3">
+        <a href="https://github.com/makarworld/agy2api" target="_blank" rel="noopener" class="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-dark-card border border-dark-border hover:border-slate-600 text-slate-200 text-xs font-semibold transition-all">
+          <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path fill-rule="evenodd" clip-rule="evenodd" d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.53 1.032 1.53 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z"/></svg>
+          GitHub
+        </a>
+        <a href="https://github.com/makarworld/agy2api/releases/latest" target="_blank" rel="noopener" class="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-lg bg-gradient-to-r from-brand-600 to-indigo-600 hover:from-brand-500 hover:to-indigo-500 text-white text-xs font-semibold shadow-md shadow-brand-500/20 transition-all">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
+          Скачать .EXE
+        </a>
+      </div>
+
+      <!-- Mobile Hamburger -->
+      <button id="mobile-menu-btn" class="md:hidden p-2 rounded-lg text-slate-400 hover:text-white hover:bg-dark-card focus:outline-none">
+        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/></svg>
+      </button>
+    </div>
+
+    <!-- Mobile dropdown menu -->
+    <div id="mobile-menu" class="hidden md:hidden px-4 pt-2 pb-4 space-y-2 border-b border-dark-border bg-dark-bg/95">
+      <a href="#features" class="block px-3 py-2 rounded-md text-base font-medium text-slate-300 hover:bg-dark-card hover:text-white">Возможности</a>
+      <a href="#quickstart" class="block px-3 py-2 rounded-md text-base font-medium text-slate-300 hover:bg-dark-card hover:text-white">Быстрый старт</a>
+      <a href="#integration" class="block px-3 py-2 rounded-md text-base font-medium text-slate-300 hover:bg-dark-card hover:text-white">Интеграции</a>
+      <a href="#comparison" class="block px-3 py-2 rounded-md text-base font-medium text-slate-300 hover:bg-dark-card hover:text-white">Сравнение</a>
+      <a href="#faq" class="block px-3 py-2 rounded-md text-base font-medium text-slate-300 hover:bg-dark-card hover:text-white">FAQ</a>
+      <div class="pt-2 flex flex-col gap-2">
+        <a href="https://github.com/makarworld/agy2api/releases/latest" class="text-center px-4 py-2.5 rounded-lg bg-brand-600 text-white font-semibold text-sm">Скачать agy2api.exe</a>
+      </div>
+    </div>
+  </header>
+
+  <!-- Hero Section -->
+  <section class="relative pt-12 pb-20 md:pt-20 md:pb-28 overflow-hidden">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 relative z-10 text-center">
+
+      <!-- Release Announcement Badge -->
+      <div class="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-brand-500/10 border border-brand-500/20 text-brand-300 text-xs font-medium mb-6 backdrop-blur-sm animate-pulse">
+        <span class="w-2 h-2 rounded-full bg-emerald-400"></span>
+        Релиз v1.1.0: Standalone 1-File EXE + Изоляция пула + Clean Stream Retry
+      </div>
+
+      <!-- Main Headline -->
+      <h1 class="text-4xl sm:text-5xl lg:text-6xl font-extrabold tracking-tight text-white max-w-4xl mx-auto leading-tight sm:leading-tight">
+        Шлюз <span class="gradient-text">Google Antigravity</span> в API OpenAI и Anthropic
+      </h1>
+
+      <!-- Subtitle -->
+      <p class="mt-6 text-base sm:text-lg lg:text-xl text-slate-400 max-w-2xl mx-auto leading-relaxed">
+        Подключайте неограниченное число Google аккаунтов, обходите лимиты 429 умной ротацией и используйте скорость Gemini 2.5/3.8 Flash и Pro в <strong class="text-slate-200">Claude Code</strong>, <strong class="text-slate-200">Cursor</strong> и любых AI-агентах.
+      </p>
+
+      <!-- CTA Buttons -->
+      <div class="mt-8 flex flex-col sm:flex-row items-center justify-center gap-4">
+        <a href="https://github.com/makarworld/agy2api/releases/latest" class="w-full sm:w-auto inline-flex items-center justify-center gap-3 px-6 py-3.5 rounded-xl bg-gradient-to-r from-brand-600 via-indigo-600 to-blue-600 hover:from-brand-500 hover:to-blue-500 text-white font-bold text-sm shadow-xl shadow-brand-500/25 hover:shadow-brand-500/40 transform hover:-translate-y-0.5 transition-all">
+          <svg class="w-5 h-5" viewBox="0 0 24 24" fill="currentColor"><path d="M0 3.449L9.75 2.1v9.451H0m10.949-9.602L24 0v11.4H10.949M0 12.6h9.75v9.451L0 20.699M10.949 12.6H24V24l-12.9-1.801"/></svg>
+          Скачать agy2api.exe (v1.1.0, 33 MB)
+        </a>
+        <a href="#quickstart" class="w-full sm:w-auto inline-flex items-center justify-center gap-2 px-6 py-3.5 rounded-xl bg-dark-card border border-dark-border hover:border-slate-600 text-slate-200 font-semibold text-sm hover:bg-dark-hover transition-all">
+          <svg class="w-4 h-4 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
+          Инструкция запуска
+        </a>
+      </div>
+
+      <!-- Quick Metrics Grid -->
+      <div class="mt-14 grid grid-cols-2 md:grid-cols-4 gap-3 sm:gap-4 max-w-4xl mx-auto">
+        <div class="p-4 rounded-xl bg-dark-card/60 border border-dark-border/80 backdrop-blur-xs">
+          <div class="text-2xl sm:text-3xl font-bold text-white font-mono">0 Config</div>
+          <div class="text-xs text-slate-400 mt-1">Один клик, без .env и Python</div>
+        </div>
+        <div class="p-4 rounded-xl bg-dark-card/60 border border-dark-border/80 backdrop-blur-xs">
+          <div class="text-2xl sm:text-3xl font-bold text-emerald-400 font-mono">100% Free</div>
+          <div class="text-xs text-slate-400 mt-1">Официальные квоты Antigravity</div>
+        </div>
+        <div class="p-4 rounded-xl bg-dark-card/60 border border-dark-border/80 backdrop-blur-xs">
+          <div class="text-2xl sm:text-3xl font-bold text-brand-400 font-mono">429 Bypass</div>
+          <div class="text-xs text-slate-400 mt-1">Авто-ротация пула аккаунтов</div>
+        </div>
+        <div class="p-4 rounded-xl bg-dark-card/60 border border-dark-border/80 backdrop-blur-xs">
+          <div class="text-2xl sm:text-3xl font-bold text-sky-400 font-mono">35+ Моделей</div>
+          <div class="text-xs text-slate-400 mt-1">Gemini 2.5/3.8, Claude, Max-Gem</div>
+        </div>
+      </div>
+
+      <!-- Interactive Mock Terminal Preview -->
+      <div class="mt-12 max-w-3xl mx-auto rounded-xl overflow-hidden border border-dark-border bg-dark-card shadow-2xl text-left">
+        <div class="bg-dark-hover px-4 py-2.5 border-b border-dark-border flex items-center justify-between">
+          <div class="flex items-center gap-2">
+            <span class="w-3 h-3 rounded-full bg-red-500/80"></span>
+            <span class="w-3 h-3 rounded-full bg-amber-500/80"></span>
+            <span class="w-3 h-3 rounded-full bg-emerald-500/80"></span>
+            <span class="text-xs text-slate-400 font-mono ml-2">agy2api.exe — Command Prompt</span>
+          </div>
+          <span class="text-[11px] font-mono text-emerald-400 flex items-center gap-1.5">
+            <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span> running
+          </span>
+        </div>
+        <div class="p-4 sm:p-5 font-mono text-xs leading-relaxed overflow-x-auto space-y-1.5 text-slate-300">
+          <div class="text-slate-500">C:\Users\User\Downloads&gt; .\agy2api.exe</div>
+          <div class="text-brand-400 font-bold">============================================================</div>
+          <div class="text-white font-bold">   🚀 AGY2API Server is running!</div>
+          <div>   Web UI:   <span class="text-sky-400 underline">http://127.0.0.1:26767</span></div>
+          <div>   API Key:  <span class="text-emerald-400">agy-secret-key-12345</span></div>
+          <div>   OpenAI:   <span class="text-purple-400">http://127.0.0.1:26767/v1</span></div>
+          <div>   Claude:   <span class="text-purple-400">http://127.0.0.1:26767/anthropic/v1</span></div>
+          <div class="text-brand-400 font-bold">============================================================</div>
+          <div class="text-slate-400">Opening Web UI in your default browser...</div>
+          <div class="text-emerald-400">INFO:     Application startup complete. Uvicorn running on http://127.0.0.1:26767</div>
+        </div>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- Features Section -->
+  <section id="features" class="py-16 md:py-24 border-t border-dark-border/80 bg-dark-bg/60 relative">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+      <div class="text-center max-w-3xl mx-auto mb-16">
+        <h2 class="text-xs font-bold uppercase tracking-wider text-brand-400 mb-2">Архитектура и возможности</h2>
+        <h3 class="text-3xl sm:text-4xl font-extrabold text-white">Всё необходимое для бесперебойной работы с LLM</h3>
+        <p class="text-slate-400 mt-4 text-sm sm:text-base">Шлюз решает ключевые боли разработчиков: лимиты скорости, перегрузку квот, обрывы стримов и сложную настройку.</p>
+      </div>
+
+      <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+
+        <!-- Feature 1 -->
+        <div class="p-6 rounded-2xl bg-dark-card border border-dark-border hover:border-brand-500/40 transition-all group">
+          <div class="w-10 h-10 rounded-xl bg-brand-500/10 border border-brand-500/30 flex items-center justify-center text-brand-400 mb-4 group-hover:scale-110 transition-transform">
+            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
+          </div>
+          <h4 class="text-lg font-bold text-white mb-2">Standalone EXE (1 файл)</h4>
+          <p class="text-slate-400 text-xs leading-relaxed">
+            Скачал и запустил. Включает упакованный React Web UI, иконку, дефолтные OAuth ключи и встроенную SQLite базу данных. Никакого Node, Python или pip.
+          </p>
+        </div>
+
+        <!-- Feature 2 -->
+        <div class="p-6 rounded-2xl bg-dark-card border border-dark-border hover:border-emerald-500/40 transition-all group">
+          <div class="w-10 h-10 rounded-xl bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center text-emerald-400 mb-4 group-hover:scale-110 transition-transform">
+            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+          </div>
+          <h4 class="text-lg font-bold text-white mb-2">Умный пул аккаунтов</h4>
+          <p class="text-slate-400 text-xs leading-relaxed">
+            Подключайте десятки Google-аккаунтов в один пул. При достижении 429 лимита шлюз мгновенно и прозрачно ротирует аккаунты, суммируя их квоты.
+          </p>
+        </div>
+
+        <!-- Feature 3 -->
+        <div class="p-6 rounded-2xl bg-dark-card border border-dark-border hover:border-sky-500/40 transition-all group">
+          <div class="w-10 h-10 rounded-xl bg-sky-500/10 border border-sky-500/30 flex items-center justify-center text-sky-400 mb-4 group-hover:scale-110 transition-transform">
+            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/></svg>
+          </div>
+          <h4 class="text-lg font-bold text-white mb-2">Изоляция прокси для аккаунтов</h4>
+          <p class="text-slate-400 text-xs leading-relaxed">
+            Каждый аккаунт может иметь свой собственный HTTP/SOCKS5 прокси. Все запросы квот, refresh токенов и стриминга идут строго через его прокси без утечек.
+          </p>
+        </div>
+
+        <!-- Feature 4 -->
+        <div class="p-6 rounded-2xl bg-dark-card border border-dark-border hover:border-purple-500/40 transition-all group">
+          <div class="w-10 h-10 rounded-xl bg-purple-500/10 border border-purple-500/30 flex items-center justify-center text-purple-400 mb-4 group-hover:scale-110 transition-transform">
+            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/></svg>
+          </div>
+          <h4 class="text-lg font-bold text-white mb-2">Clean Stream Retry</h4>
+          <p class="text-slate-400 text-xs leading-relaxed">
+            Никаких сообщений с текстом «Error: Connection...» от имени модели. При сетевой ошибке стрим обрывается на уровне TCP/HTTP, заставляя Claude Code или Cursor делать чистый ретрай.
+          </p>
+        </div>
+
+        <!-- Feature 5 -->
+        <div class="p-6 rounded-2xl bg-dark-card border border-dark-border hover:border-amber-500/40 transition-all group">
+          <div class="w-10 h-10 rounded-xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-center text-amber-400 mb-4 group-hover:scale-110 transition-transform">
+            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/></svg>
+          </div>
+          <h4 class="text-lg font-bold text-white mb-2">Инспектор запросов & HAR</h4>
+          <p class="text-slate-400 text-xs leading-relaxed">
+            Полный лог активности: исходные промпты, сырые ответы Google, токены, задержка, ошибки и экспорт логов для отладки любых AI-интеграций.
+          </p>
+        </div>
+
+        <!-- Feature 6 -->
+        <div class="p-6 rounded-2xl bg-dark-card border border-dark-border hover:border-rose-500/40 transition-all group">
+          <div class="w-10 h-10 rounded-xl bg-rose-500/10 border border-rose-500/30 flex items-center justify-center text-rose-400 mb-4 group-hover:scale-110 transition-transform">
+            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z"/></svg>
+          </div>
+          <h4 class="text-lg font-bold text-white mb-2">Менеджер API-ключей</h4>
+          <p class="text-slate-400 text-xs leading-relaxed">
+            Создавайте мастер-ключи или ограниченные ключи с лимитами токенов и сроком жизни для безопасной раздачи коллегам или друзьям.
+          </p>
+        </div>
+
+      </div>
+    </div>
+  </section>
+
+  <!-- Quickstart & Integration Tabs -->
+  <section id="quickstart" class="py-16 md:py-24 border-t border-dark-border/80">
+    <div class="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8">
+      <div class="text-center mb-12">
+        <h2 class="text-xs font-bold uppercase tracking-wider text-brand-400 mb-2">Быстрый старт</h2>
+        <h3 class="text-3xl font-extrabold text-white">Интеграция в любимый инструмент за 1 минуту</h3>
+      </div>
+
+      <!-- Tab Buttons -->
+      <div class="flex flex-wrap items-center justify-center gap-2 p-1.5 rounded-xl bg-dark-card border border-dark-border max-w-xl mx-auto mb-8">
+        <button onclick="setTab('exe')" id="tab-exe" class="tab-btn px-4 py-2 rounded-lg text-xs font-bold transition-all bg-brand-600 text-white shadow-xs">Windows EXE</button>
+        <button onclick="setTab('claude')" id="tab-claude" class="tab-btn px-4 py-2 rounded-lg text-xs font-bold transition-all text-slate-400 hover:text-white">Claude Code</button>
+        <button onclick="setTab('cursor')" id="tab-cursor" class="tab-btn px-4 py-2 rounded-lg text-xs font-bold transition-all text-slate-400 hover:text-white">Cursor</button>
+        <button onclick="setTab('curl')" id="tab-curl" class="tab-btn px-4 py-2 rounded-lg text-xs font-bold transition-all text-slate-400 hover:text-white">cURL / Python</button>
+      </div>
+
+      <!-- Tab Contents -->
+      <div class="rounded-2xl border border-dark-border bg-dark-card p-6 shadow-xl">
+
+        <!-- Tab: EXE -->
+        <div id="content-exe" class="tab-content space-y-4">
+          <h4 class="text-lg font-bold text-white flex items-center gap-2">
+            <span class="w-2 h-2 rounded-full bg-brand-400"></span> Запуск Standalone .EXE
+          </h4>
+          <ol class="list-decimal list-inside space-y-2.5 text-sm text-slate-300">
+            <li>Скачайте файл <strong class="text-brand-300">agy2api.exe</strong> со страницы <a href="https://github.com/makarworld/agy2api/releases/latest" class="underline text-sky-400">последнего релиза</a>.</li>
+            <li>Запустите файл двойным кликом — в браузере автоматически откроется веб-панель управления <code class="px-2 py-0.5 rounded bg-dark-bg text-emerald-400 font-mono">http://127.0.0.1:26767</code>.</li>
+            <li>Нажмите <strong>«Добавить аккаунт»</strong> в веб-панели и авторизуйте один или несколько Google-аккаунтов.</li>
+            <li>Готово! Шлюз запущен и принимает запросы на портах OpenAI и Anthropic API.</li>
+          </ol>
+        </div>
+
+        <!-- Tab: Claude Code -->
+        <div id="content-claude" class="tab-content hidden space-y-4">
+          <h4 class="text-lg font-bold text-white flex items-center gap-2">
+            <span class="w-2 h-2 rounded-full bg-amber-400"></span> Использование с официальным Claude Code (CLI)
+          </h4>
+          <p class="text-sm text-slate-300">Настройте переменные окружения терминала для работы Claude Code через шлюз:</p>
+          <div class="p-4 rounded-xl bg-dark-bg border border-dark-border font-mono text-xs text-slate-200 overflow-x-auto space-y-2">
+            <div class="text-slate-400"># Windows (PowerShell):</div>
+            <div>$env:ANTHROPIC_BASE_URL="http://127.0.0.1:26767/anthropic"</div>
+            <div>$env:ANTHROPIC_API_KEY="agy-secret-key-12345"</div>
+            <div>claude --dangerously-skip-permissions</div>
+            <div class="text-slate-400 pt-2"># Linux / macOS (Bash):</div>
+            <div>export ANTHROPIC_BASE_URL="http://127.0.0.1:26767/anthropic"</div>
+            <div>export ANTHROPIC_API_KEY="agy-secret-key-12345"</div>
+            <div>claude --dangerously-skip-permissions</div>
+          </div>
+        </div>
+
+        <!-- Tab: Cursor -->
+        <div id="content-cursor" class="tab-content hidden space-y-4">
+          <h4 class="text-lg font-bold text-white flex items-center gap-2">
+            <span class="w-2 h-2 rounded-full bg-sky-400"></span> Подключение в Cursor IDE
+          </h4>
+          <p class="text-sm text-slate-300">Перейдите в <strong>Cursor Settings &gt; Models &gt; OpenAI API Key</strong>:</p>
+          <div class="p-4 rounded-xl bg-dark-bg border border-dark-border font-mono text-xs text-slate-200 space-y-2">
+            <div><strong>Base URL:</strong> <span class="text-sky-400">http://127.0.0.1:26767/v1</span></div>
+            <div><strong>API Key:</strong> <span class="text-emerald-400">agy-secret-key-12345</span></div>
+            <div><strong>Available Models:</strong> <span class="text-slate-400">gemini-2.5-flash, gemini-3.8-flash, max-gem, claude-3-5-sonnet</span></div>
+          </div>
+        </div>
+
+        <!-- Tab: cURL -->
+        <div id="content-curl" class="tab-content hidden space-y-4">
+          <h4 class="text-lg font-bold text-white flex items-center gap-2">
+            <span class="w-2 h-2 rounded-full bg-emerald-400"></span> Проверка запроса через cURL
+          </h4>
+          <div class="p-4 rounded-xl bg-dark-bg border border-dark-border font-mono text-xs text-slate-200 overflow-x-auto">
+<pre>curl -X POST http://127.0.0.1:26767/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer agy-secret-key-12345" \
+  -d '{
+    "model": "gemini-2.5-flash",
+    "messages": [{"role": "user", "content": "Привет, AGY2API!"}],
+    "stream": true
+  }'</pre>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </section>
+
+  <!-- Comparison Section -->
+  <section id="comparison" class="py-16 md:py-24 border-t border-dark-border/80 bg-dark-bg/60">
+    <div class="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8">
+      <div class="text-center mb-12">
+        <h2 class="text-xs font-bold uppercase tracking-wider text-brand-400 mb-2">Сравнение решений</h2>
+        <h3 class="text-3xl font-extrabold text-white">Почему разработчики выбирают AGY2API</h3>
+      </div>
+
+      <div class="overflow-x-auto rounded-2xl border border-dark-border bg-dark-card shadow-xl">
+        <table class="w-full text-left text-xs sm:text-sm">
+          <thead class="bg-dark-hover text-slate-300 font-semibold border-b border-dark-border">
+            <tr>
+              <th class="py-3.5 px-4 sm:px-6">Возможность</th>
+              <th class="py-3.5 px-4 text-center">Обычный Antigravity</th>
+              <th class="py-3.5 px-4 text-center">Аналогичные шлюзы</th>
+              <th class="py-3.5 px-4 text-center text-brand-400 font-bold bg-brand-500/10 border-x border-brand-500/20">AGY2API</th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-dark-border/60 text-slate-300">
+            <tr>
+              <td class="py-3 px-4 sm:px-6 font-medium text-white">Автономный 1-File EXE</td>
+              <td class="py-3 px-4 text-center text-red-400">❌ Нет</td>
+              <td class="py-3 px-4 text-center text-red-400">❌ Нужен Python/Node</td>
+              <td class="py-3 px-4 text-center text-emerald-400 font-bold bg-brand-500/5 border-x border-brand-500/20">✅ Да (33 MB)</td>
+            </tr>
+            <tr>
+              <td class="py-3 px-4 sm:px-6 font-medium text-white">Пул аккаунтов и ротация 429</td>
+              <td class="py-3 px-4 text-center text-red-400">❌ 1 аккаунт</td>
+              <td class="py-3 px-4 text-center text-amber-400">⚠️ Базовая</td>
+              <td class="py-3 px-4 text-center text-emerald-400 font-bold bg-brand-500/5 border-x border-brand-500/20">✅ Неограниченно</td>
+            </tr>
+            <tr>
+              <td class="py-3 px-4 sm:px-6 font-medium text-white">Изоляция прокси per-account</td>
+              <td class="py-3 px-4 text-center text-red-400">❌ Нет</td>
+              <td class="py-3 px-4 text-center text-red-400">❌ Только глобальный</td>
+              <td class="py-3 px-4 text-center text-emerald-400 font-bold bg-brand-500/5 border-x border-brand-500/20">✅ Строгая изоляция</td>
+            </tr>
+            <tr>
+              <td class="py-3 px-4 sm:px-6 font-medium text-white">Чистый обрыв стрима (Clean Retry)</td>
+              <td class="py-3 px-4 text-center text-red-400">❌ Ошибки в чате</td>
+              <td class="py-3 px-4 text-center text-red-400">❌ Шлет Error: ...</td>
+              <td class="py-3 px-4 text-center text-emerald-400 font-bold bg-brand-500/5 border-x border-brand-500/20">✅ Auto-Retry агентов</td>
+            </tr>
+            <tr>
+              <td class="py-3 px-4 sm:px-6 font-medium text-white">Встроенный Web UI дашборд</td>
+              <td class="py-3 px-4 text-center text-red-400">❌ CLI only</td>
+              <td class="py-3 px-4 text-center text-amber-400">⚠️ Сторонний</td>
+              <td class="py-3 px-4 text-center text-emerald-400 font-bold bg-brand-500/5 border-x border-brand-500/20">✅ Встроенный React UI</td>
+            </tr>
+            <tr>
+              <td class="py-3 px-4 sm:px-6 font-medium text-white">Совместимость с Claude Code</td>
+              <td class="py-3 px-4 text-center text-red-400">❌ Нет</td>
+              <td class="py-3 px-4 text-center text-amber-400">⚠️ Частичная</td>
+              <td class="py-3 px-4 text-center text-emerald-400 font-bold bg-brand-500/5 border-x border-brand-500/20">✅ Полная (Tools & SSE)</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- FAQ Accordion -->
+  <section id="faq" class="py-16 md:py-24 border-t border-dark-border/80">
+    <div class="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8">
+      <div class="text-center mb-12">
+        <h2 class="text-xs font-bold uppercase tracking-wider text-brand-400 mb-2">Вопросы и ответы</h2>
+        <h3 class="text-3xl font-extrabold text-white">Часто задаваемые вопросы</h3>
+      </div>
+
+      <div class="space-y-3.5">
+
+        <details class="group rounded-xl border border-dark-border bg-dark-card p-4 [&_summary::-webkit-details-marker]:hidden">
+          <summary class="flex items-center justify-between cursor-pointer font-semibold text-sm sm:text-base text-white">
+            Нужна ли платная подписка Google AI Studio или Google Cloud?
+            <span class="text-brand-400 transition-transform duration-200 group-open:rotate-180">▼</span>
+          </summary>
+          <p class="mt-3 text-xs sm:text-sm text-slate-400 leading-relaxed">
+            Нет! AGY2API использует официальные бесплатные квоты, выделяемые для Antigravity CLI. Вы можете использовать стандартные бесплатные аккаунты Google без привязки банковских карт.
+          </p>
+        </details>
+
+        <details class="group rounded-xl border border-dark-border bg-dark-card p-4 [&_summary::-webkit-details-marker]:hidden">
+          <summary class="flex items-center justify-between cursor-pointer font-semibold text-sm sm:text-base text-white">
+            Как работает автоматический обход лимитов (429 Rate Limit)?
+            <span class="text-brand-400 transition-transform duration-200 group-open:rotate-180">▼</span>
+          </summary>
+          <p class="mt-3 text-xs sm:text-sm text-slate-400 leading-relaxed">
+            Когда аккаунт временно исчерпывает 5-часовой или недельный лимит запросов, шлюз помечает его статус как cooldown до момента сброса квоты Google и автоматически переключает запросы на следующий активный аккаунт из пула без прерывания пользовательской сессии.
+          </p>
+        </details>
+
+        <details class="group rounded-xl border border-dark-border bg-dark-card p-4 [&_summary::-webkit-details-marker]:hidden">
+          <summary class="flex items-center justify-between cursor-pointer font-semibold text-sm sm:text-base text-white">
+            Безопасно ли хранятся токены аккаунтов?
+            <span class="text-brand-400 transition-transform duration-200 group-open:rotate-180">▼</span>
+          </summary>
+          <p class="mt-3 text-xs sm:text-sm text-slate-400 leading-relaxed">
+            Да. Токены хранятся исключительно локально на вашем компьютере в изолированной базе SQLite (<code class="text-emerald-400">data/stats.db</code>) и файле манифеста. Данные никогда не отправляются на сторонние серверы.
+          </p>
+        </details>
+
+        <details class="group rounded-xl border border-dark-border bg-dark-card p-4 [&_summary::-webkit-details-marker]:hidden">
+          <summary class="flex items-center justify-between cursor-pointer font-semibold text-sm sm:text-base text-white">
+            Можно ли использовать свои прокси для разных аккаунтов?
+            <span class="text-brand-400 transition-transform duration-200 group-open:rotate-180">▼</span>
+          </summary>
+          <p class="mt-3 text-xs sm:text-sm text-slate-400 leading-relaxed">
+            Да, в веб-интерфейсе для каждого аккаунта есть иконка редактирования прокси. Вы можете привязать индивидуальный HTTP или SOCKS5 прокси (с логином и паролем) к каждому аккаунту отдельно.
+          </p>
+        </details>
+
+      </div>
+    </div>
+  </section>
+
+  <!-- CTA Banner -->
+  <section class="py-16 md:py-20 border-t border-dark-border relative overflow-hidden bg-gradient-to-b from-dark-bg to-brand-950/20">
+    <div class="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 text-center relative z-10">
+      <h3 class="text-3xl sm:text-4xl font-extrabold text-white mb-4">Начните работу прямо сейчас</h3>
+      <p class="text-slate-400 text-sm sm:text-base max-w-xl mx-auto mb-8">Скачайте автономный исполняемый файл для Windows или разверните сервер в Docker за считанные минуты.</p>
+      <div class="flex flex-col sm:flex-row items-center justify-center gap-4">
+        <a href="https://github.com/makarworld/agy2api/releases/latest" class="w-full sm:w-auto px-6 py-3.5 rounded-xl bg-white text-slate-900 font-bold text-sm hover:bg-slate-100 transition-colors shadow-lg">
+          Скачать agy2api.exe (v1.1.0)
+        </a>
+        <a href="https://github.com/makarworld/agy2api" target="_blank" rel="noopener" class="w-full sm:w-auto px-6 py-3.5 rounded-xl bg-dark-card border border-dark-border text-white font-semibold text-sm hover:border-slate-500 transition-colors">
+          Исходный код на GitHub
+        </a>
+      </div>
+    </div>
+  </section>
+
+  <!-- Footer -->
+  <footer class="border-t border-dark-border py-8 text-center text-xs text-slate-500 bg-dark-bg">
+    <div class="max-w-7xl mx-auto px-4 flex flex-col sm:flex-row items-center justify-between gap-4">
+      <div>© 2026 AGY2API. Open Source проект под лицензией MIT.</div>
+      <div class="flex items-center gap-4">
+        <a href="https://github.com/makarworld/agy2api/releases" class="hover:text-slate-400 transition-colors">Релизы</a>
+        <a href="https://github.com/makarworld/agy2api/issues" class="hover:text-slate-400 transition-colors">Issues</a>
+        <a href="https://github.com/makarworld/agy2api#readme" class="hover:text-slate-400 transition-colors">Документация</a>
+      </div>
+    </div>
+  </footer>
+
+  <script>
+    // Tab Switching
+    function setTab(tabId) {
+      document.querySelectorAll('.tab-btn').forEach(btn => {
+        btn.classList.remove('bg-brand-600', 'text-white', 'shadow-xs');
+        btn.classList.add('text-slate-400');
+      });
+      document.querySelectorAll('.tab-content').forEach(content => {
+        content.classList.add('hidden');
+      });
+
+      const activeBtn = document.getElementById('tab-' + tabId);
+      const activeContent = document.getElementById('content-' + tabId);
+
+      if (activeBtn && activeContent) {
+        activeBtn.classList.add('bg-brand-600', 'text-white', 'shadow-xs');
+        activeBtn.classList.remove('text-slate-400');
+        activeContent.classList.remove('hidden');
+      }
+    }
+
+    // Mobile Menu Toggle
+    const mobileBtn = document.getElementById('mobile-menu-btn');
+    const mobileMenu = document.getElementById('mobile-menu');
+    if (mobileBtn && mobileMenu) {
+      mobileBtn.addEventListener('click', () => {
+        mobileMenu.classList.toggle('hidden');
+      });
+    }
+  </script>
+</body>
+</html>
