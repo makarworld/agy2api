@@ -10,9 +10,9 @@ load_dotenv()
 
 security = HTTPBearer(auto_error=False)
 
-API_KEY = os.environ.get("AGY_API_KEY", "sk-dummy")
+API_KEY = os.environ.get("AGY_API_KEY", "")
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_COMPAT_API_KEY", API_KEY)
-ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", os.environ.get("AGY_ADMIN_PASSWORD", API_KEY))
+ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", os.environ.get("AGY_ADMIN_PASSWORD", ""))
 
 
 def get_api_key(

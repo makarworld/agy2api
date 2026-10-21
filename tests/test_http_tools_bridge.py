@@ -4,6 +4,7 @@ import unittest
 from unittest import mock
 
 from app.core.http_tools_bridge import (
+    SKIP_THOUGHT_SIGNATURE_VALIDATOR,
     anthropic_tools_to_gemini,
     decode_tool_id,
     encode_tool_id,
@@ -299,6 +300,22 @@ class TestHttpToolsBridge(unittest.TestCase):
         self.assertEqual(part["functionCall"]["name"], "Bash")
         self.assertEqual(part["functionCall"]["id"], "abc")
         self.assertEqual(part["thoughtSignature"], "sig")
+
+    def test_claude_tool_history_gets_skip_thought_signature(self):
+        """Claude/Cursor tool_use ids have no Gemini thoughtSignature — inject bypass."""
+        messages = [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {"id": "toolu_01AgentCall", "name": "Agent", "input": {"description": "plan"}},
+                ],
+            }
+        ]
+        contents = messages_to_gemini_contents(messages)
+        part = contents[0]["parts"][0]
+        self.assertEqual(part["functionCall"]["name"], "Agent")
+        self.assertEqual(part["thoughtSignature"], SKIP_THOUGHT_SIGNATURE_VALIDATOR)
 
     def test_extract_function_call_from_response(self):
         obj = {

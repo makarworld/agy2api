@@ -1,4 +1,5 @@
 import asyncio
+import json
 import os
 import sqlite3
 import time
@@ -116,8 +117,27 @@ CREATE TABLE IF NOT EXISTS pool_account_state (
     last_used_ts REAL,
     total_requests INTEGER NOT NULL DEFAULT 0,
     total_prompt_tokens INTEGER NOT NULL DEFAULT 0,
-    total_completion_tokens INTEGER NOT NULL DEFAULT 0
+    total_completion_tokens INTEGER NOT NULL DEFAULT 0,
+    cached_quota_json TEXT,
+    last_quota_check_ts REAL
 );
+
+CREATE TABLE IF NOT EXISTS account_quota_cycles (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    account_id TEXT NOT NULL,
+    cycle_start_ts REAL NOT NULL,
+    cycle_end_ts REAL,
+    initial_fraction REAL NOT NULL DEFAULT 1.0,
+    current_fraction REAL NOT NULL DEFAULT 1.0,
+    fraction_spent REAL NOT NULL DEFAULT 0.0,
+    total_prompt_tokens INTEGER NOT NULL DEFAULT 0,
+    total_completion_tokens INTEGER NOT NULL DEFAULT 0,
+    total_requests INTEGER NOT NULL DEFAULT 0,
+    model_stats TEXT NOT NULL DEFAULT '{}',
+    is_active INTEGER NOT NULL DEFAULT 1
+);
+CREATE INDEX IF NOT EXISTS idx_quota_cycles_acc ON account_quota_cycles(account_id);
+CREATE INDEX IF NOT EXISTS idx_quota_cycles_active ON account_quota_cycles(account_id, is_active);
 
 CREATE TABLE IF NOT EXISTS pool_runtime (
     id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -163,6 +183,15 @@ def init_db(db_path: str = None) -> None:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_requests_account ON requests(pool_account)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_requests_model ON requests(model)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_requests_chat_id ON requests(chat_id)")
+
+        existing_pas_cols = {row[1] for row in conn.execute("PRAGMA table_info(pool_account_state)").fetchall()}
+        for col_name, col_type in [
+            ("cached_quota_json", "TEXT"),
+            ("last_quota_check_ts", "REAL"),
+        ]:
+            if col_name not in existing_pas_cols:
+                conn.execute(f"ALTER TABLE pool_account_state ADD COLUMN {col_name} {col_type}")
+
         conn.commit()
     finally:
         conn.close()
@@ -239,6 +268,30 @@ def _record_request_sync(
                 "total_completion_tokens=total_completion_tokens+excluded.total_completion_tokens",
                 (pool_account, time.time(), prompt_tokens, completion_tokens),
             )
+            # Update active 5h quota cycle for this account if one exists
+            cycle_row = conn.execute(
+                "SELECT id, model_stats FROM account_quota_cycles WHERE account_id=? AND is_active=1 ORDER BY id DESC LIMIT 1",
+                (pool_account,),
+            ).fetchone()
+            if cycle_row:
+                try:
+                    m_stats = json.loads(cycle_row["model_stats"] or "{}")
+                except Exception:
+                    m_stats = {}
+                m_key = model or "unknown"
+                cur_m = m_stats.setdefault(m_key, {"requests": 0, "prompt_tokens": 0, "completion_tokens": 0})
+                cur_m["requests"] = cur_m.get("requests", 0) + 1
+                cur_m["prompt_tokens"] = cur_m.get("prompt_tokens", 0) + prompt_tokens
+                cur_m["completion_tokens"] = cur_m.get("completion_tokens", 0) + completion_tokens
+
+                conn.execute(
+                    "UPDATE account_quota_cycles SET "
+                    "total_prompt_tokens=total_prompt_tokens+?, "
+                    "total_completion_tokens=total_completion_tokens+?, "
+                    "total_requests=total_requests+1, "
+                    "model_stats=? WHERE id=?",
+                    (prompt_tokens, completion_tokens, json.dumps(m_stats), cycle_row["id"]),
+                )
         conn.commit()
     finally:
         conn.close()
@@ -778,6 +831,9 @@ def _upsert_pool_account_state_sync(account_id: str, **fields):
         conn.close()
 
 
+upsert_pool_account_state_sync = _upsert_pool_account_state_sync
+
+
 async def upsert_pool_account_state(account_id: str, **fields) -> None:
     await asyncio.to_thread(_upsert_pool_account_state_sync, account_id, **fields)
 
@@ -789,6 +845,9 @@ def _get_pool_account_state_sync(account_id: str) -> Optional[dict]:
         return dict(row) if row else None
     finally:
         conn.close()
+
+
+get_pool_account_state_sync = _get_pool_account_state_sync
 
 
 async def get_pool_account_state(account_id: str) -> Optional[dict]:
@@ -836,3 +895,233 @@ def _set_active_account_id_sync(account_id: Optional[str]):
 
 async def set_active_account_id_db(account_id: Optional[str]) -> None:
     await asyncio.to_thread(_set_active_account_id_sync, account_id)
+
+
+# ---- cached quota persistence & 5h quota cycles -----------------------------
+
+
+def save_cached_account_quota_sync(account_id: str, quota_data: dict, check_ts: Optional[float] = None) -> None:
+    conn = _conn()
+    ts = check_ts if check_ts is not None else time.time()
+    try:
+        quota_str = json.dumps(quota_data)
+        conn.execute(
+            "INSERT INTO pool_account_state (account_id, cached_quota_json, last_quota_check_ts) "
+            "VALUES (?, ?, ?) ON CONFLICT(account_id) DO UPDATE SET "
+            "cached_quota_json=excluded.cached_quota_json, "
+            "last_quota_check_ts=excluded.last_quota_check_ts",
+            (account_id, quota_str, ts),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    on_quota_updated_sync(account_id, quota_data)
+
+
+async def save_cached_account_quota(account_id: str, quota_data: dict, check_ts: Optional[float] = None) -> None:
+    await asyncio.to_thread(save_cached_account_quota_sync, account_id, quota_data, check_ts)
+
+
+def get_cached_account_quota_db_sync(account_id: str) -> Optional[dict]:
+    conn = _conn()
+    try:
+        row = conn.execute(
+            "SELECT cached_quota_json FROM pool_account_state WHERE account_id=?",
+            (account_id,),
+        ).fetchone()
+        if row and row["cached_quota_json"]:
+            return json.loads(row["cached_quota_json"])
+        return None
+    except Exception:
+        return None
+    finally:
+        conn.close()
+
+
+async def get_cached_account_quota_db(account_id: str) -> Optional[dict]:
+    return await asyncio.to_thread(get_cached_account_quota_db_sync, account_id)
+
+
+def load_all_cached_quotas_sync() -> Dict[str, dict]:
+    conn = _conn()
+    try:
+        rows = conn.execute(
+            "SELECT account_id, cached_quota_json FROM pool_account_state WHERE cached_quota_json IS NOT NULL"
+        ).fetchall()
+        result = {}
+        for r in rows:
+            try:
+                result[r["account_id"]] = json.loads(r["cached_quota_json"])
+            except Exception:
+                pass
+        return result
+    finally:
+        conn.close()
+
+
+async def load_all_cached_quotas() -> Dict[str, dict]:
+    return await asyncio.to_thread(load_all_cached_quotas_sync)
+
+
+def on_quota_updated_sync(account_id: str, quota_data: dict) -> None:
+    """Updates 5h quota cycle: tracks fraction spent, closes cycle on reset to 100%, or opens new cycle."""
+    if not account_id or not isinstance(quota_data, dict):
+        return
+
+    vals_5h = [
+        v
+        for v in [quota_data.get("gemini_5h"), quota_data.get("claude_5h")]
+        if v is not None and isinstance(v, (int, float))
+    ]
+    min_5h = min(vals_5h) if vals_5h else 1.0
+
+    conn = _conn()
+    try:
+        now = time.time()
+        active = conn.execute(
+            "SELECT * FROM account_quota_cycles WHERE account_id=? AND is_active=1 ORDER BY id DESC LIMIT 1",
+            (account_id,),
+        ).fetchone()
+
+        if min_5h >= 0.999:
+            # 100% quota
+            if active:
+                # If active cycle had usage or spent quota, complete it and start a new cycle
+                if active["total_requests"] > 0 or active["fraction_spent"] > 0:
+                    conn.execute(
+                        "UPDATE account_quota_cycles SET is_active=0, cycle_end_ts=? WHERE id=?",
+                        (now, active["id"]),
+                    )
+                    conn.execute(
+                        "INSERT INTO account_quota_cycles (account_id, cycle_start_ts, initial_fraction, "
+                        "current_fraction, fraction_spent, is_active) VALUES (?, ?, 1.0, 1.0, 0.0, 1)",
+                        (account_id, now),
+                    )
+            else:
+                conn.execute(
+                    "INSERT INTO account_quota_cycles (account_id, cycle_start_ts, initial_fraction, "
+                    "current_fraction, fraction_spent, is_active) VALUES (?, ?, 1.0, 1.0, 0.0, 1)",
+                    (account_id, now),
+                )
+        else:
+            # < 100%
+            fraction_spent = round(max(0.0, 1.0 - min_5h), 4)
+            if active:
+                new_spent = round(max(active["fraction_spent"], fraction_spent), 4)
+                conn.execute(
+                    "UPDATE account_quota_cycles SET current_fraction=?, fraction_spent=? WHERE id=?",
+                    (min_5h, new_spent, active["id"]),
+                )
+            else:
+                conn.execute(
+                    "INSERT INTO account_quota_cycles (account_id, cycle_start_ts, initial_fraction, "
+                    "current_fraction, fraction_spent, is_active) VALUES (?, ?, ?, ?, ?, 1)",
+                    (account_id, now, min_5h, min_5h, fraction_spent),
+                )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+async def on_quota_updated(account_id: str, quota_data: dict) -> None:
+    await asyncio.to_thread(on_quota_updated_sync, account_id, quota_data)
+
+
+def get_account_active_cycle_sync(account_id: str) -> Optional[dict]:
+    conn = _conn()
+    try:
+        row = conn.execute(
+            "SELECT * FROM account_quota_cycles WHERE account_id=? AND is_active=1 ORDER BY id DESC LIMIT 1",
+            (account_id,),
+        ).fetchone()
+        if not row:
+            return None
+        res = dict(row)
+        try:
+            res["model_stats"] = json.loads(res.get("model_stats") or "{}")
+        except Exception:
+            res["model_stats"] = {}
+        return res
+    finally:
+        conn.close()
+
+
+async def get_account_active_cycle(account_id: str) -> Optional[dict]:
+    return await asyncio.to_thread(get_account_active_cycle_sync, account_id)
+
+
+def get_account_quota_cycles_sync(account_id: str, limit: int = 20) -> list:
+    conn = _conn()
+    try:
+        rows = conn.execute(
+            "SELECT * FROM account_quota_cycles WHERE account_id=? ORDER BY id DESC LIMIT ?",
+            (account_id, limit),
+        ).fetchall()
+        result = []
+        for r in rows:
+            d = dict(r)
+            try:
+                d["model_stats"] = json.loads(d.get("model_stats") or "{}")
+            except Exception:
+                d["model_stats"] = {}
+            result.append(d)
+        return result
+    finally:
+        conn.close()
+
+
+async def get_account_quota_cycles(account_id: str, limit: int = 20) -> list:
+    return await asyncio.to_thread(get_account_quota_cycles_sync, account_id, limit)
+
+
+# ---- chat turns pruning (retention limit) -------------------------------------
+
+
+def prune_chat_turns_sync(max_turns_to_keep: Optional[int] = None) -> int:
+    """
+    Clears prompt_preview, response_preview, raw_request, raw_response for turns older
+    than max_turns_to_keep (default from AGY_CHAT_TURNS_RETENTION or 1000).
+    Row count, chat turns count, and token totals remain 100% intact.
+    """
+    if max_turns_to_keep is None:
+        try:
+            max_turns_to_keep = int(os.environ.get("AGY_CHAT_TURNS_RETENTION", "1000"))
+        except ValueError:
+            max_turns_to_keep = 1000
+
+    if max_turns_to_keep <= 0:
+        return 0
+
+    conn = _conn()
+    try:
+        row = conn.execute(
+            "SELECT id FROM requests ORDER BY id DESC LIMIT 1 OFFSET ?",
+            (max_turns_to_keep - 1,),
+        ).fetchone()
+        if not row:
+            return 0
+        threshold_id = row["id"]
+
+        cur = conn.execute(
+            "UPDATE requests SET "
+            "prompt_preview = CASE WHEN prompt_preview IS NOT NULL AND prompt_preview != '[Turn payload pruned]' THEN '[Turn payload pruned]' ELSE prompt_preview END, "
+            "response_preview = CASE WHEN response_preview IS NOT NULL AND response_preview != '[Turn payload pruned]' THEN '[Turn payload pruned]' ELSE response_preview END, "
+            "raw_request = NULL, "
+            "raw_response = NULL "
+            "WHERE id < ? AND (raw_request IS NOT NULL OR raw_response IS NOT NULL OR (prompt_preview IS NOT NULL AND prompt_preview != '[Turn payload pruned]'))",
+            (threshold_id,),
+        )
+        pruned = cur.rowcount
+        conn.commit()
+        if pruned > 0:
+            try:
+                conn.execute("PRAGMA incremental_vacuum(50)")
+            except Exception:
+                pass
+        return pruned
+    finally:
+        conn.close()
+
+
+async def prune_chat_turns(max_turns_to_keep: Optional[int] = None) -> int:
+    return await asyncio.to_thread(prune_chat_turns_sync, max_turns_to_keep)

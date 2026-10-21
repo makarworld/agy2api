@@ -52,6 +52,10 @@ RATE_LIMIT_SIGNALS: List[str] = [
     "validation_required",
     "verify your account",
     "permission_denied",
+    "signin/continue",
+    "accounts.google.com",
+    "glifwebsignin",
+    "invalid_grant",
 ]
 
 _LOCK = asyncio.Lock()
@@ -714,7 +718,12 @@ def get_active_account_proxy() -> Optional[str]:
     return get_google_proxy(account_proxy)
 
 
-async def _ensure_oauth_fresh(proxy: Optional[str] = None, pool_account_id: Optional[str] = None) -> None:
+async def _ensure_oauth_fresh(
+    proxy: Optional[str] = None,
+    pool_account_id: Optional[str] = None,
+    *,
+    raise_on_error: bool = False,
+) -> None:
     target_id = pool_account_id or get_active_account_id()
     try:
         refreshed = await oauth_refresh.ensure_fresh_antigravity_token(
@@ -725,11 +734,12 @@ async def _ensure_oauth_fresh(proxy: Optional[str] = None, pool_account_id: Opti
         if refreshed and pool_enabled() and target_id:
             await sync_back_credentials(target_id)
     except Exception as e:
-        logger.warning(
-            "[oauth] ensure_fresh_credentials failed (pool_account=%s): %s",
-            target_id or "none",
-            e,
-        )
+        from app.core.account_verification import handle_verification_error
+
+        handle_verification_error(e, account_id=target_id)
+        logger.warning(f"[oauth] ensure_fresh_credentials failed (pool_account={target_id or 'none'}): {e}")
+        if raise_on_error:
+            raise
 
 
 async def init_pool_state() -> None:
@@ -1047,6 +1057,30 @@ async def mark_failure(account_id: str) -> None:
     await stats_store.upsert_pool_account_state(account_id, consecutive_failures=failures, status=status)
 
 
+def _quota_reset_timestamp(value: object) -> Optional[float]:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.timestamp()
+    except ValueError:
+        return None
+
+
+def has_usable_model_quota(quota_data: dict) -> bool:
+    """True if any primary family still has headroom.
+
+    Gemini=0 must not block Claude (and vice versa). Unknown (None) buckets
+    do not count as exhausted.
+    """
+    known = [quota_data.get(k) for k in ("gemini_5h", "claude_5h") if quota_data.get(k) is not None]
+    if not known:
+        return True
+    return any(float(v) > 0.0 for v in known)
+
+
 async def check_and_recover_account_health(account_id: str) -> dict:
     """Active healthcheck: queries Google Quota API with force=True for this account.
     If the quota check succeeds and quotas have remaining headroom (or check passed 200),
@@ -1064,9 +1098,7 @@ async def check_and_recover_account_health(account_id: str) -> dict:
             pool_account_id=account_id,
             force=True,
         )
-        gemini_5h = quota_data.get("gemini_5h")
-        claude_5h = quota_data.get("claude_5h")
-        has_quota = (gemini_5h is None or gemini_5h > 0.0) and (claude_5h is None or claude_5h > 0.0)
+        has_quota = has_usable_model_quota(quota_data)
 
         if has_quota:
             if account_store.get_account_by_id(account_id):
@@ -1092,6 +1124,9 @@ async def check_and_recover_account_health(account_id: str) -> dict:
                 "message": "Quota limit still exhausted until the next quota reset",
             }
     except Exception as e:
+        from app.core.account_verification import handle_verification_error
+
+        handle_verification_error(e, account_id=account_id)
         logger.warning(f"[pool] check_and_recover_account_health failed for {account_id}: {e}")
         return {
             "account_id": account_id,
@@ -1102,22 +1137,17 @@ async def check_and_recover_account_health(account_id: str) -> dict:
         }
 
 
-def _quota_reset_timestamp(value: object) -> Optional[float]:
-    if not isinstance(value, str) or not value.strip():
-        return None
-    try:
-        parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
-        if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=timezone.utc)
-        return parsed.timestamp()
-    except ValueError:
-        return None
-
-
 async def apply_quota_cooldown(account_id: str, quota_data: dict) -> Optional[float]:
-    """Align account cooldown with the next reset of an exhausted quota bucket."""
+    """Account-level cooldown only when every known primary family is exhausted.
+
+    A single dead bucket (e.g. gemini_5h=0 while claude_5h>0) must not ban the
+    whole account — otherwise Claude traffic dies after UI quota refresh.
+    """
+    if has_usable_model_quota(quota_data):
+        return None
+
     exhausted_resets = []
-    for bucket in ("gemini_5h", "gemini_weekly", "claude_5h", "claude_weekly"):
+    for bucket in ("gemini_5h", "claude_5h", "gemini_weekly", "claude_weekly"):
         if quota_data.get(bucket) == 0:
             reset_at = _quota_reset_timestamp(quota_data.get(f"{bucket}_reset"))
             if reset_at and reset_at > time.time():
@@ -1174,21 +1204,37 @@ async def acquire_http_account(
     """
     if account_store.has_accounts():
         async with _LOCK:
-            selected = await select_next_healthy_account(exclude=exclude, model=model)
-            if not selected:
-                raise RuntimeError("All pool accounts are rate-limited or unhealthy")
-            account = account_store.get_account_by_id(selected["id"])
-            if account is None:
-                raise RuntimeError("All pool accounts are rate-limited or unhealthy")
+            active_exclude = set(exclude)
+            while True:
+                selected = await select_next_healthy_account(exclude=active_exclude, model=model)
+                if not selected:
+                    raise RuntimeError("All pool accounts are rate-limited or unhealthy")
+                account = account_store.get_account_by_id(selected["id"])
+                if account is None:
+                    active_exclude.add(selected["id"])
+                    continue
 
-            account_id = account["id"]
-            proxy = get_google_proxy(account.get("proxy"))
-            global _active_account_id
-            _active_account_id = account_id
-            await stats_store.set_active_account_id_db(account_id)
-            account_store.mark_account_used(account_id)
-            await _ensure_oauth_fresh(proxy=proxy, pool_account_id=account_id)
-            return account_id, proxy, oauth_refresh.read_sqlite_access_token(account_id)
+                account_id = account["id"]
+                proxy = get_google_proxy(account.get("proxy"))
+                try:
+                    await _ensure_oauth_fresh(proxy=proxy, pool_account_id=account_id, raise_on_error=True)
+                except Exception as exc:
+                    from app.core.account_verification import handle_verification_error
+
+                    handle_verification_error(exc, account_id=account_id)
+                    cooldown = int(os.environ.get("AGY_POOL_COOLDOWN_SECONDS", "3600"))
+                    await mark_rate_limited(account_id, cooldown, model=model)
+                    active_exclude.add(account_id)
+                    logger.warning(
+                        f"[pool] Account {account_id} token refresh failed, placing in cooldown and rotating: {exc}"
+                    )
+                    continue
+
+                global _active_account_id
+                _active_account_id = account_id
+                await stats_store.set_active_account_id_db(account_id)
+                account_store.mark_account_used(account_id)
+                return account_id, proxy, oauth_refresh.read_sqlite_access_token(account_id)
 
     if not pool_enabled():
         proxy = get_active_account_proxy()
@@ -1196,16 +1242,30 @@ async def acquire_http_account(
         return None, proxy, _read_live_access_token(_gemini_home())
 
     async with _LOCK:
-        account = await select_next_healthy_account(exclude=exclude, model=model)
-        if account is None:
-            raise RuntimeError("All pool accounts are rate-limited or unhealthy")
+        active_exclude = set(exclude)
+        while True:
+            account = await select_next_healthy_account(exclude=active_exclude, model=model)
+            if account is None:
+                raise RuntimeError("All pool accounts are rate-limited or unhealthy")
 
-        proxy = get_google_proxy(account.get("proxy"))
-        if get_active_account_id() != account["id"]:
-            await activate_account(account["id"])
-        else:
-            await _ensure_oauth_fresh(proxy=proxy, pool_account_id=account["id"])
-        return account["id"], proxy, _read_live_access_token(_gemini_home())
+            proxy = get_google_proxy(account.get("proxy"))
+            try:
+                if get_active_account_id() != account["id"]:
+                    await activate_account(account["id"])
+                else:
+                    await _ensure_oauth_fresh(proxy=proxy, pool_account_id=account["id"], raise_on_error=True)
+            except Exception as exc:
+                from app.core.account_verification import handle_verification_error
+
+                handle_verification_error(exc, account_id=account["id"])
+                cooldown = int(os.environ.get("AGY_POOL_COOLDOWN_SECONDS", "3600"))
+                await mark_rate_limited(account["id"], cooldown, model=model)
+                active_exclude.add(account["id"])
+                logger.warning(
+                    f"[pool] Account {account['id']} activation/refresh failed, placing in cooldown and rotating: {exc}"
+                )
+                continue
+            return account["id"], proxy, _read_live_access_token(_gemini_home())
 
 
 async def execute_agy(
@@ -1252,6 +1312,9 @@ async def execute_agy(
                 return returncode, stdout, stderr
 
             combined = (stderr.decode(errors="ignore") + stdout.decode(errors="ignore")).lower()
+            from app.core.account_verification import handle_verification_error
+
+            handle_verification_error(combined, account_id=account["id"])
             if any(sig in combined for sig in RATE_LIMIT_SIGNALS):
                 cooldown = int(os.environ.get("AGY_POOL_COOLDOWN_SECONDS", "3600"))
                 await mark_rate_limited(account["id"], cooldown)
@@ -1271,3 +1334,79 @@ async def execute_agy(
 
 # ---- git sync -------------------------------------------------------------------
 from app.core.pool_git_sync import git_commit_and_push, git_pull  # noqa: F401
+
+
+# ---- periodic quota checking (every 5 min) --------------------------------------
+
+
+def should_refresh_account_quota(account_id: str) -> bool:
+    """Checks whether an account should be refreshed during periodic quota check:
+
+    1. Had any usage (last_used_ts > last_quota_check_ts).
+    2. Or any quota bucket reached its reset time in the past and fraction was < 1.0.
+    """
+    state = stats_store.get_pool_account_state_sync(account_id) or {}
+    last_used = state.get("last_used_ts") or 0.0
+    last_checked = state.get("last_quota_check_ts") or 0.0
+
+    if last_used > last_checked:
+        return True
+
+    cached_quota = oauth_refresh.get_cached_account_quota(account_id) or {}
+    now = time.time()
+    for reset_key, frac_key in [
+        ("gemini_5h_reset", "gemini_5h"),
+        ("claude_5h_reset", "claude_5h"),
+        ("gemini_weekly_reset", "gemini_weekly"),
+        ("claude_weekly_reset", "claude_weekly"),
+    ]:
+        reset_val = cached_quota.get(reset_key)
+        frac_val = cached_quota.get(frac_key)
+        if reset_val and frac_val is not None and frac_val < 1.0:
+            reset_ts = _quota_reset_timestamp(reset_val)
+            if reset_ts and reset_ts <= now:
+                return True
+
+    return False
+
+
+async def check_and_refresh_account_quotas(force: bool = False) -> Dict[str, bool]:
+    """Refreshes quotas for accounts that were either used or reached quota reset time."""
+    accounts = list_accounts()
+    refreshed = {}
+    for acc in accounts:
+        acc_id = acc.get("id")
+        if not acc_id:
+            continue
+        token, proxy, account_dir = get_account_token_and_proxy(acc_id)
+        if not token and not account_dir:
+            continue
+
+        if force or should_refresh_account_quota(acc_id):
+            try:
+                await oauth_refresh.retrieve_account_quota(
+                    account_dir=account_dir,
+                    access_token=token,
+                    proxy=proxy,
+                    pool_account_id=acc_id,
+                    force=True,
+                )
+                refreshed[acc_id] = True
+            except Exception as e:
+                logger.debug(f"[pool] Periodic quota refresh failed for {acc_id}: {e}")
+                refreshed[acc_id] = False
+        else:
+            refreshed[acc_id] = False
+    return refreshed
+
+
+async def periodic_quota_verifier_loop(interval_seconds: int = 300) -> None:
+    """Background periodic loop (default every 5 min) checking and refreshing account quotas."""
+    while True:
+        try:
+            await asyncio.sleep(interval_seconds)
+            await check_and_refresh_account_quotas(force=False)
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.debug(f"[pool] Error in periodic_quota_verifier_loop: {e}")

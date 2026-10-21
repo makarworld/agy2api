@@ -476,7 +476,7 @@ def sync_accounts_from_pool_manifest(pool_dir: Optional[str] = None) -> int:
                 picture=str(item.get("picture") or ""),
             )
         except ValueError as exc:
-            logger.warning("[account_store] Skipping pool account %s: %s", acc_id, exc)
+            logger.warning(f"[account_store] Skipping pool account {acc_id}: {exc}")
             continue
         count += 1
 

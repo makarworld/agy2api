@@ -18,16 +18,20 @@ _quota_refresh_tasks: dict[str, asyncio.Task] = {}
 async def _refresh_account_quota(
     account_id: str, token: Optional[str], proxy: Optional[str], account_dir: Optional[str]
 ):
+    """Fetch quota for UI cache only — never mutate cooldown/health here.
+
+    apply_quota_cooldown on list refresh used to re-ban accounts after Activate
+    whenever any single bucket (e.g. gemini) was 0.
+    """
     try:
-        quota = await oauth_refresh.retrieve_account_quota(
+        await oauth_refresh.retrieve_account_quota(
             account_dir=account_dir,
             access_token=token,
             proxy=proxy,
             pool_account_id=account_id,
         )
-        await pool_manager.apply_quota_cooldown(account_id, quota)
     except Exception as e:
-        logger.debug("[accounts] Background quota refresh failed for %s: %s", account_id, e)
+        logger.debug(f"[accounts] Background quota refresh failed for {account_id}: {e}")
 
 
 def _schedule_quota_refresh(
@@ -83,8 +87,7 @@ async def list_accounts(api_key: str = Depends(get_api_key)):
         db_account = account_store.get_account_by_id(acc_id)
         token, proxy, account_dir = pool_manager.get_account_token_and_proxy(acc_id)
         quota_data = oauth_refresh.get_cached_account_quota(acc_id) or {}
-        if token or account_dir:
-            _schedule_quota_refresh(acc_id, token, proxy, account_dir)
+        active_cycle = stats_store.get_account_active_cycle_sync(acc_id)
 
         result.append(
             {
@@ -105,9 +108,16 @@ async def list_accounts(api_key: str = Depends(get_api_key)):
                 "total_completion_tokens": state.get("total_completion_tokens", 0),
                 "model_cooldowns": pool_manager.get_account_model_cooldowns(acc_id),
                 "quota": quota_data,
+                "active_cycle": active_cycle,
             }
         )
     return {"pool_enabled": pool_manager.pool_enabled(), "accounts": result}
+
+
+@router.get("/accounts/{account_id}/quota-cycles", summary="Get 5h quota cycles history for an account")
+async def get_account_quota_cycles(account_id: str, limit: int = 20, api_key: str = Depends(get_api_key)):
+    cycles = await stats_store.get_account_quota_cycles(account_id, limit=limit)
+    return {"account_id": account_id, "cycles": cycles}
 
 
 def _account_by_email(email: str) -> dict:

@@ -823,8 +823,16 @@ function RequestAndResponseView({ request }: { request: RequestItem }) {
           </pre>
         ) : (
           <div className="p-4 rounded-xl bg-muted/20 border border-border/60 text-xs text-muted-foreground flex items-center justify-between">
-            <span>No raw upstream request recorded for this entry (legacy record or local shortcut).</span>
-            {request.prompt_preview && <span className="font-mono">Preview available in Formatted View</span>}
+            {request.prompt_preview === '[Turn payload pruned]' ? (
+              <span className="text-amber-500/90 font-medium">
+                Данные turn очищены по лимиту хранения (AGY_CHAT_TURNS_RETENTION). Токены и статистика сохранены.
+              </span>
+            ) : (
+              <span>No raw upstream request recorded for this entry (legacy record or local shortcut).</span>
+            )}
+            {request.prompt_preview && request.prompt_preview !== '[Turn payload pruned]' && (
+              <span className="font-mono">Preview available in Formatted View</span>
+            )}
           </div>
         )}
       </div>

@@ -455,6 +455,21 @@ export function SettingsPage() {
             checked={!!settings.AGY_HTTP_DEBUG}
             onCheckedChange={() => handleToggle('AGY_HTTP_DEBUG')}
           />
+
+          <div>
+            <label className="text-xs font-medium text-foreground/90">
+              AGY_CHAT_TURNS_RETENTION (Хранить последних turn в чатах)
+            </label>
+            <Input
+              value={settings.AGY_CHAT_TURNS_RETENTION || ''}
+              onChange={(e) => handleChange('AGY_CHAT_TURNS_RETENTION', e.target.value)}
+              placeholder="1000"
+              className="mt-1.5 font-mono text-sm"
+            />
+            <div className="text-[11px] text-muted-foreground mt-1">
+              Для более старых turn очищаются тяжелые тексты запросов/ответов, сохраняя количество turn и общую статистику.
+            </div>
+          </div>
         </div>
 
         {/* Group 4: Proxy & OAuth */}

@@ -50,14 +50,17 @@ default.txt
 default_prompt_full.txt
 sse_example.txt
 build/
-dist/
+/dist/
 *.spec
 
 # Local agent / IDE scratch (not part of the published fork)
 .claude/
 .cursor/
 graphify-out/
-ui/dist/
+
+# Track pre-built Web UI in repository
+!ui/dist/
+!ui/dist/**
 
 test.txt
 doc/claude*

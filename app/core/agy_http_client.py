@@ -179,7 +179,10 @@ async def _get_project_id(
         access_token = await _refresh_after_401(access_token, account_id=account_id, proxy=proxy)
         return await _get_project_id(access_token, account_id=account_id, proxy=proxy, _auth_retried=True)
     if response.status_code != 200:
-        raise RuntimeError(f"loadCodeAssist failed (HTTP {response.status_code}): {response.text[:500]}")
+        from app.core.account_verification import handle_verification_error
+
+        handle_verification_error(response.text, account_id=account_id)
+        raise RuntimeError(f"loadCodeAssist failed (HTTP {response.status_code}): {response.text}")
 
     payload = response.json()
     project_raw = payload.get("cloudaicompanionProject") or _deep_find(payload, "cloudaicompanionProject")
@@ -347,26 +350,152 @@ def _log_empty_stream_debug(
         return
     unnamed = [k for k, v in pending_tool_calls.items() if not v.get("name")]
     usage_meta = (last_sse_obj or {}).get("usageMetadata") or {}
+    parts_summary = summarize_sse_parts(last_sse_obj) if last_sse_obj else "n/a"
     logger.warning(
-        "[http][debug] empty stream finishReason=%s usage=%s pending=%s unnamed_keys=%s parts=%s",
-        finish_reason,
-        final_usage or usage_meta,
-        len(pending_tool_calls),
-        unnamed,
-        summarize_sse_parts(last_sse_obj) if last_sse_obj else "n/a",
+        f"[http][debug] empty stream finishReason={finish_reason} "
+        f"usage={final_usage or usage_meta} pending={len(pending_tool_calls)} "
+        f"unnamed_keys={unnamed} parts={parts_summary}"
     )
     if last_sse_obj:
-        logger.warning("[http][debug] last_sse=%s", json.dumps(last_sse_obj)[:2000])
+        logger.warning(f"[http][debug] last_sse={json.dumps(last_sse_obj)[:2000]}")
 
 
 def _log_http_request(url: str, body: dict) -> None:
     if http_debug_enabled():
-        logger.warning("[http][debug] REQUEST url=%s json=%s", url, json.dumps(body, ensure_ascii=False))
+        logger.warning(f"[http][debug] REQUEST url={url} json={json.dumps(body, ensure_ascii=False)}")
 
 
 def _log_http_response(url: str, status: int, body: str) -> None:
     if http_debug_enabled():
-        logger.warning("[http][debug] RESPONSE url=%s status=%s body=%s", url, status, body)
+        logger.warning(f"[http][debug] RESPONSE url={url} status={status} body={body}")
+
+
+def _estimate_content_tokens(content: dict) -> int:
+    """Rough token estimate for a single Gemini content entry.
+
+    Uses ~3 chars/token (conservative) because the real tokenizer often
+    produces more tokens than a naive chars÷4 estimate.
+    """
+    total = 0
+    for part in content.get("parts", []):
+        if "text" in part:
+            total += len(part["text"])
+        elif "inlineData" in part:
+            # base64 data is ~1.37x the raw bytes; token cost is much lower
+            # than text but still significant
+            total += len(part["inlineData"].get("data", "")) // 2
+        elif "functionCall" in part:
+            total += len(json.dumps(part["functionCall"].get("args", {})))
+            total += len(part["functionCall"].get("name", ""))
+        elif "functionResponse" in part:
+            total += len(json.dumps(part["functionResponse"].get("response", {})))
+            total += len(part["functionResponse"].get("name", ""))
+    return total // 3
+
+
+_PROMPT_TOO_LONG_RE = re.compile(r"prompt is too long:\s*(\d+)\s*tokens?\s*>\s*(\d+)\s*maximum")
+
+
+def _trim_contents_to_limit(
+    contents: List[dict],
+    max_tokens: int,
+    *,
+    system: Optional[str] = None,
+    tools: Optional[List[dict]] = None,
+) -> List[dict]:
+    """Drop oldest contents (keeping at least the last message) to fit under max_tokens.
+
+    After trimming, strips orphaned functionResponse parts from the new first
+    user message (their matching functionCall was in a dropped model message).
+    """
+    overhead = 0
+    if system:
+        overhead += len(system) // 4
+    if tools:
+        overhead += len(json.dumps(tools)) // 4
+
+    total = overhead + sum(_estimate_content_tokens(c) for c in contents)
+    if total <= max_tokens:
+        return contents
+
+    logger.warning(
+        "[http] prompt too large ~%d tokens (limit %d), trimming oldest messages",
+        total,
+        max_tokens,
+    )
+
+    # Always keep at least the last content entry
+    trimmed = list(contents)
+    running = total
+    while len(trimmed) > 1 and running > max_tokens:
+        removed = trimmed.pop(0)
+        running -= _estimate_content_tokens(removed)
+
+    # Ensure first message is from user (Gemini requirement)
+    while len(trimmed) > 1 and trimmed[0].get("role") != "user":
+        removed = trimmed.pop(0)
+        running -= _estimate_content_tokens(removed)
+
+    # Strip orphaned functionResponse/functionCall pairs iteratively.
+    # Removing a model entry can orphan the next user's functionResponse;
+    # removing that user entry can leave a model entry at position 0 (invalid).
+    # Loop until stable.
+    cleaned = list(trimmed)
+    changed = True
+    while changed:
+        changed = False
+
+        # Collect all functionCall ids/names in remaining model entries
+        available_fc_ids: set[str] = set()
+        for entry in cleaned:
+            if entry.get("role") != "model":
+                continue
+            for part in entry.get("parts", []):
+                fc = part.get("functionCall")
+                if fc and fc.get("id"):
+                    available_fc_ids.add(fc["id"])
+
+        # Strip orphaned functionResponse parts from user entries
+        new_cleaned: List[dict] = []
+        for entry in cleaned:
+            if entry.get("role") != "user":
+                new_cleaned.append(entry)
+                continue
+            kept_parts = []
+            for part in entry.get("parts", []):
+                fr = part.get("functionResponse")
+                if fr:
+                    fr_id = fr.get("id", "")
+                    if fr_id and fr_id not in available_fc_ids:
+                        changed = True
+                        continue  # orphaned
+                kept_parts.append(part)
+            if kept_parts:
+                new_cleaned.append({**entry, "parts": kept_parts})
+            else:
+                changed = True  # entire entry dropped
+        cleaned = new_cleaned
+
+        # Ensure first message is from user (Gemini requirement)
+        while len(cleaned) > 1 and cleaned[0].get("role") != "user":
+            cleaned.pop(0)
+            changed = True
+
+    # Final safety: if cleaned is empty, keep at least the last original content
+    if not cleaned:
+        # Take last user message, strip any functionResponse parts
+        last = contents[-1]
+        text_parts = [p for p in last.get("parts", []) if "text" in p]
+        cleaned = [{**last, "parts": text_parts}] if text_parts else [{"role": "user", "parts": [{"text": ""}]}]
+
+    final_tokens = overhead + sum(_estimate_content_tokens(c) for c in cleaned)
+    logger.info(
+        "[http] trimmed prompt to ~%d tokens (%d/%d contents kept)",
+        final_tokens,
+        len(cleaned),
+        len(contents),
+    )
+    return cleaned
 
 
 async def stream_completion(
@@ -385,16 +514,35 @@ async def stream_completion(
     backend_model, thinking_level = resolve_http_model(model or "gemini-2.5-flash")
     if thinking_level_override is not None and "pro" not in backend_model.lower():
         thinking_level = "zero" if thinking_level_override == "0" else thinking_level_override
-    try:
-        account_id, pool_proxy, access_token = await pool_manager.acquire_http_account(model=backend_model)
-    except RuntimeError as exc:
-        if backend_model == "gemini-pro-agent":
-            raise ProQuotaExhaustedError("Все лимиты Pro закончились. Переключите модель на другую.") from exc
-        raise
-    proxy = proxy if proxy is not None else pool_proxy
-    if not access_token:
-        access_token = await get_access_token(proxy=proxy)
-    project_id = await _get_project_id(access_token, account_id=account_id, proxy=proxy)
+    while True:
+        try:
+            account_id, pool_proxy, access_token = await pool_manager.acquire_http_account(
+                exclude=excluded, model=backend_model
+            )
+        except RuntimeError as exc:
+            if backend_model == "gemini-pro-agent":
+                raise ProQuotaExhaustedError("Все лимиты Pro закончились. Переключите модель на другую.") from exc
+            raise
+        effective_proxy = proxy if proxy is not None else pool_proxy
+        if not access_token:
+            access_token = await get_access_token(proxy=effective_proxy)
+        try:
+            project_id = await _get_project_id(access_token, account_id=account_id, proxy=effective_proxy)
+            proxy = effective_proxy
+            break
+        except Exception as exc:
+            from app.core.account_verification import handle_verification_error
+
+            handle_verification_error(exc, account_id=account_id)
+            if account_id:
+                cooldown = int(os.environ.get("AGY_POOL_COOLDOWN_SECONDS", "3600"))
+                await pool_manager.mark_rate_limited(account_id, cooldown, model=backend_model)
+                excluded.add(account_id)
+                logger.warning(
+                    f"[http] _get_project_id failed for account={account_id}, rotating to next account: {exc}"
+                )
+                continue
+            raise
     tools_present = bool(anthropic_tools_to_gemini(tools))
     allow_thought_text = thought_as_text_enabled(tools_present=tools_present, param_override=thought_as_text)
     if _suppress_thought_text(system, messages):
@@ -408,15 +556,19 @@ async def stream_completion(
     step = 1
     request_seq = 1
 
+    max_input_tokens = int(os.environ.get("AGY_HTTP_MAX_INPUT_TOKENS", "950000"))
     trim_aggressive = False
     retried_empty = False
     auth_retried = False
     yielded_any_content = False
+    prompt_too_long_retries = 0
 
     while True:
         contents = messages_to_gemini_contents(messages, trim_aggressive=trim_aggressive)
         if not contents:
             raise RuntimeError("No user/assistant messages to send")
+
+        contents = _trim_contents_to_limit(contents, max_input_tokens, system=system, tools=tools)
 
         body = _build_envelope(
             project_id,
@@ -433,7 +585,7 @@ async def stream_completion(
             request_seq=request_seq,
         )
         if model and model != backend_model and not retried_empty:
-            logger.info("[http] model %s -> backend %s", model, backend_model)
+            logger.info(f"[http] model {model} -> backend {backend_model}")
 
         full_text = ""
         final_usage: dict = {}
@@ -442,6 +594,7 @@ async def stream_completion(
         last_sse_obj: Optional[dict] = None
         retried_auth = False
         rate_limit_detail: Optional[str] = None
+        prompt_too_long_retry = False
         serialized_text_buffer = ""
         buffering_serialized_text = False
 
@@ -502,14 +655,16 @@ async def stream_completion(
                             pool_account=account_id,
                         )
                         logger.warning(
-                            "[http] streamGenerateContent 401 — forcing OAuth refresh and retrying: %s",
-                            detail,
+                            f"[http] streamGenerateContent 401 — forcing OAuth refresh and retrying: {detail}"
                         )
                         access_token = await _refresh_after_401(access_token, account_id=account_id, proxy=proxy)
                         auth_retried = True
                         retried_auth = True
                     elif response.status_code != 200:
                         detail = (await response.aread()).decode(errors="replace")
+                        from app.core.account_verification import handle_verification_error
+
+                        handle_verification_error(detail, account_id=account_id)
                         record_attempt(
                             raw_request=body,
                             response_status=response.status_code,
@@ -520,12 +675,31 @@ async def stream_completion(
                         if _is_model_capacity_error(response.status_code, detail):
                             logger.warning(
                                 "[http] model service unavailable; retrying without account rotation: "
-                                "model=%s reason=model_capacity endpoint=streamGenerateContent",
-                                backend_model,
+                                f"model={backend_model} reason=model_capacity endpoint=streamGenerateContent"
                             )
                             raise RuntimeError(f"streamGenerateContent failed (HTTP {response.status_code}): {detail}")
                         if account_id and _is_rate_limited(response.status_code, detail):
                             rate_limit_detail = detail
+                        elif (
+                            response.status_code == 400
+                            and "prompt is too long" in detail
+                            and prompt_too_long_retries < 3
+                        ):
+                            m = _PROMPT_TOO_LONG_RE.search(detail)
+                            if m:
+                                upstream_limit = int(m.group(2))
+                                # Use the real upstream limit with 10% margin
+                                max_input_tokens = int(upstream_limit * 0.85)
+                            else:
+                                # Halve our estimate if we can't parse the real count
+                                max_input_tokens = max_input_tokens // 2
+                            prompt_too_long_retries += 1
+                            prompt_too_long_retry = True
+                            logger.warning(
+                                "[http] prompt too long (attempt %d/3), reducing limit to %d tokens and retrying",
+                                prompt_too_long_retries,
+                                max_input_tokens,
+                            )
                         else:
                             if account_id:
                                 await pool_manager.mark_failure(account_id)
@@ -606,17 +780,13 @@ async def stream_completion(
                 )
                 if yielded_any_content:
                     logger.error(
-                        "[http] network error after stream started (account=%s). Dropping stream to trigger clean client retry: %s",
-                        account_id,
-                        net_err,
+                        f"[http] network error after stream started (account={account_id}). Dropping stream to trigger clean client retry: {net_err}"
                     )
                     raise RuntimeError(f"Network error mid-stream: {net_err}") from net_err
 
                 logger.warning(
-                    "[http] rotating account=%s model=%s endpoint=streamGenerateContent reason=network next=select: %s",
-                    account_id,
-                    backend_model,
-                    net_err,
+                    f"[http] rotating account={account_id} model={backend_model} "
+                    f"endpoint=streamGenerateContent reason=network next=select: {net_err}"
                 )
                 if account_id:
                     previous_account_id = account_id
@@ -626,11 +796,8 @@ async def stream_completion(
                             exclude=excluded, model=backend_model
                         )
                         logger.info(
-                            "[http] rotation complete previous=%s next=%s model=%s "
-                            "endpoint=streamGenerateContent reason=network",
-                            previous_account_id,
-                            account_id,
-                            backend_model,
+                            f"[http] rotation complete previous={previous_account_id} next={account_id} model={backend_model} "
+                            "endpoint=streamGenerateContent reason=network"
                         )
                         project_id = await _get_project_id(access_token, account_id=account_id, proxy=proxy)
                         continue
@@ -650,11 +817,8 @@ async def stream_completion(
             await pool_manager.mark_rate_limited(account_id, cooldown, model=backend_model)
             excluded.add(account_id)
             logger.warning(
-                "[http] rotating account=%s model=%s endpoint=streamGenerateContent "
-                "reason=account_rate_limit next=select: %s",
-                account_id,
-                backend_model,
-                rate_limit_detail[:200],
+                f"[http] rotating account={account_id} model={backend_model} endpoint=streamGenerateContent "
+                f"reason=account_rate_limit next=select: {rate_limit_detail}"
             )
             try:
                 account_id, proxy, access_token = await pool_manager.acquire_http_account(
@@ -665,13 +829,14 @@ async def stream_completion(
                     raise ProQuotaExhaustedError("Все лимиты Pro закончились. Переключите модель на другую.") from exc
                 raise
             logger.info(
-                "[http] rotation complete previous=%s next=%s model=%s "
-                "endpoint=streamGenerateContent reason=account_rate_limit",
-                previous_account_id,
-                account_id,
-                backend_model,
+                f"[http] rotation complete previous={previous_account_id} next={account_id} model={backend_model} "
+                "endpoint=streamGenerateContent reason=account_rate_limit"
             )
             project_id = await _get_project_id(access_token, account_id=account_id, proxy=proxy)
+            continue
+
+        if prompt_too_long_retry:
+            # Re-enter the loop — contents will be re-trimmed with the lowered max_input_tokens
             continue
 
         if retried_auth:
@@ -702,8 +867,7 @@ async def stream_completion(
             retry_reasons = {None, "STOP", "MAX_TOKENS", "MALFORMED_FUNCTION_CALL"}
             if not retried_empty and last_finish_reason in retry_reasons:
                 logger.warning(
-                    "[http] empty response finishReason=%s — retrying with aggressive trim",
-                    last_finish_reason,
+                    f"[http] empty response finishReason={last_finish_reason} — retrying with aggressive trim"
                 )
                 retried_empty = True
                 step += 2
@@ -713,7 +877,7 @@ async def stream_completion(
                 continue
 
             error_msg = f"Gemini returned empty response (finishReason={last_finish_reason or 'unknown'})"
-            logger.error("[http] %s", error_msg)
+            logger.error(f"[http] {error_msg}")
             empty_as_empty_content = (
                 os.environ.get("AGY_HTTP_EMPTY_AS_EMPTY_CONTENT", "true").lower() in ("true", "1", "yes")
                 if last_finish_reason == "STOP"
@@ -871,7 +1035,10 @@ async def generate_image(
                 response = await client.post(GENERATE_CONTENT_URL, headers=headers, json=body)
 
             if response.status_code != 200:
-                detail = response.text[:500]
+                detail = response.text
+                from app.core.account_verification import handle_verification_error
+
+                handle_verification_error(detail, account_id=account_id)
                 record_attempt(
                     raw_request=body,
                     response_status=response.status_code,
@@ -881,8 +1048,7 @@ async def generate_image(
                 if _is_model_capacity_error(response.status_code, detail):
                     logger.warning(
                         "[image] model service unavailable; retrying without account rotation: "
-                        "model=%s reason=model_capacity",
-                        backend_model,
+                        f"model={backend_model} reason=model_capacity"
                     )
                     raise RuntimeError(f"image generation failed (HTTP {response.status_code}): {detail}")
                 if account_id and _is_rate_limited(response.status_code, detail):
@@ -890,9 +1056,7 @@ async def generate_image(
                     await pool_manager.mark_rate_limited(account_id, cooldown)
                     excluded.add(account_id)
                     logger.warning(
-                        "[image] rotating account=%s reason=account_rate_limit next=select: %s",
-                        account_id,
-                        detail[:200],
+                        f"[image] rotating account={account_id} reason=account_rate_limit next=select: {detail}"
                     )
                     continue
                 raise RuntimeError(f"image generation failed (HTTP {response.status_code}): {detail}")

@@ -45,6 +45,7 @@ CONFIG_KEYS = [
     "AGY_HTTP_OLD_TOOL_RESULT_CHARS",
     "AGY_HTTP_RETRY_TOOL_RESULT_CHARS",
     "AGY_POOL_GIT_AUTOSYNC_INTERVAL_SECONDS",
+    "AGY_CHAT_TURNS_RETENTION",
 ]
 
 BOOLEAN_KEYS = {
@@ -177,7 +178,10 @@ async def get_settings(api_key: str = Depends(get_api_key)):
     for k in CONFIG_KEYS:
         val = os.environ.get(k, file_vars.get(k, ""))
         if k in BOOLEAN_KEYS:
-            result[k] = str(val).strip().lower() in ("true", "1", "yes")
+            if val == "":
+                result[k] = k in ("AGY_POOL_ENABLED", "AGY_THOUGHT_AS_TEXT", "AGY_OAUTH_REFRESH_ENABLED")
+            else:
+                result[k] = str(val).strip().lower() in ("true", "1", "yes")
         else:
             result[k] = str(val)
     return {"settings": result}

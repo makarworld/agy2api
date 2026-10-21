@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { LogIn, Pencil, AlertTriangle, X, RefreshCw, CheckCircle2, Trash2, Check } from 'lucide-react';
+import { useState, useEffect } from 'react';
+import { LogIn, Pencil, AlertTriangle, X, RefreshCw, CheckCircle2, Trash2, Check, Clock, Cpu } from 'lucide-react';
 import { type PoolAccount } from '../hooks/use-stats';
 import { useApiKey } from '../hooks/use-api-key';
 import { apiUrl } from '../lib/api';
@@ -251,6 +251,128 @@ function AccountErrorsModal({
   );
 }
 
+function AccountCyclesModal({
+  account,
+  onClose,
+}: {
+  account: PoolAccount;
+  onClose: () => void;
+}) {
+  const { apiKey } = useApiKey();
+  const [cycles, setCycles] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    fetch(apiUrl(`/v1/accounts/${account.id}/quota-cycles`), {
+      headers: { Authorization: `Bearer ${apiKey}` },
+    })
+      .then((r) => r.json())
+      .then((data) => setCycles(data.cycles || []))
+      .catch(() => {})
+      .finally(() => setLoading(false));
+  }, [account.id, apiKey]);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-4">
+      <div className="bg-card border border-border rounded-xl w-full max-w-2xl max-h-[85vh] flex flex-col shadow-2xl">
+        <div className="flex items-center justify-between p-4 border-b border-border">
+          <div className="flex items-center gap-2">
+            <Clock className="w-4 h-4 text-primary" />
+            <span className="font-semibold text-sm">
+              5-часовые циклы квот: {account.label} {account.email && `(${account.email})`}
+            </span>
+          </div>
+          <button onClick={onClose} className="text-muted-foreground hover:text-foreground">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+        <div className="overflow-y-auto p-4 flex-1 space-y-4">
+          {loading ? (
+            <div className="text-xs text-muted-foreground text-center py-8">Загрузка циклов...</div>
+          ) : cycles.length === 0 ? (
+            <div className="text-xs text-muted-foreground text-center py-8">
+              Пока нет сохраненных 5-часовых циклов для этого аккаунта.
+            </div>
+          ) : (
+            cycles.map((c) => {
+              const modelEntries = Object.entries(c.model_stats || {});
+              return (
+                <div key={c.id} className="border border-border/80 rounded-lg p-3 text-xs bg-muted/20 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <span className={`px-2 py-0.5 rounded text-[11px] font-semibold border ${
+                        c.is_active
+                          ? 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30'
+                          : 'bg-muted/60 text-muted-foreground border-border/60'
+                      }`}>
+                        {c.is_active ? 'Активный 5ч цикл' : 'Завершенный цикл'}
+                      </span>
+                      <span className="text-muted-foreground text-[11px] font-mono">
+                        Старт: {new Date(c.cycle_start_ts * 1000).toLocaleString()}
+                      </span>
+                    </div>
+                    <span className="font-mono text-xs font-semibold text-foreground">
+                      Потрачено: {(c.fraction_spent * 100).toFixed(1)}%
+                    </span>
+                  </div>
+
+                  <div className="grid grid-cols-3 gap-2 py-1.5 px-2 bg-background/60 rounded border border-border/40 font-mono text-[11px]">
+                    <div>
+                      <span className="text-muted-foreground">Запросов: </span>
+                      <span className="text-foreground font-semibold">{c.total_requests}</span>
+                    </div>
+                    <div>
+                      <span className="text-muted-foreground">Вход: </span>
+                      <span className="text-foreground font-semibold">{formatTokens(c.total_prompt_tokens)}</span>
+                    </div>
+                    <div>
+                      <span className="text-muted-foreground">Выход: </span>
+                      <span className="text-foreground font-semibold">{formatTokens(c.total_completion_tokens)}</span>
+                    </div>
+                  </div>
+
+                  {modelEntries.length > 0 && (
+                    <div className="space-y-1 pt-1">
+                      <div className="text-[11px] font-medium text-muted-foreground flex items-center gap-1">
+                        <Cpu className="w-3 h-3 text-muted-foreground/70" />
+                        Статистика по моделям:
+                      </div>
+                      <div className="border border-border/50 rounded overflow-hidden">
+                        <table className="w-full text-[11px] font-mono">
+                          <thead className="bg-muted/40 text-muted-foreground text-[10px]">
+                            <tr>
+                              <th className="text-left py-1 px-2">Модель</th>
+                              <th className="text-right py-1 px-2">Запросы</th>
+                              <th className="text-right py-1 px-2">Вход</th>
+                              <th className="text-right py-1 px-2">Выход</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-border/40">
+                            {modelEntries.map(([modelName, mData]: [string, any]) => (
+                              <tr key={modelName} className="hover:bg-muted/20">
+                                <td className="py-1 px-2 text-foreground truncate max-w-[200px]" title={modelName}>
+                                  {modelName}
+                                </td>
+                                <td className="py-1 px-2 text-right">{mData.requests || 0}</td>
+                                <td className="py-1 px-2 text-right">{formatTokens(mData.prompt_tokens || 0)}</td>
+                                <td className="py-1 px-2 text-right">{formatTokens(mData.completion_tokens || 0)}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function AccountsTable({
   accounts,
   poolEnabled,
@@ -264,6 +386,7 @@ export function AccountsTable({
 }) {
   const { apiKey } = useApiKey();
   const [selectedErrorAcc, setSelectedErrorAcc] = useState<PoolAccount | null>(null);
+  const [selectedCycleAcc, setSelectedCycleAcc] = useState<PoolAccount | null>(null);
   const [refreshingQuotaId, setRefreshingQuotaId] = useState<string | null>(null);
   const [checkingHealthId, setCheckingHealthId] = useState<string | null>(null);
   const [activatingId, setActivatingId] = useState<string | null>(null);
@@ -385,6 +508,12 @@ export function AccountsTable({
         <AccountErrorsModal
           account={selectedErrorAcc}
           onClose={() => setSelectedErrorAcc(null)}
+        />
+      )}
+      {selectedCycleAcc && (
+        <AccountCyclesModal
+          account={selectedCycleAcc}
+          onClose={() => setSelectedCycleAcc(null)}
         />
       )}
       <div className="border border-border/80 rounded-xl bg-card shadow-xs">
@@ -517,6 +646,15 @@ export function AccountsTable({
                   >
                     <span className="text-foreground/90 font-medium whitespace-nowrap">↓{formatTokens(acc.total_prompt_tokens)}</span>
                     <span className="text-muted-foreground text-[10px] whitespace-nowrap">↑{formatTokens(acc.total_completion_tokens)}</span>
+                    {acc.active_cycle && (
+                      <button
+                        onClick={() => setSelectedCycleAcc(acc)}
+                        className="inline-flex items-center gap-1 text-[10px] text-primary/90 hover:text-primary transition-colors cursor-pointer bg-primary/10 hover:bg-primary/20 px-1 py-0.5 rounded border border-primary/20 mt-0.5"
+                        title="Подробная статистика 5-часового цикла и моделей"
+                      >
+                        5h: {(acc.active_cycle.fraction_spent * 100).toFixed(0)}% расх.
+                      </button>
+                    )}
                   </div>
                 </td>
 

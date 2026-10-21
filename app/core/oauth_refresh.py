@@ -180,12 +180,8 @@ async def discover_verified_credential_file(
             if path != first_path:
                 first_token = access_token_from_path(first_path)
                 logger.info(
-                    "[oauth] using verified credential from %s (suffix %s) — "
-                    "first candidate %s failed quota (suffix %s)",
-                    os.path.basename(path),
-                    _token_suffix(token),
-                    os.path.basename(first_path),
-                    _token_suffix(first_token),
+                    f"[oauth] using verified credential from {os.path.basename(path)} (suffix {_token_suffix(token)}) — "
+                    f"first candidate {os.path.basename(first_path)} failed quota (suffix {_token_suffix(first_token)})"
                 )
             _set_active_credential(path, kind)
             return path, kind
@@ -345,9 +341,7 @@ def patch_access_token_to_file(
     _write_token_file(path, data)
     _set_active_credential(path, file_kind)
     logger.info(
-        "[oauth] patched access_token on disk (%s, suffix %s)",
-        os.path.basename(path),
-        _token_suffix(access_token),
+        f"[oauth] patched access_token on disk ({os.path.basename(path)}, suffix {_token_suffix(access_token)})"
     )
     return path
 
@@ -503,7 +497,23 @@ def _cached_quota_for_account(pool_account_id: str) -> Optional[dict]:
 
 def get_cached_account_quota(pool_account_id: str) -> Optional[dict]:
     """Return fresh quota cache without starting a network request."""
-    return _cached_quota_for_account(pool_account_id)
+    cached = _cached_quota_for_account(pool_account_id)
+    if cached:
+        return cached
+    from app.core import stats_store
+
+    return stats_store.get_cached_account_quota_db_sync(pool_account_id)
+
+
+def init_quota_cache_from_db() -> None:
+    """Pre-populates in-memory quota cache from SQLite on startup."""
+    from app.core import stats_store
+
+    db_quotas = stats_store.load_all_cached_quotas_sync()
+    now = time.time()
+    for acc_id, q_data in db_quotas.items():
+        cache_key = f"{acc_id}:"
+        _quota_summary_cache[cache_key] = (now + _QUOTA_CACHE_TTL_SECONDS, q_data)
 
 
 async def _prepare_sqlite_quota_token(
@@ -549,7 +559,7 @@ async def retrieve_account_quota(
             if prepared:
                 target_token = prepared
         except Exception as e:
-            logger.debug("[oauth] sqlite quota token prepare failed for %s: %s", pool_account_id, e)
+            logger.debug(f"[oauth] sqlite quota token prepare failed for {pool_account_id}: {e}")
             target_token = (access_token or sqlite_account.get("access_token") or "").strip() or None
     elif account_dir and not target_token:
         discovered = discover_credential_candidates(account_dir)
@@ -586,14 +596,17 @@ async def retrieve_account_quota(
                 parsed = _parse_quota_buckets(response.json())
                 _quota_summary_cache[cache_key] = (time.time() + _QUOTA_CACHE_TTL_SECONDS, parsed)
                 _verify_cache[token_suffix] = time.time() + _VERIFY_CACHE_TTL_SECONDS
+                if pool_account_id:
+                    from app.core import stats_store
+
+                    stats_store.save_cached_account_quota_sync(pool_account_id, parsed, time.time())
                 return dict(parsed)
 
             elif response.status_code == 401:
                 invalidate_verify_cache(target_token)
+                target_name = pool_account_id or (os.path.basename(account_dir) if account_dir else "active")
                 logger.info(
-                    "[oauth] Quota check returned 401 (suffix %s) — attempting OAuth refresh for %s",
-                    _token_suffix(target_token),
-                    pool_account_id or (os.path.basename(account_dir) if account_dir else "active"),
+                    f"[oauth] Quota check returned 401 (suffix {_token_suffix(target_token)}) — attempting OAuth refresh for {target_name}"
                 )
                 refreshed = False
                 if sqlite_account:
@@ -627,10 +640,17 @@ async def retrieve_account_quota(
                         new_key = _quota_cache_key(target_token, pool_account_id)
                         _quota_summary_cache[new_key] = (time.time() + _QUOTA_CACHE_TTL_SECONDS, parsed)
                         _verify_cache[_access_token_suffix(target_token)] = time.time() + _VERIFY_CACHE_TTL_SECONDS
+                        if pool_account_id:
+                            from app.core import stats_store
+
+                            stats_store.save_cached_account_quota_sync(pool_account_id, parsed, time.time())
                         return dict(parsed)
 
         except Exception as e:
-            logger.debug("[oauth] retrieve_account_quota error for %s: %s", pool_account_id or "account", e)
+            from app.core.account_verification import handle_verification_error
+
+            handle_verification_error(e, account_id=pool_account_id)
+            logger.debug(f"[oauth] retrieve_account_quota error for {pool_account_id or 'account'}: {e}")
 
     return _parse_quota_buckets({})
 
@@ -679,16 +699,13 @@ async def verify_access_token(
             _verify_cache[cache_key] = time.time() + _VERIFY_CACHE_TTL_SECONDS
         elif response.status_code == 401:
             logger.warning(
-                "[oauth] quota verify 401 (suffix %s) — disk access_token may differ from agy "
+                f"[oauth] quota verify 401 (suffix {_token_suffix(access_token)}) — disk access_token may differ from agy "
                 "in-memory Bearer; copy working token from HTTP Toolkit or run "
-                "scripts/patch_access_token.py / set AGY_ACCESS_TOKEN",
-                _token_suffix(access_token),
+                "scripts/patch_access_token.py / set AGY_ACCESS_TOKEN"
             )
+        status_label = "OK" if ok else f"HTTP {response.status_code}"
         logger.debug(
-            "[oauth] quota verify %s (suffix %s, project=%s)",
-            "OK" if ok else f"HTTP {response.status_code}",
-            _token_suffix(access_token),
-            quota_project,
+            f"[oauth] quota verify {status_label} (suffix {_token_suffix(access_token)}, project={quota_project})"
         )
         return ok
 
@@ -705,9 +722,7 @@ async def _verify_access_token_cached(
     ok = await verify_access_token(access_token, proxy=proxy)
     if ok:
         logger.info(
-            "[oauth] access token quota verify OK (suffix %s, pool_account=%s)",
-            _token_suffix(access_token),
-            pool_account_id or "none",
+            f"[oauth] access token quota verify OK (suffix {_token_suffix(access_token)}, pool_account={pool_account_id or 'none'})"
         )
     return ok
 
@@ -719,6 +734,7 @@ async def refresh_google_token(
     kind: CredentialKind = "antigravity",
     client_id: Optional[str] = None,
     client_secret: Optional[str] = None,
+    account_id: Optional[str] = None,
 ) -> dict:
     """Exchange a refresh token for a new access token via Google OAuth."""
     refresh_token = _normalize_refresh_token(refresh_token) or refresh_token.strip()
@@ -736,7 +752,10 @@ async def refresh_google_token(
             headers=_REFRESH_HEADERS,
         )
     if response.status_code != 200:
-        raise RuntimeError(f"OAuth refresh failed (HTTP {response.status_code}): {response.text[:500]}")
+        from app.core.account_verification import handle_verification_error
+
+        handle_verification_error(response.text, account_id=account_id)
+        raise RuntimeError(f"OAuth refresh failed (HTTP {response.status_code}): {response.text}")
 
     payload = response.json()
     expires_in = int(payload.get("expires_in", 3600))
@@ -772,10 +791,7 @@ async def ensure_fresh_credentials(
         if _verify_cache_valid(override_token) or await verify_access_token(override_token, proxy=proxy):
             patched_path = patch_access_token_to_file(override_token, home)
             logger.info(
-                "[oauth] using AGY_ACCESS_TOKEN env override (suffix %s, file=%s, pool_account=%s)",
-                _token_suffix(override_token),
-                os.path.basename(patched_path),
-                pool_account_id or "none",
+                f"[oauth] using AGY_ACCESS_TOKEN env override (suffix {_token_suffix(override_token)}, file={os.path.basename(patched_path)}, pool_account={pool_account_id or 'none'})"
             )
             if pool_account_id:
                 from app.core import pool_manager
@@ -784,8 +800,7 @@ async def ensure_fresh_credentials(
             return True
 
         logger.warning(
-            "[oauth] AGY_ACCESS_TOKEN failed quota verify (suffix %s) — ignoring env override",
-            _token_suffix(override_token),
+            f"[oauth] AGY_ACCESS_TOKEN failed quota verify (suffix {_token_suffix(override_token)}) — ignoring env override"
         )
 
     discovered = await discover_verified_credential_file(home, proxy=proxy)
@@ -806,7 +821,7 @@ async def ensure_fresh_credentials(
 
     refresh_token = view.get("refresh_token")
     if not refresh_token:
-        logger.warning("[oauth] credential file has no refresh_token — cannot refresh (%s)", path)
+        logger.warning(f"[oauth] credential file has no refresh_token — cannot refresh ({path})")
         if access_token:
             raise RuntimeError(
                 f"No refresh_token in {path} and quota verify failed for access token "
@@ -831,7 +846,7 @@ async def ensure_fresh_credentials(
 
         refresh_token = view.get("refresh_token")
         if not refresh_token:
-            logger.warning("[oauth] credential file has no refresh_token — cannot refresh (%s)", path)
+            logger.warning(f"[oauth] credential file has no refresh_token — cannot refresh ({path})")
             if access_token:
                 raise RuntimeError(
                     f"No refresh_token in {path} and quota verify failed for access token "
@@ -841,45 +856,31 @@ async def ensure_fresh_credentials(
 
         client_id = _client_id(kind)
         logger.info(
-            "[oauth] Refreshing access token (%s, kind=%s, refresh_suffix=%s, access_suffix=%s, client_id=%s...%s, pool_account=%s, force=%s)",
-            os.path.basename(path),
-            kind,
-            _token_suffix(refresh_token),
-            _token_suffix(access_token),
-            client_id[:20],
-            client_id[-10:],
-            pool_account_id or "none",
-            force,
+            f"[oauth] Refreshing access token ({os.path.basename(path)}, kind={kind}, refresh_suffix={_token_suffix(refresh_token)}, access_suffix={_token_suffix(access_token)}, client_id={client_id[:20]}...{client_id[-10:]}, pool_account={pool_account_id or 'none'}, force={force})"
         )
         try:
-            new_token = await refresh_google_token(refresh_token, proxy=proxy, kind=kind)
+            new_token = await refresh_google_token(
+                refresh_token,
+                proxy=proxy,
+                kind=kind,
+                account_id=pool_account_id,
+            )
         except (RuntimeError, Exception) as e:
             if access_token and await verify_access_token(access_token, proxy=proxy):
                 logger.warning(
-                    "[oauth] refresh failed but quota verify OK — using existing access token (%s, access_suffix=%s, pool_account=%s): %s",
-                    os.path.basename(path),
-                    _token_suffix(access_token),
-                    pool_account_id or "none",
-                    e,
+                    f"[oauth] refresh failed but quota verify OK — using existing access token ({os.path.basename(path)}, access_suffix={_token_suffix(access_token)}, pool_account={pool_account_id or 'none'}): {e}"
                 )
                 return False
 
             hint = (
-                "refresh_token on disk may be stale or revoked — disk access_suffix=%s may differ "
+                f"refresh_token on disk may be stale or revoked — disk access_suffix={_token_suffix(access_token)} may differ "
                 "from agy in-memory Bearer; copy working token from HTTP Toolkit, run "
                 "scripts/patch_access_token.py, or set AGY_ACCESS_TOKEN, then re-snapshot the pool "
                 "account (POST /v1/accounts or scripts/add_account_to_pool.py)"
             )
+            proxy_str = "yes" if proxy else "no"
             logger.warning(
-                "[oauth] refresh failed for %s (kind=%s, refresh_suffix=%s, access_suffix=%s, pool_account=%s, proxy=%s): %s. %s",
-                path,
-                kind,
-                _token_suffix(refresh_token),
-                _token_suffix(access_token),
-                pool_account_id or "none",
-                "yes" if proxy else "no",
-                e,
-                hint % _token_suffix(access_token),
+                f"[oauth] refresh failed for {path} (kind={kind}, refresh_suffix={_token_suffix(refresh_token)}, access_suffix={_token_suffix(access_token)}, pool_account={pool_account_id or 'none'}, proxy={proxy_str}): {e}. {hint}"
             )
             raise
 
@@ -896,7 +897,7 @@ async def ensure_fresh_credentials(
         _write_token_file(path, updated)
         _set_active_credential(path, kind)
         invalidate_verify_cache(access_token)
-        logger.info("[oauth] access token refreshed and saved to %s", path)
+        logger.info(f"[oauth] access token refreshed and saved to {path}")
         if pool_account_id:
             from app.core import pool_manager
 
@@ -960,6 +961,7 @@ async def ensure_fresh_sqlite_account(
             proxy=effective_proxy,
             client_id=account.get("client_id"),
             client_secret=account.get("client_secret"),
+            account_id=account_id,
         )
         expiry_ts = time.time() + int(new_token.get("expires_in", 3600))
         account_store.update_account_tokens(
@@ -984,7 +986,7 @@ async def ensure_fresh_sqlite_account(
         if name or picture:
             account_store.update_account_profile(account_id, name=name, picture=picture)
         invalidate_verify_cache(account.get("access_token"))
-        logger.info("[oauth] SQLite account %s access token refreshed", account_id)
+        logger.info(f"[oauth] SQLite account {account_id} access token refreshed")
         return True
 
 

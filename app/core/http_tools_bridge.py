@@ -193,7 +193,7 @@ def _max_tool_result_chars(*, aggressive: bool = False, is_recent: bool = True) 
 def _trim_tool_result_text(text: str, limit: int) -> str:
     if len(text) <= limit:
         return text
-    logger.info("[http] trimmed tool result %s chars -> %s", len(text), limit)
+    logger.info(f"[http] trimmed tool result {len(text)} chars -> {limit}")
     return text[:limit] + "\n...[truncated]"
 
 
@@ -226,7 +226,7 @@ def finalize_pending_tool_calls(pending: dict[str, dict]) -> List[dict]:
     for key, tc in list(pending.items()):
         if not tc.get("name"):
             if http_debug_enabled() and tc.get("input"):
-                logger.warning("[http] dropping unnamed pending tool call key=%s", key)
+                logger.warning(f"[http] dropping unnamed pending tool call key={key}")
             continue
         finalized.append({k: v for k, v in tc.items() if not k.startswith("_")})
     return finalized
@@ -295,6 +295,18 @@ def encode_tool_id(fc_id: str = "", thought_sig: str = "") -> str:
         safe_sig = _to_urlsafe_sig(thought_sig)
         return f"call_{clean_fc}__sig_{safe_sig}"
     return f"call_{clean_fc}"
+
+
+# Google-documented bypass when replaying history from models that never issued
+# thought signatures (Claude → Gemini switch, synthetic tool turns, etc.).
+# https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/thought-signatures
+SKIP_THOUGHT_SIGNATURE_VALIDATOR = "skip_thought_signature_validator"
+
+
+def resolve_thought_signature(thought_sig: Optional[str] = None) -> str:
+    """Return a Gemini-acceptable thoughtSignature for a functionCall part."""
+    sig = (thought_sig or "").strip()
+    return sig or SKIP_THOUGHT_SIGNATURE_VALIDATOR
 
 
 def stream_tool_call_key(tc: dict) -> str:
@@ -507,9 +519,10 @@ def messages_to_gemini_contents(
                 fc_part: dict = {"name": name, "args": args}
                 if fc_id:
                     fc_part["id"] = fc_id
-                part: dict = {"functionCall": fc_part}
-                if thought_sig:
-                    part["thoughtSignature"] = thought_sig
+                part: dict = {
+                    "functionCall": fc_part,
+                    "thoughtSignature": resolve_thought_signature(thought_sig),
+                }
                 parts.append(part)
             if parts:
                 contents.append({"role": "model", "parts": parts})
@@ -602,7 +615,7 @@ def extract_stream_parts_from_response(
     thought_text = "".join(thought_chunks) if (thought_chunks and allow_thought_text) else ""
 
     if finish_reason and not visible_text and not tool_calls and not thought_text:
-        logger.debug("[http] empty stream chunk finishReason=%s", finish_reason)
+        logger.debug(f"[http] empty stream chunk finishReason={finish_reason}")
 
     return visible_text, thought_text, tool_calls, finish_reason
 

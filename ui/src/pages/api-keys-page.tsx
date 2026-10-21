@@ -19,7 +19,231 @@ import {
   BookOpen,
   ChevronDown,
   ChevronRight,
+  Play,
+  Loader2,
 } from 'lucide-react';
+
+function ClaudeCliQuickstart({ apiKey }: { apiKey: string }) {
+  const [status, setStatus] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
+  const [selectedModel, setSelectedModel] = useState('max-gem');
+  const [submitting, setSubmitting] = useState(false);
+  const [msg, setMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [copiedKey, setCopiedKey] = useState<string | null>(null);
+
+  const fetchStatus = async () => {
+    setLoading(true);
+    try {
+      const res = await fetch(apiUrl('/v1/claude-cli/status'), {
+        headers: { Authorization: `Bearer ${apiKey}` },
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setStatus(data);
+        if (data.current_model) {
+          setSelectedModel(data.current_model);
+        }
+      }
+    } catch {
+      // ignore
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchStatus();
+  }, [apiKey]);
+
+  const handleSetup = async (launch: boolean) => {
+    setSubmitting(true);
+    setMsg(null);
+    try {
+      const res = await fetch(apiUrl('/v1/claude-cli/setup'), {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify({
+          model: selectedModel,
+          api_key: apiKey,
+          launch,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.detail || 'Не удалось настроить gclaude');
+      }
+      if (launch) {
+        setMsg({ type: 'success', text: `Терминал успешно запущен с gclaude (модель ${selectedModel})!` });
+      } else {
+        setMsg({
+          type: 'success',
+          text: `Файл gclaude.bat сохранен в ${data.bat_path} (модель ${selectedModel})! Команда gclaude готова к вызову в любой командной строке.`,
+        });
+      }
+      await fetchStatus();
+    } catch (err: any) {
+      setMsg({ type: 'error', text: err.message || 'Ошибка настройки' });
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const copyCmd = (text: string, id: string) => {
+    navigator.clipboard.writeText(text);
+    setCopiedKey(id);
+    setTimeout(() => setCopiedKey(null), 2000);
+  };
+
+  if (loading && !status) {
+    return (
+      <div className="border rounded-xl bg-card p-4 flex items-center justify-center text-xs text-muted-foreground">
+        <Loader2 className="w-4 h-4 animate-spin mr-2" /> Проверка наличия Claude CLI...
+      </div>
+    );
+  }
+
+  // Not installed state: show Anthropic official install guide
+  if (!status?.installed) {
+    return (
+      <div className="border border-amber-500/30 rounded-xl bg-amber-500/5 text-card-foreground shadow-sm p-5 space-y-4">
+        <div className="flex items-start justify-between gap-4">
+          <div className="space-y-1">
+            <div className="flex items-center gap-2">
+              <AlertCircle className="w-5 h-5 text-amber-500" />
+              <h2 className="text-base font-semibold text-foreground">Claude Code CLI не найден в системе</h2>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Чтобы запускать Claude Code через agy2api с моделью max-gem, сначала установите официальный CLI от Anthropic.
+            </p>
+          </div>
+          <Button variant="outline" size="sm" onClick={fetchStatus} disabled={loading} className="shrink-0 gap-1.5 text-xs">
+            <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
+            Проверить снова
+          </Button>
+        </div>
+
+        <div className="space-y-3 pt-1">
+          <div className="text-xs font-semibold text-foreground">Инструкция по установке (из документации Anthropic):</div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
+            {/* Windows PowerShell */}
+            <div className="p-3 rounded-lg border bg-background/80 space-y-2">
+              <div className="flex items-center justify-between font-medium text-foreground">
+                <span>Windows (PowerShell)</span>
+                <button
+                  onClick={() => copyCmd(status?.install_guide?.powershell || 'irm https://storage.googleapis.com/claude-code-dist/install.ps1 | iex', 'ps')}
+                  className="inline-flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground px-2 py-0.5 rounded bg-muted"
+                >
+                  {copiedKey === 'ps' ? <Check className="w-3 h-3 text-emerald-500" /> : <Copy className="w-3 h-3" />}
+                  <span>{copiedKey === 'ps' ? 'Скопировано' : 'Копировать'}</span>
+                </button>
+              </div>
+              <pre className="font-mono text-[11px] bg-muted/60 p-2 rounded overflow-x-auto text-muted-foreground select-all">
+                {status?.install_guide?.powershell || 'irm https://storage.googleapis.com/claude-code-dist/install.ps1 | iex'}
+              </pre>
+            </div>
+
+            {/* npm */}
+            <div className="p-3 rounded-lg border bg-background/80 space-y-2">
+              <div className="flex items-center justify-between font-medium text-foreground">
+                <span>Через npm (любая ОС, Node.js 18+)</span>
+                <button
+                  onClick={() => copyCmd(status?.install_guide?.npm || 'npm install -g @anthropic-ai/claude-code', 'npm')}
+                  className="inline-flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground px-2 py-0.5 rounded bg-muted"
+                >
+                  {copiedKey === 'npm' ? <Check className="w-3 h-3 text-emerald-500" /> : <Copy className="w-3 h-3" />}
+                  <span>{copiedKey === 'npm' ? 'Скопировано' : 'Копировать'}</span>
+                </button>
+              </div>
+              <pre className="font-mono text-[11px] bg-muted/60 p-2 rounded overflow-x-auto text-muted-foreground select-all">
+                {status?.install_guide?.npm || 'npm install -g @anthropic-ai/claude-code'}
+              </pre>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Installed state: quickstart launcher card
+  return (
+    <div className="border border-primary/30 rounded-xl bg-card text-card-foreground shadow-sm p-5 space-y-4">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+        <div className="space-y-1">
+          <div className="flex items-center gap-2">
+            <Terminal className="w-5 h-5 text-primary" />
+            <h2 className="text-base font-semibold text-foreground">Быстрый запуск Claude Code (gclaude)</h2>
+            <span className="px-2 py-0.5 rounded-full text-[11px] bg-emerald-500/15 text-emerald-500 border border-emerald-500/30 font-medium">
+              CLI установлен
+            </span>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            Создает файл <code className="bg-muted px-1 rounded text-[11px]">gclaude.bat</code> в папке User/bin с нужными переменными и моделью. Запуск по команде <code className="bg-muted px-1 rounded text-[11px] font-bold text-foreground">gclaude</code> в любой командной строке без изменения settings.json.
+          </p>
+        </div>
+
+        <button
+          onClick={() => copyCmd('gclaude', 'run_cmd')}
+          className="inline-flex items-center gap-1.5 self-start sm:self-auto text-xs px-2.5 py-1.5 rounded-md bg-muted hover:bg-muted/80 text-foreground font-mono transition-colors border"
+          title="Скопировать команду запуска"
+        >
+          {copiedKey === 'run_cmd' ? <Check className="w-3.5 h-3.5 text-emerald-500" /> : <Copy className="w-3.5 h-3.5" />}
+          <span className="font-bold">gclaude</span>
+        </button>
+      </div>
+
+      <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 pt-1">
+        <div className="flex items-center gap-2 flex-1 max-w-sm">
+          <label className="text-xs font-medium text-muted-foreground whitespace-nowrap">Модель:</label>
+          <Input
+            value={selectedModel}
+            onChange={(e) => setSelectedModel(e.target.value)}
+            placeholder="max-gem"
+            className="h-9 text-xs font-mono"
+          />
+        </div>
+
+        <div className="flex items-center gap-2">
+          <Button
+            size="sm"
+            onClick={() => handleSetup(true)}
+            disabled={submitting}
+            className="h-9 gap-1.5 text-xs bg-primary hover:bg-primary/90 text-primary-foreground font-medium"
+          >
+            {submitting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Play className="w-3.5 h-3.5" />}
+            Запустить Claude Code ({selectedModel})
+          </Button>
+
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => handleSetup(false)}
+            disabled={submitting}
+            className="h-9 gap-1.5 text-xs"
+          >
+            Обновить gclaude.bat
+          </Button>
+        </div>
+      </div>
+
+      {msg && (
+        <div
+          className={`p-3 rounded-lg text-xs flex items-center gap-2 ${
+            msg.type === 'success'
+              ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20'
+              : 'bg-destructive/10 text-destructive border border-destructive/20'
+          }`}
+        >
+          {msg.type === 'success' ? <CheckCircle2 className="w-4 h-4 shrink-0" /> : <AlertCircle className="w-4 h-4 shrink-0" />}
+          <span>{msg.text}</span>
+        </div>
+      )}
+    </div>
+  );
+}
 
 function IntegrationGuide() {
   const [open, setOpen] = useState(true);
@@ -317,6 +541,9 @@ export function ApiKeysPage() {
             Manage your local master key and create limited API keys with token quotas.
           </p>
         </div>
+
+        {/* Quickstart Claude Code CLI */}
+        <ClaudeCliQuickstart apiKey={apiKey} />
 
         {/* Integration Quick Guide */}
         <IntegrationGuide />

@@ -13,12 +13,13 @@ from fastapi.staticfiles import StaticFiles
 
 from app.api.accounts_routes import router as accounts_router
 from app.api.anthropic_routes import router as anthropic_router
+from app.api.claude_cli_routes import router as claude_cli_router
 from app.api.keys_routes import router as keys_router
 from app.api.mcp_routes import router as mcp_router
 from app.api.routes import router as api_router
 from app.api.settings_routes import reload_env_if_modified, router as settings_router
 from app.api.stats_routes import router as stats_router
-from app.core import account_store, pool_manager, stats_store
+from app.core import account_store, oauth_refresh, pool_manager, stats_store
 from app.core.logging_setup import setup_logging, trace_id_var
 from app.core.model_manager import get_available_models
 
@@ -43,6 +44,7 @@ async def agy_garbage_collector():
                         print(f"[Garbage Collector] Deleted old conversation log: {folder}")
             # 2. Prune old prompt/response text in stats DB (> 30 days), preserving count/tokens/status/errors
             await stats_store.prune_old_request_previews(stats_retention_seconds)
+            await stats_store.prune_chat_turns()
         except Exception as e:
             print(f"[Garbage Collector] Error cleaning up: {e}")
 
@@ -66,9 +68,11 @@ async def lifespan(app: FastAPI):
     account_store.init_accounts_table()
     account_store.sync_all_account_sources()
     await pool_manager.init_pool_state()
+    oauth_refresh.init_quota_cache_from_db()
 
     task = asyncio.create_task(agy_garbage_collector())
     model_warmup = asyncio.create_task(get_available_models())
+    quota_loop_task = asyncio.create_task(pool_manager.periodic_quota_verifier_loop())
     autosync_task = None
     if os.environ.get("AGY_POOL_GIT_AUTOSYNC", "false").strip().lower() == "true":
         autosync_task = asyncio.create_task(pool_git_autosync_loop())
@@ -77,6 +81,7 @@ async def lifespan(app: FastAPI):
 
     task.cancel()
     model_warmup.cancel()
+    quota_loop_task.cancel()
     if autosync_task:
         autosync_task.cancel()
 
@@ -96,6 +101,7 @@ app.include_router(stats_router, prefix="/v1")
 app.include_router(accounts_router, prefix="/v1")
 app.include_router(settings_router, prefix="/v1")
 app.include_router(keys_router, prefix="/v1")
+app.include_router(claude_cli_router, prefix="/v1")
 app.include_router(mcp_router)
 
 

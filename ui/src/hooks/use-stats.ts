@@ -39,6 +39,21 @@ export interface AccountQuota {
   claude_weekly_reset?: string | null;
 }
 
+export interface QuotaCycle {
+  id: number;
+  account_id: string;
+  cycle_start_ts: number;
+  cycle_end_ts?: number | null;
+  initial_fraction: number;
+  current_fraction: number;
+  fraction_spent: number;
+  total_prompt_tokens: number;
+  total_completion_tokens: number;
+  total_requests: number;
+  model_stats: Record<string, { requests: number; prompt_tokens: number; completion_tokens: number }>;
+  is_active: number;
+}
+
 export interface PoolAccount {
   id: string;
   label: string;
@@ -57,6 +72,7 @@ export interface PoolAccount {
   total_completion_tokens: number;
   model_cooldowns?: Record<string, number>;
   quota?: AccountQuota;
+  active_cycle?: QuotaCycle | null;
 }
 
 export function useStats(pollIntervalMs = 30000) {
@@ -99,7 +115,12 @@ export function useStats(pollIntervalMs = 30000) {
   useEffect(() => {
     refresh();
     const interval = setInterval(refresh, pollIntervalMs);
-    return () => clearInterval(interval);
+    const handleAuthSuccess = () => refresh();
+    window.addEventListener('agy:auth-success', handleAuthSuccess);
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener('agy:auth-success', handleAuthSuccess);
+    };
   }, [refresh, pollIntervalMs]);
 
   return { summary, timeseries, accounts, poolEnabled, loading, error, refresh };

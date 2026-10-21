@@ -9,3 +9,20 @@ export function apiUrl(path: string): string {
   const base = getApiBaseUrl();
   return `${base}${cleanPath}`;
 }
+
+// Global 401 fetch interceptor: notifies app when API rejects credentials
+if (typeof window !== 'undefined' && !(window as any).__agy_fetch_intercepted__) {
+  (window as any).__agy_fetch_intercepted__ = true;
+  const originalFetch = window.fetch;
+  window.fetch = async function (...args) {
+    const res = await originalFetch.apply(this, args);
+    if (res.status === 401) {
+      const url = typeof args[0] === 'string' ? args[0] : (args[0] as Request)?.url || '';
+      // Don't trigger popup loop on verify endpoint itself
+      if (!url.includes('/auth/verify')) {
+        window.dispatchEvent(new CustomEvent('agy:unauthorized'));
+      }
+    }
+    return res;
+  };
+}
