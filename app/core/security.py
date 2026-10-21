@@ -15,6 +15,12 @@ ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_COMPAT_API_KEY", API_KEY)
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", os.environ.get("AGY_ADMIN_PASSWORD", ""))
 
 
+def is_admin_auth_required() -> bool:
+    """True only if an admin password was explicitly configured."""
+    pwd = (os.environ.get("ADMIN_PASSWORD") or os.environ.get("AGY_ADMIN_PASSWORD") or "").strip()
+    return bool(pwd)
+
+
 def get_api_key(
     credentials: HTTPAuthorizationCredentials | None = Security(security),
     authorization: str | None = Header(None),
@@ -26,15 +32,22 @@ def get_api_key(
         parts = authorization.split(" ", 1)
         provided = parts[1] if len(parts) == 2 else authorization
 
-    if not provided:
+    if not provided or not str(provided).strip() or str(provided).strip() in ("null", "undefined"):
+        if not is_admin_auth_required():
+            return "open-admin"
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="API key is required",
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    key_info = validate_and_consume_key(provided)
-    return key_info.key
+    try:
+        key_info = validate_and_consume_key(provided)
+        return key_info.key
+    except Exception:
+        if not is_admin_auth_required():
+            return str(provided)
+        raise
 
 
 def get_optional_api_key(
@@ -99,7 +112,9 @@ def require_master_key(
         parts = authorization.split(" ", 1)
         provided = parts[1] if len(parts) == 2 else authorization
 
-    if not provided or not str(provided).strip():
+    if not provided or not str(provided).strip() or str(provided).strip() in ("null", "undefined"):
+        if not is_admin_auth_required():
+            return "open-admin"
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Master key is required",
@@ -108,6 +123,8 @@ def require_master_key(
 
     key = str(provided).strip()
     if not is_master_key(key):
+        if not is_admin_auth_required():
+            return key
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Master key required for this operation",

@@ -11,9 +11,18 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+@router.get("/auth/status", summary="Check if admin authentication is required")
+async def auth_status():
+    from app.core.security import is_admin_auth_required
+
+    return {"auth_required": is_admin_auth_required()}
+
+
 @router.post("/auth/verify", summary="Verify admin password / API key")
 async def verify_auth(api_key: str = Depends(get_api_key)):
-    return {"status": "ok", "authenticated": True}
+    from app.core.security import is_admin_auth_required
+
+    return {"status": "ok", "authenticated": True, "auth_required": is_admin_auth_required()}
 
 
 def _read_local_log_tail(lines: int) -> str:
