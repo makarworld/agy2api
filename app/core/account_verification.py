@@ -86,30 +86,209 @@ def resolve_account_email(account_id: Optional[str] = None, url: Optional[str] =
 def _build_launcher_html(url: str, email: str) -> str:
     escaped_url = html.escape(url, quote=True)
     escaped_email = html.escape(email)
-    json_email = json.dumps(email, ensure_ascii=False)
     json_url = json.dumps(url)
 
     return f"""<!DOCTYPE html>
 <html lang="ru">
 <head>
   <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Проверка аккаунта {escaped_email}</title>
+  <style>
+    * {{ box-sizing: border-box; }}
+    body {{
+      margin: 0;
+      padding: 20px;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: #090d16;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      color: #f8fafc;
+    }}
+    .modal {{
+      width: 100%;
+      max-width: 540px;
+      background: #151d2f;
+      border: 1px solid #293548;
+      border-radius: 16px;
+      padding: 32px 28px;
+      box-shadow: 0 20px 40px -10px rgba(0, 0, 0, 0.6);
+      text-align: center;
+      animation: popIn 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+    }}
+    @keyframes popIn {{
+      from {{ opacity: 0; transform: scale(0.95); }}
+      to {{ opacity: 1; transform: scale(1); }}
+    }}
+    .icon-badge {{
+      width: 56px;
+      height: 56px;
+      margin: 0 auto 18px;
+      background: rgba(56, 189, 248, 0.12);
+      border: 1px solid rgba(56, 189, 248, 0.25);
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #38bdf8;
+      font-size: 26px;
+    }}
+    h2 {{
+      margin: 0 0 10px;
+      font-size: 21px;
+      font-weight: 700;
+      color: #ffffff;
+    }}
+    .desc {{
+      font-size: 14px;
+      line-height: 1.6;
+      color: #94a3b8;
+      margin: 0 0 20px;
+    }}
+    .desc b {{
+      color: #e2e8f0;
+      word-break: break-all;
+    }}
+    .url-box {{
+      width: 100%;
+      background: #0b1120;
+      border: 1px solid #1e293b;
+      border-radius: 8px;
+      padding: 10px 14px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 11px;
+      color: #64748b;
+      margin-bottom: 22px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      user-select: all;
+    }}
+    .btn-row {{
+      display: flex;
+      gap: 12px;
+    }}
+    .btn {{
+      flex: 1;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      padding: 13px 20px;
+      border-radius: 10px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      text-decoration: none;
+      transition: all 0.15s ease;
+      border: none;
+    }}
+    .btn-copy {{
+      background: #1e293b;
+      color: #f1f5f9;
+      border: 1px solid #334155;
+    }}
+    .btn-copy:hover {{
+      background: #27354a;
+      border-color: #475569;
+    }}
+    .btn-copy.copied {{
+      background: #064e3b;
+      border-color: #059669;
+      color: #34d399;
+    }}
+    .btn-open {{
+      background: #2563eb;
+      color: #ffffff;
+      box-shadow: 0 4px 14px rgba(37, 99, 235, 0.4);
+    }}
+    .btn-open:hover {{
+      background: #1d4ed8;
+    }}
+    .toast {{
+      margin-top: 14px;
+      font-size: 12px;
+      color: #34d399;
+      min-height: 18px;
+      transition: opacity 0.2s;
+    }}
+  </style>
 </head>
-<body style="margin:0;padding:40px;background:#0f172a;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;color:#f8fafc;">
-  <div style="max-width:560px;margin:40px auto;background:#1e293b;border-radius:12px;padding:28px;box-shadow:0 8px 24px rgba(0,0,0,0.3);border:1px solid #334155;">
-    <h2 style="margin-top:0;font-size:20px;color:#38bdf8;">Требуется проверка аккаунта</h2>
-    <p style="font-size:15px;line-height:1.6;color:#e2e8f0;">
+<body>
+  <div class="modal">
+    <div class="icon-badge">🔒</div>
+    <h2>Требуется проверка аккаунта</h2>
+    <p class="desc">
       Пройдите проверку, чтобы аккаунт <b>{escaped_email}</b> имел доступ к подписке.
     </p>
-    <div style="margin-top:20px;">
-      <a href="{escaped_url}" style="display:inline-block;padding:12px 24px;background:#2563eb;color:#fff;text-decoration:none;border-radius:8px;font-weight:600;font-size:14px;">Перейти к проверке Google</a>
+
+    <div class="url-box" id="urlBox" title="{escaped_url}">{escaped_url}</div>
+
+    <div class="btn-row">
+      <button class="btn btn-copy" id="copyBtn" onclick="copyLink()">
+        <span id="copyIcon">📋</span>
+        <span id="copyText">Скопировать</span>
+      </button>
+
+      <button class="btn btn-open" id="openBtn" onclick="openLink()">
+        <span>↗</span>
+        <span>Открыть</span>
+      </button>
     </div>
+
+    <div class="toast" id="toast"></div>
   </div>
+
   <script>
-    try {{
-      alert("Пройдите проверку чтобы аккаунт " + {json_email} + " имел доступ к подписке");
-    }} catch (e) {{}}
-    window.location.href = {json_url};
+    const verifyUrl = {json_url};
+
+    function copyLink() {{
+      const btn = document.getElementById('copyBtn');
+      const text = document.getElementById('copyText');
+      const icon = document.getElementById('copyIcon');
+      const toast = document.getElementById('toast');
+
+      const performCopy = () => {{
+        btn.classList.add('copied');
+        text.innerText = 'Скопировано!';
+        icon.innerText = '✓';
+        toast.innerText = 'Ссылка скопирована в буфер обмена';
+        setTimeout(() => {{
+          btn.classList.remove('copied');
+          text.innerText = 'Скопировать';
+          icon.innerText = '📋';
+          toast.innerText = '';
+        }}, 3000);
+      }};
+
+      if (navigator.clipboard && navigator.clipboard.writeText) {{
+        navigator.clipboard.writeText(verifyUrl).then(performCopy).catch(fallbackCopy);
+      }} else {{
+        fallbackCopy();
+      }}
+
+      function fallbackCopy() {{
+        try {{
+          const ta = document.createElement('textarea');
+          ta.value = verifyUrl;
+          ta.style.position = 'fixed';
+          ta.style.opacity = '0';
+          document.body.appendChild(ta);
+          ta.select();
+          document.execCommand('copy');
+          document.body.removeChild(ta);
+          performCopy();
+        }} catch (e) {{
+          toast.innerText = 'Не удалось скопировать, выделите ссылку вручную';
+        }}
+      }}
+    }}
+
+    function openLink() {{
+      window.location.href = verifyUrl;
+    }}
   </script>
 </body>
 </html>

@@ -70,11 +70,13 @@ class TestAccountVerification(unittest.TestCase):
         email = "user@test.org"
         html = _build_launcher_html(url, email)
 
-        self.assertIn("Пройдите проверку чтобы аккаунт ", html)
-        self.assertIn('"user@test.org"', html)
+        self.assertIn("user@test.org", html)
         self.assertIn("имел доступ к подписке", html)
-        self.assertIn(f'window.location.href = "{url}";', html)
-        self.assertIn('href="https://accounts.google.com/v3/signin/continue?plt=abc&amp;sarp=1"', html)
+        self.assertIn("Скопировать", html)
+        self.assertIn("Открыть", html)
+        self.assertIn(f'const verifyUrl = "{url}";', html)
+        self.assertIn("navigator.clipboard.writeText(verifyUrl)", html)
+        self.assertIn("window.location.href = verifyUrl;", html)
 
     @patch("subprocess.Popen")
     @patch("sys.platform", "win32")
