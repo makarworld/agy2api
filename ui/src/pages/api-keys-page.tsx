@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useApiKey } from '../hooks/use-api-key';
+import { useI18n } from '../lib/i18n';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { apiUrl } from '../lib/api';
@@ -24,6 +25,7 @@ import {
 } from 'lucide-react';
 
 function ClaudeCliQuickstart({ apiKey }: { apiKey: string }) {
+  const { t } = useI18n();
   const [status, setStatus] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [selectedModel, setSelectedModel] = useState('max-gem');
@@ -175,19 +177,19 @@ function ClaudeCliQuickstart({ apiKey }: { apiKey: string }) {
         <div className="space-y-1">
           <div className="flex items-center gap-2">
             <Terminal className="w-5 h-5 text-primary" />
-            <h2 className="text-base font-semibold text-foreground">Быстрый запуск Claude Code (gclaude)</h2>
+            <h2 className="text-base font-semibold text-foreground">{t.qsStep3Title}</h2>
             <span className="px-2 py-0.5 rounded-full text-[11px] bg-emerald-500/15 text-emerald-500 border border-emerald-500/30 font-medium">
-              CLI установлен
+              {t.qsCliInstalled}
             </span>
           </div>
           <p className="text-xs text-muted-foreground">
-            Создает файл <code className="bg-muted px-1 rounded text-[11px]">gclaude.bat</code> в папке User/bin с нужными переменными и моделью. Запуск по команде <code className="bg-muted px-1 rounded text-[11px] font-bold text-foreground">gclaude</code> в любой командной строке без изменения settings.json.
+            {t.qsStep3Desc}
           </p>
         </div>
 
         <button
           onClick={() => copyCmd('gclaude', 'run_cmd')}
-          className="inline-flex items-center gap-1.5 self-start sm:self-auto text-xs px-2.5 py-1.5 rounded-md bg-muted hover:bg-muted/80 text-foreground font-mono transition-colors border"
+          className="inline-flex items-center gap-1.5 self-start sm:self-auto text-xs px-2.5 py-1.5 rounded-md bg-muted hover:bg-muted/80 text-foreground font-mono transition-colors border cursor-pointer"
           title="Скопировать команду запуска"
         >
           {copiedKey === 'run_cmd' ? <Check className="w-3.5 h-3.5 text-emerald-500" /> : <Copy className="w-3.5 h-3.5" />}
@@ -197,7 +199,7 @@ function ClaudeCliQuickstart({ apiKey }: { apiKey: string }) {
 
       <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 pt-1">
         <div className="flex items-center gap-2 flex-1 max-w-sm">
-          <label className="text-xs font-medium text-muted-foreground whitespace-nowrap">Модель:</label>
+          <label className="text-xs font-medium text-muted-foreground whitespace-nowrap">{t.qsModelLabel}</label>
           <Input
             value={selectedModel}
             onChange={(e) => setSelectedModel(e.target.value)}
@@ -211,10 +213,10 @@ function ClaudeCliQuickstart({ apiKey }: { apiKey: string }) {
             size="sm"
             onClick={() => handleSetup(true)}
             disabled={submitting}
-            className="h-9 gap-1.5 text-xs bg-primary hover:bg-primary/90 text-primary-foreground font-medium"
+            className="h-9 gap-1.5 text-xs bg-primary hover:bg-primary/90 text-primary-foreground font-medium cursor-pointer"
           >
             {submitting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Play className="w-3.5 h-3.5" />}
-            Запустить Claude Code ({selectedModel})
+            {t.qsLaunchButton} ({selectedModel})
           </Button>
 
           <Button
@@ -222,9 +224,9 @@ function ClaudeCliQuickstart({ apiKey }: { apiKey: string }) {
             size="sm"
             onClick={() => handleSetup(false)}
             disabled={submitting}
-            className="h-9 gap-1.5 text-xs"
+            className="h-9 gap-1.5 text-xs cursor-pointer"
           >
-            Обновить gclaude.bat
+            {t.qsUpdateButton}
           </Button>
         </div>
       </div>
@@ -349,6 +351,7 @@ interface ManagedApiKey {
 
 export function ApiKeysPage() {
   const { apiKey, saveApiKey } = useApiKey();
+  const { t } = useI18n();
   const [inputValue, setInputValue] = useState(apiKey);
   const [saved, setSaved] = useState(false);
 
@@ -536,9 +539,9 @@ export function ApiKeysPage() {
     <div className="flex-1 p-6 md:p-8 overflow-auto">
       <div className="max-w-6xl mx-auto w-full space-y-6">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight">API Keys</h1>
+          <h1 className="text-2xl font-semibold tracking-tight">{t.keysTitle}</h1>
           <p className="text-sm text-muted-foreground mt-1">
-            Manage your local master key and create limited API keys with token quotas.
+            {t.keysSubtitle}
           </p>
         </div>
 

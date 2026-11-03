@@ -27,6 +27,7 @@ import ReactMarkdown from 'react-markdown';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Select } from '../components/ui/select';
+import { useI18n } from '../lib/i18n';
 import { useRequests, type ChatItem, type RequestItem } from '../hooks/use-requests';
 
 function formatTokens(n: number) {
@@ -1354,6 +1355,7 @@ function ChatCard({
 }
 
 export function RequestsPage() {
+  const { t } = useI18n();
   const {
     overview,
     chats,
@@ -1400,9 +1402,9 @@ export function RequestsPage() {
         {/* Top Header */}
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
           <div>
-            <h1 className="text-2xl font-bold tracking-tight">Requests</h1>
+            <h1 className="text-2xl font-bold tracking-tight">{t.requestsTitle}</h1>
             <p className="text-sm text-muted-foreground mt-1">
-              Monitor API requests, token stats, and conversation sessions grouped by chat.
+              {t.requestsSubtitle}
             </p>
           </div>
 
@@ -1430,7 +1432,7 @@ export function RequestsPage() {
               className="gap-2 cursor-pointer"
             >
             <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
-            Refresh
+            {t.refresh}
           </Button>
 
           <Button

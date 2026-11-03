@@ -2,6 +2,7 @@ import React from 'react';
 import { RefreshCw, BarChart3, Clock, Zap, ArrowDownRight, ArrowUpRight, Activity } from 'lucide-react';
 import { Button } from '../components/ui/button';
 import { useStats, type TimeseriesBucket } from '../hooks/use-stats';
+import { useI18n } from '../lib/i18n';
 import { AccountsTable } from '../components/accounts-table';
 import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
@@ -139,6 +140,7 @@ function CustomChartTooltip({ active, payload, label }: any) {
 }
 
 export function StatsPage() {
+  const { t } = useI18n();
   const { summary, timeseries, accounts, poolEnabled, loading, refresh } = useStats();
 
   const chartData: (TimeseriesBucket & { label: string; uncached_prompt_tokens: number })[] = timeseries.map((b) => ({
@@ -157,19 +159,19 @@ export function StatsPage() {
       <div className="max-w-7xl mx-auto w-full space-y-6">
         <div className="flex items-center justify-between">
           <div>
-            <h1 className="text-2xl font-semibold tracking-tight">Stats</h1>
+            <h1 className="text-2xl font-semibold tracking-tight">{t.statsTitle}</h1>
             <p className="text-sm text-muted-foreground mt-1">
-              Token usage, account pool health, and service uptime.
+              {t.statsSubtitle}
             </p>
           </div>
           <Button onClick={refresh} disabled={loading} variant="outline" size="sm" className="gap-2 cursor-pointer">
             <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
-            Refresh
+            {t.refresh}
           </Button>
         </div>
 
         {!summary ? (
-          <div className="text-muted-foreground text-sm py-8 text-center">Loading stats…</div>
+          <div className="text-muted-foreground text-sm py-8 text-center">{t.loading}</div>
         ) : (
           <div className="space-y-6">
             {/* 4 Balanced Metric Cards */}

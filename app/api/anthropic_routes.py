@@ -204,7 +204,39 @@ def _build_messages(system, messages, file_mgr: TempFileManager):
             entry["tool_results"] = tool_results
         normalized.append(entry)
 
-    return normalized, _extract_system_text(system), files_to_attach
+    # Clean assistant messages where raw text contains serialized tool call JSON
+    cleaned_normalized = []
+    for i, entry in enumerate(normalized):
+        if entry.get("role") == "assistant" and not entry.get("tool_calls"):
+            raw_text = entry.get("content", "")
+            if raw_text and ("{" in raw_text or "[" in raw_text):
+                from app.core.http_tools_bridge import parse_text_serialized_tool_call
+
+                vis_text, parsed_calls = parse_text_serialized_tool_call(raw_text)
+                if parsed_calls:
+                    # Check if next message is user with tool_results
+                    next_has_results = False
+                    if i + 1 < len(normalized):
+                        next_msg = normalized[i + 1]
+                        if next_msg.get("role") == "user" and next_msg.get("tool_results"):
+                            next_has_results = True
+
+                    if next_has_results:
+                        entry["content"] = vis_text
+                        entry["tool_calls"] = parsed_calls
+                        cleaned_normalized.append(entry)
+                    elif vis_text:
+                        entry["content"] = vis_text
+                        cleaned_normalized.append(entry)
+                    else:
+                        logger.info(
+                            f"[anthropic] Dropped orphaned serialized tool JSON from assistant context: {parsed_calls[0].get('name')}"
+                        )
+                        continue
+                    continue
+        cleaned_normalized.append(entry)
+
+    return cleaned_normalized, _extract_system_text(system), files_to_attach
 
 
 def _extract_text(agy_response) -> str:
@@ -355,7 +387,7 @@ async def _stream_response(
                 yield ": ping\n\n"
                 continue
 
-            if "tool_calls" in piece and "usage" not in piece:
+            if "tool_calls" in piece:
                 for tc in piece["tool_calls"]:
                     tool_key = _tool_dedupe_key(tc)
                     if tool_key in emitted_tool_keys:
@@ -431,13 +463,6 @@ async def _stream_response(
                     stop_reason = piece["stop_reason"]
                 if piece.get("error"):
                     raise RuntimeError(piece["error"])
-                if piece.get("tool_calls"):
-                    for tc in piece["tool_calls"]:
-                        tool_key = _tool_dedupe_key(tc)
-                        if tool_key in emitted_tool_keys:
-                            continue
-                        emitted_tool_keys.add(tool_key)
-                        tool_calls_collected.append(tc)
     except Exception as e:
         logger.error(f"[anthropic] Stream exception ({type(e).__name__}): {e}")
         err_str = str(e)

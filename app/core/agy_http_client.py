@@ -535,8 +535,6 @@ async def stream_completion(
 
             handle_verification_error(exc, account_id=account_id)
             if account_id:
-                cooldown = int(os.environ.get("AGY_POOL_COOLDOWN_SECONDS", "3600"))
-                await pool_manager.mark_rate_limited(account_id, cooldown, model=backend_model)
                 excluded.add(account_id)
                 logger.warning(
                     f"[http] _get_project_id failed for account={account_id}, rotating to next account: {exc}"
@@ -740,7 +738,8 @@ async def stream_completion(
 
                             if delta_text:
                                 if tools_present and (
-                                    buffering_serialized_text or (not full_text and delta_text.lstrip().startswith("{"))
+                                    buffering_serialized_text
+                                    or (not full_text and delta_text.lstrip().startswith(("{", "[", "```")))
                                 ):
                                     buffering_serialized_text = True
                                     serialized_text_buffer += delta_text
@@ -812,13 +811,13 @@ async def stream_completion(
         full_text = full_text.strip()
 
         if rate_limit_detail is not None:
-            cooldown = int(os.environ.get("AGY_POOL_COOLDOWN_SECONDS", "3600"))
+            cooldown = int(os.environ.get("AGY_POOL_MODEL_COOLDOWN_SECONDS", "60"))
             previous_account_id = account_id
             await pool_manager.mark_rate_limited(account_id, cooldown, model=backend_model)
             excluded.add(account_id)
             logger.warning(
                 f"[http] rotating account={account_id} model={backend_model} endpoint=streamGenerateContent "
-                f"reason=account_rate_limit next=select: {rate_limit_detail}"
+                f"reason=account_rate_limit cooldown={cooldown}s next=select: {rate_limit_detail}"
             )
             try:
                 account_id, proxy, access_token = await pool_manager.acquire_http_account(
@@ -850,6 +849,10 @@ async def stream_completion(
             if parsed_calls:
                 full_text = parsed_text
                 all_tool_calls = parsed_calls
+                if parsed_text and not yielded_any_content:
+                    for item in _process_visible_text(parsed_text):
+                        yield item
+                        yielded_any_content = True
             elif serialized_text_buffer:
                 buffering_serialized_text = False
                 clean_serialized = serialized_text_buffer.strip()
@@ -903,7 +906,7 @@ async def stream_completion(
             return
 
         if account_id:
-            await pool_manager.mark_success(account_id)
+            await pool_manager.mark_success(account_id, model=backend_model)
 
         candidate_parts = []
         if full_text:
@@ -1071,5 +1074,5 @@ async def generate_image(
             image = _extract_image_from_json(resp_json)
 
         if account_id:
-            await pool_manager.mark_success(account_id)
+            await pool_manager.mark_success(account_id, model=backend_model)
         return image

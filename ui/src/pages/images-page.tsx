@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { useApiKey } from '../hooks/use-api-key';
+import { useI18n } from '../lib/i18n';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Image as ImageIcon, Loader2, Download, Copy, Check, Eye, X } from 'lucide-react';
@@ -7,6 +8,7 @@ import { apiUrl } from '../lib/api';
 
 export function ImagesPage() {
   const { apiKey } = useApiKey();
+  const { t } = useI18n();
   const [prompt, setPrompt] = useState('');
   const [images, setImages] = useState<string[]>([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -17,21 +19,21 @@ export function ImagesPage() {
   const handleGenerate = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!prompt.trim()) return;
-    if (!apiKey) {
-      alert('Сначала укажите API-ключ в настройках.');
-      return;
-    }
 
     setIsLoading(true);
     setError(null);
 
     try {
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+      };
+      if (apiKey) {
+        headers['Authorization'] = `Bearer ${apiKey}`;
+      }
+
       const response = await fetch(apiUrl('/v1/images/generations'), {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${apiKey}`,
-        },
+        headers,
         body: JSON.stringify({
           prompt: prompt,
           n: 1,
@@ -77,10 +79,10 @@ export function ImagesPage() {
         <div>
           <h1 className="text-2xl font-semibold tracking-tight flex items-center gap-2.5">
             <ImageIcon className="w-6 h-6 text-primary" />
-            Image Generation
+            {t.imagesTitle}
           </h1>
           <p className="text-sm text-muted-foreground mt-1">
-            Тестирование эндпоинта генерации изображений /v1/images/generations.
+            {t.imagesSubtitle}
           </p>
         </div>
 
@@ -88,19 +90,19 @@ export function ImagesPage() {
         <div className="border border-border/80 rounded-xl p-5 bg-card shadow-xs space-y-3">
           <form onSubmit={handleGenerate} className="space-y-3">
             <label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-              Промпт для генерации
+              {t.imagesPromptPlaceholder}
             </label>
             <div className="flex gap-3">
               <Input
                 value={prompt}
                 onChange={(e) => setPrompt(e.target.value)}
-                placeholder="Опишите изображение (e.g. futuristic cyberpunk city in neon lights, 4k)..."
+                placeholder={t.imagesPromptPlaceholder}
                 disabled={isLoading}
                 className="h-10 text-sm"
               />
               <Button type="submit" disabled={isLoading || !prompt.trim()} className="h-10 gap-2 shrink-0 cursor-pointer">
                 {isLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <ImageIcon className="w-4 h-4" />}
-                <span>Сгенерировать</span>
+                <span>{isLoading ? t.imagesGenerating : t.imagesGenerateBtn}</span>
               </Button>
             </div>
           </form>

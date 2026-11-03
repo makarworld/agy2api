@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { LogIn, Pencil, AlertTriangle, X, RefreshCw, CheckCircle2, Trash2, Check, Clock, Cpu } from 'lucide-react';
 import { type PoolAccount } from '../hooks/use-stats';
 import { useApiKey } from '../hooks/use-api-key';
+import { useI18n } from '../lib/i18n';
 import { apiUrl } from '../lib/api';
 import { Button } from './ui/button';
 
@@ -385,6 +386,7 @@ export function AccountsTable({
   onRelogin?: (acc: PoolAccount) => void;
 }) {
   const { apiKey } = useApiKey();
+  const { t } = useI18n();
   const [selectedErrorAcc, setSelectedErrorAcc] = useState<PoolAccount | null>(null);
   const [selectedCycleAcc, setSelectedCycleAcc] = useState<PoolAccount | null>(null);
   const [refreshingQuotaId, setRefreshingQuotaId] = useState<string | null>(null);
@@ -498,7 +500,7 @@ export function AccountsTable({
   if (accounts.length === 0) {
     return (
       <div className="border border-border/80 rounded-xl p-4 bg-card text-sm text-muted-foreground">
-        В пуле пока нет аккаунтов. Нажмите «Добавить аккаунт» выше для подключения.
+        {t.tableNoAccounts}
       </div>
     );
   }
@@ -520,14 +522,14 @@ export function AccountsTable({
         <table className="w-full text-sm">
           <thead className="bg-muted/40 text-muted-foreground border-b border-border/80 text-[11px] font-medium uppercase tracking-wider">
             <tr>
-              <th className="text-left py-2.5 px-3 whitespace-nowrap">Аккаунт</th>
-              <th className="text-left py-2.5 px-3 whitespace-nowrap">Квоты</th>
-              <th className="text-left py-2.5 px-2.5 whitespace-nowrap">Статус</th>
-              <th className="text-left py-2.5 px-2.5 whitespace-nowrap">Прокси</th>
-              <th className="text-right py-2.5 px-2.5 whitespace-nowrap">Запросы</th>
-              <th className="text-right py-2.5 px-2.5 whitespace-nowrap">Токены</th>
-              <th className="text-right py-2.5 px-2.5 whitespace-nowrap">Активность</th>
-              <th className="text-right py-2.5 px-3 whitespace-nowrap">Действия</th>
+              <th className="text-left py-2.5 px-3 whitespace-nowrap">{t.tableAccount}</th>
+              <th className="text-left py-2.5 px-3 whitespace-nowrap">{t.tableGeminiQuota}</th>
+              <th className="text-left py-2.5 px-2.5 whitespace-nowrap">{t.tableStatus}</th>
+              <th className="text-left py-2.5 px-2.5 whitespace-nowrap">{t.tableProxy}</th>
+              <th className="text-right py-2.5 px-2.5 whitespace-nowrap">{t.navRequests}</th>
+              <th className="text-right py-2.5 px-2.5 whitespace-nowrap">{t.statsTotalTokens}</th>
+              <th className="text-right py-2.5 px-2.5 whitespace-nowrap">{t.status}</th>
+              <th className="text-right py-2.5 px-3 whitespace-nowrap">{t.tableActions}</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-border/60">

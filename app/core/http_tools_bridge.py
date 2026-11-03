@@ -635,31 +635,191 @@ def extract_parts_from_response(
     return visible_text, tool_calls, finish_reason
 
 
-def parse_text_serialized_tool_call(text: str) -> Tuple[str, List[dict]]:
-    """Parse Gemini's occasional Python-repr tool-call fallback safely."""
-    candidate = text[text.find("{") :].strip()
-    if not candidate or "'tool_calls'" not in candidate:
-        return text, []
-    try:
-        parsed = ast.parse(candidate, mode="exec")
-        expression = parsed.body[0].value if parsed.body and isinstance(parsed.body[0], ast.Expr) else None
-        payload = ast.literal_eval(expression) if expression is not None else None
-    except (SyntaxError, ValueError, TypeError):
-        return text, []
-    if not isinstance(payload, dict) or payload.get("stop_reason") != "tool_use":
-        return text, []
-    raw_calls = payload.get("tool_calls")
-    if not isinstance(raw_calls, list):
-        return text, []
-    calls = []
-    for call in raw_calls:
-        if not isinstance(call, dict) or not isinstance(call.get("name"), str):
-            return text, []
-        calls.append(
-            {
-                "id": str(call.get("id") or ""),
-                "name": call["name"],
-                "input": call.get("input") if isinstance(call.get("input"), dict) else {},
-            }
+def _is_tool_dict(d: Any) -> bool:
+    """Check if dictionary has signatures of a tool call."""
+    if not isinstance(d, dict):
+        return False
+    name = (
+        d.get("name")
+        or d.get("tool_name")
+        or d.get("tool")
+        or (d.get("function", {}) if isinstance(d.get("function"), dict) else {}).get("name")
+    )
+    if d.get("type") == "tool_use" and isinstance(d.get("name"), str) and d["name"].strip():
+        name = d["name"].strip()
+    if not isinstance(name, str) or not name.strip():
+        return False
+
+    has_args = (
+        any(k in d for k in ("input", "arguments", "parameters", "args", "tool_input"))
+        or (isinstance(d.get("function"), dict) and "arguments" in d["function"])
+        or d.get("type") == "tool_use"
+    )
+    return bool(has_args)
+
+
+def _normalize_extracted_tool_call(d: dict, default_id: Optional[str] = None) -> dict:
+    name = (
+        d.get("name")
+        or d.get("tool_name")
+        or d.get("tool")
+        or (d.get("function", {}) if isinstance(d.get("function"), dict) else {}).get("name")
+    )
+    if d.get("type") == "tool_use" and isinstance(d.get("name"), str):
+        name = d["name"]
+    name = str(name).strip()
+
+    args = (
+        d.get("input")
+        if d.get("input") is not None
+        else (
+            d.get("arguments")
+            if d.get("arguments") is not None
+            else (
+                d.get("parameters")
+                if d.get("parameters") is not None
+                else (
+                    d.get("args")
+                    if d.get("args") is not None
+                    else (
+                        d.get("tool_input")
+                        if d.get("tool_input") is not None
+                        else (d.get("function", {}) if isinstance(d.get("function"), dict) else {}).get("arguments")
+                    )
+                )
+            )
         )
-    return str(payload.get("text") or ""), calls
+    )
+
+    if isinstance(args, str):
+        try:
+            args = json.loads(args)
+        except Exception:
+            args = {"raw": args}
+    elif not isinstance(args, dict):
+        args = {}
+
+    import uuid
+
+    call_id = str(d.get("id") or default_id or f"toolu_{uuid.uuid4().hex[:24]}")
+    return {
+        "id": call_id,
+        "name": name,
+        "input": args,
+    }
+
+
+def parse_text_serialized_tool_call(text: str) -> Tuple[str, List[dict]]:
+    """Parse tool calls serialized as text/JSON or Python repr in model response."""
+    if not text or not text.strip():
+        return text, []
+
+    # 1. Legacy Python AST fallback (e.g. {'tool_calls': [...], 'stop_reason': 'tool_use'})
+    if "'tool_calls'" in text:
+        start_brace = text.find("{")
+        if start_brace != -1:
+            candidate = text[start_brace:].strip()
+            try:
+                parsed = ast.parse(candidate, mode="exec")
+                expression = parsed.body[0].value if parsed.body and isinstance(parsed.body[0], ast.Expr) else None
+                payload = ast.literal_eval(expression) if expression is not None else None
+                if isinstance(payload, dict) and payload.get("stop_reason") == "tool_use":
+                    raw_calls = payload.get("tool_calls")
+                    if isinstance(raw_calls, list) and raw_calls:
+                        calls = []
+                        for call in raw_calls:
+                            if isinstance(call, dict) and isinstance(call.get("name"), str):
+                                calls.append(_normalize_extracted_tool_call(call))
+                        if calls:
+                            return str(payload.get("text") or ""), calls
+            except (SyntaxError, ValueError, TypeError):
+                pass
+
+    # 2. Markdown fenced code blocks: ```json ... ``` or ``` ... ```
+    md_pattern = re.compile(r"```(?:json)?\s*([\s\S]*?)\s*```", re.IGNORECASE)
+    for m in md_pattern.finditer(text):
+        raw_block = m.group(1).strip()
+        if raw_block.startswith(("{", "[")):
+            try:
+                parsed = json.loads(raw_block)
+                calls = []
+                if isinstance(parsed, list):
+                    calls = [_normalize_extracted_tool_call(x) for x in parsed if _is_tool_dict(x)]
+                elif isinstance(parsed, dict):
+                    if "tool_calls" in parsed and isinstance(parsed["tool_calls"], list):
+                        calls = [_normalize_extracted_tool_call(x) for x in parsed["tool_calls"] if _is_tool_dict(x)]
+                    elif _is_tool_dict(parsed):
+                        calls = [_normalize_extracted_tool_call(parsed)]
+                if calls:
+                    visible = (text[: m.start()] + text[m.end() :]).strip()
+                    return visible, calls
+            except Exception:
+                pass
+
+    # 3. Direct JSON parse of entire text (trimmed)
+    trimmed = text.strip()
+    if trimmed.startswith(("{", "[")):
+        try:
+            parsed = json.loads(trimmed)
+            if isinstance(parsed, list):
+                calls = [_normalize_extracted_tool_call(x) for x in parsed if _is_tool_dict(x)]
+                if calls:
+                    return "", calls
+            elif isinstance(parsed, dict):
+                if "tool_calls" in parsed and isinstance(parsed["tool_calls"], list):
+                    calls = [_normalize_extracted_tool_call(x) for x in parsed["tool_calls"] if _is_tool_dict(x)]
+                    if calls:
+                        return "", calls
+                elif _is_tool_dict(parsed):
+                    return "", [_normalize_extracted_tool_call(parsed)]
+        except Exception:
+            pass
+
+    # 4. Balanced bracket search for {...} or [...] within text
+    for start_char, end_char in (("{", "}"), ("[", "]")):
+        start_idx = text.find(start_char)
+        while start_idx != -1:
+            depth = 0
+            in_string = False
+            escape = False
+            for i in range(start_idx, len(text)):
+                c = text[i]
+                if in_string:
+                    if escape:
+                        escape = False
+                    elif c == "\\":
+                        escape = True
+                    elif c == '"':
+                        in_string = False
+                else:
+                    if c == '"':
+                        in_string = True
+                    elif c == start_char:
+                        depth += 1
+                    elif c == end_char:
+                        depth -= 1
+                        if depth == 0:
+                            candidate_json = text[start_idx : i + 1]
+                            try:
+                                parsed = json.loads(candidate_json)
+                                calls = []
+                                if isinstance(parsed, list):
+                                    calls = [_normalize_extracted_tool_call(x) for x in parsed if _is_tool_dict(x)]
+                                elif isinstance(parsed, dict):
+                                    if "tool_calls" in parsed and isinstance(parsed["tool_calls"], list):
+                                        calls = [
+                                            _normalize_extracted_tool_call(x)
+                                            for x in parsed["tool_calls"]
+                                            if _is_tool_dict(x)
+                                        ]
+                                    elif _is_tool_dict(parsed):
+                                        calls = [_normalize_extracted_tool_call(parsed)]
+                                if calls:
+                                    visible = (text[:start_idx] + text[i + 1 :]).strip()
+                                    return visible, calls
+                            except Exception:
+                                pass
+                            break
+            start_idx = text.find(start_char, start_idx + 1)
+
+    return text, []

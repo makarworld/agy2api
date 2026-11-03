@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useApiKey } from '../hooks/use-api-key';
+import { useI18n } from '../lib/i18n';
 import { fileToBase64 } from '../lib/utils';
 import { apiUrl } from '../lib/api';
 import { Input } from '../components/ui/input';
@@ -25,6 +26,7 @@ type Message = {
 
 export function ChatPage() {
   const { apiKey } = useApiKey();
+  const { t } = useI18n();
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
   const [attachedFiles, setAttachedFiles] = useState<{ file: File; url: string }[]>([]);
@@ -41,10 +43,9 @@ export function ChatPage() {
   }, [messages, isLoading]);
 
   useEffect(() => {
-    if (!apiKey) return;
-    fetch(apiUrl('/v1/models'), {
-      headers: { Authorization: `Bearer ${apiKey}` },
-    })
+    const headers: Record<string, string> = {};
+    if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
+    fetch(apiUrl('/v1/models'), { headers })
       .then((r) => r.json())
       .then((d) => {
         const mList = (d.data || [])
@@ -85,10 +86,6 @@ export function ChatPage() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!input.trim() && attachedFiles.length === 0) return;
-    if (!apiKey) {
-      alert('Сначала укажите API-ключ в настройках.');
-      return;
-    }
 
     let content: any = input;
     if (attachedFiles.length > 0) {
@@ -108,12 +105,16 @@ export function ChatPage() {
     setIsLoading(true);
 
     try {
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+      };
+      if (apiKey) {
+        headers['Authorization'] = `Bearer ${apiKey}`;
+      }
+
       const response = await fetch(apiUrl('/v1/chat/completions'), {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${apiKey}`,
-        },
+        headers,
         body: JSON.stringify({
           model: selectedModel,
           messages: updatedMessages,
@@ -169,10 +170,10 @@ export function ChatPage() {
               size="sm"
               onClick={() => setMessages([])}
               className="h-7 px-2.5 text-xs gap-1.5 text-muted-foreground hover:text-destructive cursor-pointer"
-              title="Очистить историю сообщений"
+              title={t.chatClear}
             >
               <Trash2 className="w-3.5 h-3.5" />
-              <span>Очистить</span>
+              <span>{t.chatClear}</span>
             </Button>
           )}
         </div>
@@ -185,9 +186,9 @@ export function ChatPage() {
             <div className="w-12 h-12 rounded-2xl bg-primary/10 border border-primary/20 flex items-center justify-center text-primary mb-3 shadow-xs">
               <MessageSquare className="w-6 h-6" />
             </div>
-            <h3 className="font-semibold text-foreground text-sm">Чат с моделью</h3>
+            <h3 className="font-semibold text-foreground text-sm">{t.chatEmptyTitle}</h3>
             <p className="text-xs text-muted-foreground mt-1">
-              Отправляйте текстовые промпты или прикрепляйте изображения для мультимодальных запросов.
+              {t.chatEmptyDesc}
             </p>
           </div>
         )}
@@ -298,7 +299,7 @@ export function ChatPage() {
               type="button"
               onClick={() => fileInputRef.current?.click()}
               className="absolute left-3 p-1 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted/70 transition-colors cursor-pointer"
-              title="Прикрепить изображение"
+              title={t.chatAttachImage}
             >
               <ImageIcon className="w-4 h-4" />
             </button>
@@ -313,7 +314,7 @@ export function ChatPage() {
             <Input
               value={input}
               onChange={(e) => setInput(e.target.value)}
-              placeholder={`Сообщение для ${selectedModel}...`}
+              placeholder={`${t.chatPlaceholder} (${selectedModel})`}
               className="pl-11 pr-12 h-11 rounded-xl bg-card border-border/80 shadow-xs text-sm"
               disabled={isLoading}
             />
@@ -322,7 +323,7 @@ export function ChatPage() {
               size="sm"
               disabled={isLoading || (!input.trim() && attachedFiles.length === 0)}
               className="absolute right-2 h-7 w-7 p-0 rounded-lg cursor-pointer shrink-0"
-              title="Отправить (Enter)"
+              title={t.chatSend}
             >
               <Send className="w-3.5 h-3.5" />
             </Button>

@@ -215,6 +215,43 @@ class TestApiEndpoints(unittest.TestCase):
         )
         self.assertEqual(resp.status_code, 502)
 
+    def test_build_messages_cleans_orphaned_raw_json_tool_calls(self):
+        from unittest.mock import MagicMock
+        from app.api.anthropic_routes import _build_messages
+        from app.core.file_handler import TempFileManager
+
+        file_mgr = TempFileManager()
+        msg1 = MagicMock(role="user", content="Hello")
+        msg2 = MagicMock(role="assistant", content='{"name": "Bash", "input": {"command": "pwd"}}')
+        msg3 = MagicMock(role="user", content="Next command please")
+
+        normalized, _, _ = _build_messages(None, [msg1, msg2, msg3], file_mgr)
+        self.assertEqual(len(normalized), 2)
+        self.assertEqual(normalized[0]["role"], "user")
+        self.assertEqual(normalized[1]["role"], "user")
+        self.assertEqual(normalized[1]["content"], "Next command please")
+
+    def test_build_messages_restores_raw_json_tool_calls_when_results_follow(self):
+        from unittest.mock import MagicMock
+        from app.api.anthropic_routes import _build_messages
+        from app.core.file_handler import TempFileManager
+
+        file_mgr = TempFileManager()
+        msg1 = MagicMock(role="user", content="Run pwd")
+        msg2 = MagicMock(role="assistant", content='{"name": "Bash", "input": {"command": "pwd"}}')
+        msg3 = MagicMock(
+            role="user",
+            content=[{"type": "tool_result", "tool_use_id": "call_1", "content": "/home/user", "name": "Bash"}],
+        )
+
+        normalized, _, _ = _build_messages(None, [msg1, msg2, msg3], file_mgr)
+        self.assertEqual(len(normalized), 3)
+        self.assertEqual(normalized[1]["role"], "assistant")
+        self.assertEqual(normalized[1]["content"], "")
+        self.assertEqual(len(normalized[1]["tool_calls"]), 1)
+        self.assertEqual(normalized[1]["tool_calls"][0]["name"], "Bash")
+        self.assertEqual(normalized[1]["tool_calls"][0]["input"], {"command": "pwd"})
+
 
 if __name__ == "__main__":
     unittest.main()

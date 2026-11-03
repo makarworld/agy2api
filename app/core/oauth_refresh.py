@@ -740,22 +740,41 @@ async def refresh_google_token(
     refresh_token = _normalize_refresh_token(refresh_token) or refresh_token.strip()
     resolved_client_id = (client_id or "").strip() or _client_id(kind)
     resolved_client_secret = (client_secret or "").strip() or _client_secret(kind)
-    async with httpx.AsyncClient(**httpx_client_kwargs(proxy=proxy, timeout=30.0)) as client:
-        response = await client.post(
-            OAUTH_TOKEN_URL,
-            data={
-                "client_id": resolved_client_id,
-                "client_secret": resolved_client_secret,
-                "grant_type": "refresh_token",
-                "refresh_token": refresh_token,
-            },
-            headers=_REFRESH_HEADERS,
-        )
-    if response.status_code != 200:
+
+    max_retries = 3
+    response = None
+    for attempt in range(max_retries):
+        try:
+            async with httpx.AsyncClient(**httpx_client_kwargs(proxy=proxy, timeout=30.0)) as client:
+                response = await client.post(
+                    OAUTH_TOKEN_URL,
+                    data={
+                        "client_id": resolved_client_id,
+                        "client_secret": resolved_client_secret,
+                        "grant_type": "refresh_token",
+                        "refresh_token": refresh_token,
+                    },
+                    headers=_REFRESH_HEADERS,
+                )
+            break
+        except (httpx.NetworkError, httpx.TimeoutException, OSError) as net_err:
+            if attempt < max_retries - 1:
+                sleep_s = 1.0 * (attempt + 1)
+                logger.warning(
+                    f"[oauth] Token refresh network error (attempt {attempt + 1}/{max_retries}), retrying in {sleep_s}s: {net_err}"
+                )
+                await asyncio.sleep(sleep_s)
+            else:
+                logger.warning(f"[oauth] Token refresh failed after {max_retries} attempts: {net_err}")
+                raise
+
+    if response is None or response.status_code != 200:
+        err_text = response.text if response is not None else "No response"
+        status_code = response.status_code if response is not None else 0
         from app.core.account_verification import handle_verification_error
 
-        handle_verification_error(response.text, account_id=account_id)
-        raise RuntimeError(f"OAuth refresh failed (HTTP {response.status_code}): {response.text}")
+        handle_verification_error(err_text, account_id=account_id)
+        raise RuntimeError(f"OAuth refresh failed (HTTP {status_code}): {err_text}")
 
     payload = response.json()
     expires_in = int(payload.get("expires_in", 3600))
@@ -956,13 +975,28 @@ async def ensure_fresh_sqlite_account(
             ):
                 return False
 
-        new_token = await refresh_google_token(
-            refresh_token,
-            proxy=effective_proxy,
-            client_id=account.get("client_id"),
-            client_secret=account.get("client_secret"),
-            account_id=account_id,
-        )
+        try:
+            new_token = await refresh_google_token(
+                refresh_token,
+                proxy=effective_proxy,
+                client_id=account.get("client_id"),
+                client_secret=account.get("client_secret"),
+                account_id=account_id,
+            )
+        except Exception as e:
+            existing_token = (account.get("access_token") or "").strip()
+            expiry_ts = float(account.get("token_expiry") or 0)
+            if existing_token and expiry_ts > time.time():
+                logger.warning(
+                    f"[oauth] SQLite account {account_id} refresh failed ({e}), but existing access_token is still valid (expires in {int(expiry_ts - time.time())}s) — using existing token"
+                )
+                return False
+            if existing_token and await verify_access_token(existing_token, proxy=effective_proxy):
+                logger.warning(
+                    f"[oauth] SQLite account {account_id} refresh failed ({e}), but existing access_token passed quota verify — using existing token"
+                )
+                return False
+            raise
         expiry_ts = time.time() + int(new_token.get("expires_in", 3600))
         account_store.update_account_tokens(
             account_id,

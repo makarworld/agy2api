@@ -18,6 +18,7 @@ import { Input } from '../components/ui/input';
 import { Switch } from '../components/ui/switch';
 import { Select } from '../components/ui/select';
 import { useApiKey } from '../hooks/use-api-key';
+import { useI18n } from '../lib/i18n';
 import { apiUrl } from '../lib/api';
 import { buildThoughtTemplate, parseThoughtTemplate } from '../lib/thought-template';
 
@@ -106,6 +107,7 @@ function SettingToggleRow({ title, description, checked, onCheckedChange }: Sett
 
 export function SettingsPage() {
   const { apiKey } = useApiKey();
+  const { t } = useI18n();
   const [settings, setSettings] = useState<Record<string, any>>({});
   const [aliases, setAliases] = useState<ModelAliasRow[]>([]);
   const [availableModels, setAvailableModels] = useState<string[]>([]);
@@ -266,16 +268,16 @@ export function SettingsPage() {
           <div>
             <h1 className="text-2xl font-semibold tracking-tight flex items-center gap-2.5">
               <SettingsIcon className="w-6 h-6 text-primary" />
-              Настройки
+              {t.settingsTitle}
             </h1>
             <p className="text-sm text-muted-foreground mt-1">
-              Управление параметрами окружения и переключателями в реальном времени.
+              {t.settingsSubtitle}
             </p>
           </div>
           <div className="flex items-center gap-2">
             <Button variant="outline" size="sm" onClick={loadSettings} disabled={loading} className="gap-1.5 cursor-pointer">
               <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
-              Обновить
+              {t.refresh}
             </Button>
             <Button
               size="sm"
@@ -284,7 +286,7 @@ export function SettingsPage() {
               className="gap-1.5 shadow-sm cursor-pointer"
             >
               <Save className="w-4 h-4" />
-              {saving ? 'Сохранение...' : 'Сохранить изменения'}
+              {saving ? t.settingsSaving : t.settingsSaveBtn}
             </Button>
           </div>
         </div>

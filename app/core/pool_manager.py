@@ -1027,9 +1027,26 @@ async def select_next_healthy_account(
     return candidates[0]
 
 
-async def mark_success(account_id: str, session_hash: Optional[str] = None) -> None:
+def clear_model_cooldowns(account_id: Optional[str] = None, model: Optional[str] = None) -> None:
+    if account_id:
+        if model:
+            if account_id in _MODEL_COOLDOWNS:
+                _MODEL_COOLDOWNS[account_id].pop(model, None)
+        else:
+            _MODEL_COOLDOWNS.pop(account_id, None)
+    else:
+        _MODEL_COOLDOWNS.clear()
+
+
+async def mark_success(
+    account_id: str,
+    session_hash: Optional[str] = None,
+    model: Optional[str] = None,
+) -> None:
     if session_hash:
         pin_session_account(session_hash, account_id)
+    if model:
+        clear_model_cooldowns(account_id, model=model)
     if account_store.get_account_by_id(account_id):
         account_store.mark_account_healthy(account_id)
     await stats_store.upsert_pool_account_state(account_id, status="healthy", consecutive_failures=0)
@@ -1101,6 +1118,7 @@ async def check_and_recover_account_health(account_id: str) -> dict:
         has_quota = has_usable_model_quota(quota_data)
 
         if has_quota:
+            clear_model_cooldowns(account_id)
             if account_store.get_account_by_id(account_id):
                 account_store.mark_account_healthy(account_id)
             await stats_store.upsert_pool_account_state(
@@ -1191,6 +1209,34 @@ async def _run_subprocess(
     return process.returncode, stdout, stderr
 
 
+async def get_pool_diagnostics(model: Optional[str] = None) -> str:
+    accounts = list_accounts()
+    if not accounts:
+        return "no accounts in pool"
+    now = time.time()
+    parts = []
+    for acc in accounts:
+        acc_id = acc.get("id", "unknown")
+        state = await stats_store.get_pool_account_state(acc_id) or {}
+        db_acc = account_store.get_account_by_id(acc_id)
+        status = (db_acc or {}).get("status") or state.get("status", "healthy")
+        cooldown_until = (db_acc or {}).get("backoff_until") or state.get("cooldown_until")
+        cd_left = int(cooldown_until - now) if cooldown_until and cooldown_until > now else 0
+        model_cd = int(_MODEL_COOLDOWNS.get(acc_id, {}).get(model, 0) - now) if model else 0
+
+        reasons = []
+        if cd_left > 0:
+            reasons.append(f"cooldown {cd_left}s")
+        elif status != "healthy":
+            reasons.append(f"status={status}")
+        if model_cd > 0:
+            reasons.append(f"model {model} cooldown {model_cd}s")
+
+        info = f"{acc_id} (" + (", ".join(reasons) if reasons else "healthy") + ")"
+        parts.append(info)
+    return "; ".join(parts)
+
+
 async def acquire_http_account(
     exclude: Set[str] = frozenset(),
     model: Optional[str] = None,
@@ -1205,10 +1251,15 @@ async def acquire_http_account(
     if account_store.has_accounts():
         async with _LOCK:
             active_exclude = set(exclude)
+            last_error: Optional[Exception] = None
             while True:
                 selected = await select_next_healthy_account(exclude=active_exclude, model=model)
                 if not selected:
-                    raise RuntimeError("All pool accounts are rate-limited or unhealthy")
+                    diag = await get_pool_diagnostics(model=model)
+                    err_detail = f"All pool accounts are rate-limited or unhealthy ({diag})"
+                    if last_error:
+                        err_detail += f"; last refresh error: {last_error}"
+                    raise RuntimeError(err_detail)
                 account = account_store.get_account_by_id(selected["id"])
                 if account is None:
                     active_exclude.add(selected["id"])
@@ -1221,16 +1272,35 @@ async def acquire_http_account(
                 except Exception as exc:
                     from app.core.account_verification import handle_verification_error
 
-                    handle_verification_error(exc, account_id=account_id)
-                    cooldown = int(os.environ.get("AGY_POOL_COOLDOWN_SECONDS", "3600"))
-                    await mark_rate_limited(account_id, cooldown, model=model)
+                    verify_url = handle_verification_error(exc, account_id=account_id)
+                    last_error = exc
                     active_exclude.add(account_id)
-                    logger.warning(
-                        f"[pool] Account {account_id} token refresh failed, placing in cooldown and rotating: {exc}"
-                    )
+                    if verify_url:
+                        cooldown = int(os.environ.get("AGY_POOL_COOLDOWN_SECONDS", "3600"))
+                        await mark_rate_limited(account_id, cooldown, model=model)
+                        logger.warning(
+                            f"[pool] Account {account_id} requires verification, placing in cooldown and rotating: {exc}"
+                        )
+                    else:
+                        logger.warning(f"[pool] Account {account_id} token refresh failed: {exc}")
+                        all_ids = {a["id"] for a in account_store.get_all_accounts()}
+                        if not (all_ids - active_exclude):
+                            existing_token = (account.get("access_token") or "").strip()
+                            if existing_token:
+                                logger.warning(
+                                    f"[pool] Account {account_id} token refresh failed, but using existing access_token as fallback: {exc}"
+                                )
+                                global _active_account_id
+                                _active_account_id = account_id
+                                await stats_store.set_active_account_id_db(account_id)
+                                account_store.mark_account_used(account_id)
+                                return account_id, proxy, existing_token
+
+                        await stats_store.upsert_pool_account_state(
+                            account_id, status="cooldown", cooldown_until=time.time() + 15
+                        )
                     continue
 
-                global _active_account_id
                 _active_account_id = account_id
                 await stats_store.set_active_account_id_db(account_id)
                 account_store.mark_account_used(account_id)
@@ -1238,15 +1308,23 @@ async def acquire_http_account(
 
     if not pool_enabled():
         proxy = get_active_account_proxy()
-        await _ensure_oauth_fresh(proxy=proxy)
+        try:
+            await _ensure_oauth_fresh(proxy=proxy, raise_on_error=True)
+        except Exception as exc:
+            logger.warning(f"[oauth] ensure_fresh_credentials failed: {exc}")
         return None, proxy, _read_live_access_token(_gemini_home())
 
     async with _LOCK:
         active_exclude = set(exclude)
+        last_error = None
         while True:
             account = await select_next_healthy_account(exclude=active_exclude, model=model)
             if account is None:
-                raise RuntimeError("All pool accounts are rate-limited or unhealthy")
+                diag = await get_pool_diagnostics(model=model)
+                err_detail = f"All pool accounts are rate-limited or unhealthy ({diag})"
+                if last_error:
+                    err_detail += f"; last refresh error: {last_error}"
+                raise RuntimeError(err_detail)
 
             proxy = get_google_proxy(account.get("proxy"))
             try:
@@ -1257,13 +1335,28 @@ async def acquire_http_account(
             except Exception as exc:
                 from app.core.account_verification import handle_verification_error
 
-                handle_verification_error(exc, account_id=account["id"])
-                cooldown = int(os.environ.get("AGY_POOL_COOLDOWN_SECONDS", "3600"))
-                await mark_rate_limited(account["id"], cooldown, model=model)
+                verify_url = handle_verification_error(exc, account_id=account["id"])
+                last_error = exc
                 active_exclude.add(account["id"])
-                logger.warning(
-                    f"[pool] Account {account['id']} activation/refresh failed, placing in cooldown and rotating: {exc}"
-                )
+                if verify_url:
+                    cooldown = int(os.environ.get("AGY_POOL_COOLDOWN_SECONDS", "3600"))
+                    await mark_rate_limited(account["id"], cooldown, model=model)
+                    logger.warning(
+                        f"[pool] Account {account['id']} requires verification, placing in cooldown and rotating: {exc}"
+                    )
+                else:
+                    logger.warning(f"[pool] Account {account['id']} activation/refresh failed: {exc}")
+                    all_ids = {a["id"] for a in list_accounts()}
+                    if not (all_ids - active_exclude):
+                        live_token = _read_live_access_token(_gemini_home())
+                        if live_token:
+                            logger.warning(
+                                f"[pool] Account {account['id']} refresh failed, but using existing live token as fallback: {exc}"
+                            )
+                            return account["id"], proxy, live_token
+                    await stats_store.upsert_pool_account_state(
+                        account["id"], status="cooldown", cooldown_until=time.time() + 15
+                    )
                 continue
             return account["id"], proxy, _read_live_access_token(_gemini_home())
 

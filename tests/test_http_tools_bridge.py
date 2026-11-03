@@ -467,6 +467,36 @@ class TestHttpToolsBridge(unittest.TestCase):
         self.assertEqual(fc_id, "call_2235145")
         self.assertEqual(sig, "sig1")
 
+    def test_parses_raw_json_tool_call(self):
+        text = '{"name": "Bash", "input": {"command": "git status"}}'
+        vis, calls = parse_text_serialized_tool_call(text)
+        self.assertEqual(vis, "")
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]["name"], "Bash")
+        self.assertEqual(calls[0]["input"], {"command": "git status"})
+
+    def test_parses_markdown_json_tool_call(self):
+        text = 'I will run the command:\n```json\n{"name": "Bash", "arguments": {"command": "ls -la"}}\n```'
+        vis, calls = parse_text_serialized_tool_call(text)
+        self.assertEqual(vis, "I will run the command:")
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]["name"], "Bash")
+        self.assertEqual(calls[0]["input"], {"command": "ls -la"})
+
+    def test_parses_tool_call_list_and_anthropic_format(self):
+        text = '[{"type": "tool_use", "id": "toolu_123", "name": "Read", "input": {"file_path": "a.txt"}}]'
+        vis, calls = parse_text_serialized_tool_call(text)
+        self.assertEqual(vis, "")
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]["name"], "Read")
+        self.assertEqual(calls[0]["input"], {"file_path": "a.txt"})
+
+    def test_does_not_parse_normal_json_object(self):
+        text = 'Here is the response config: {"host": "localhost", "port": 8080}'
+        vis, calls = parse_text_serialized_tool_call(text)
+        self.assertEqual(vis, text)
+        self.assertEqual(calls, [])
+
     def test_tool_result_resolves_name_from_assistant_history(self):
         messages = [
             {

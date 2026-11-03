@@ -271,6 +271,17 @@ async def healthcheck_account(account_id: str, api_key: str = Depends(get_api_ke
     return res
 
 
+@router.post("/accounts/{account_id}/clear-cooldown", summary="Clear model and account cooldowns")
+async def clear_account_cooldown(account_id: str, api_key: str = Depends(get_api_key)):
+    pool_manager.clear_model_cooldowns(account_id)
+    if account_store.get_account_by_id(account_id):
+        account_store.mark_account_healthy(account_id)
+    await stats_store.upsert_pool_account_state(
+        account_id, status="healthy", cooldown_until=None, consecutive_failures=0
+    )
+    return {"account_id": account_id, "status": "healthy", "cleared": True}
+
+
 @router.post("/accounts/dedupe", summary="Remove duplicate accounts that share the same email")
 async def dedupe_accounts(api_key: str = Depends(get_api_key)):
     removed = await pool_manager.dedupe_accounts_by_email()

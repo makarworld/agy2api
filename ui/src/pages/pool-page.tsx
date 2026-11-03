@@ -5,10 +5,12 @@ import { Input } from '../components/ui/input';
 import { AccountsTable } from '../components/accounts-table';
 import { useStats } from '../hooks/use-stats';
 import { useApiKey } from '../hooks/use-api-key';
+import { useI18n } from '../lib/i18n';
 import { apiUrl } from '../lib/api';
 
 export function PoolPage() {
   const { apiKey } = useApiKey();
+  const { t } = useI18n();
   const { accounts, poolEnabled, loading, refresh } = useStats();
 
   const [label, setLabel] = useState('');
@@ -126,9 +128,9 @@ export function PoolPage() {
       <div className="max-w-7xl mx-auto w-full space-y-6">
         <div className="flex items-center justify-between">
           <div>
-            <h1 className="text-2xl font-semibold tracking-tight">Account Pool</h1>
+            <h1 className="text-2xl font-semibold tracking-tight">{t.poolTitle}</h1>
             <p className="text-sm text-muted-foreground mt-1">
-              Google Antigravity accounts connected for automatic rotation and quota sharing.
+              {t.poolSubtitle}
             </p>
           </div>
           <div className="flex items-center gap-2">
@@ -138,14 +140,14 @@ export function PoolPage() {
               variant="outline"
               size="sm"
               className="gap-2 cursor-pointer"
-              title="Force query Google API to refresh remaining quota limits for all accounts"
+              title={t.poolRefreshQuotasTitle}
             >
               <Gauge className={`w-4 h-4 ${refreshingQuotas ? 'animate-spin' : ''}`} />
-              Refresh Quotas
+              {t.poolRefreshQuotas}
             </Button>
             <Button onClick={refresh} disabled={loading} variant="outline" size="sm" className="gap-2 cursor-pointer">
               <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
-              Refresh
+              {t.refresh}
             </Button>
           </div>
         </div>
@@ -153,24 +155,24 @@ export function PoolPage() {
         <div className="border border-border/80 rounded-xl p-5 bg-card space-y-4 shadow-xs">
           <h2 className="text-sm font-semibold tracking-wide flex items-center gap-2">
             <UserPlus className="w-4 h-4 text-primary" />
-            Add Account via Google OAuth
+            {t.poolAddTitle}
           </h2>
 
           <div className="grid grid-cols-1 md:grid-cols-12 gap-3 items-end">
             <div className="md:col-span-4">
               <label className="text-xs text-muted-foreground uppercase tracking-wide font-medium">
-                Account Label (optional)
+                {t.poolLabelField}
               </label>
               <Input
                 value={label}
                 onChange={(e) => setLabel(e.target.value)}
-                placeholder="e.g. personal, work-2"
+                placeholder={t.poolLabelPlaceholder}
                 className="mt-1"
               />
             </div>
             <div className="md:col-span-5">
               <label className="text-xs text-muted-foreground uppercase tracking-wide font-medium">
-                Proxy (optional)
+                {t.poolProxyField}
               </label>
               <Input
                 value={proxy}
@@ -185,7 +187,7 @@ export function PoolPage() {
                 disabled={generatingUrl}
                 className="w-full gap-2 font-medium cursor-pointer"
               >
-                {generatingUrl ? 'Generating...' : authUrl ? 'Regenerate Link' : 'Generate Login Link'}
+                {generatingUrl ? t.poolGenerating : authUrl ? t.poolRegenerateBtn : t.poolGenerateBtn}
               </Button>
             </div>
           </div>
@@ -199,12 +201,12 @@ export function PoolPage() {
               <div className="flex items-center gap-2 shrink-0">
                 <Button size="sm" variant="outline" onClick={copyUrl} className="gap-1">
                   {copied ? <Check className="w-3.5 h-3.5 text-green-500" /> : <Copy className="w-3.5 h-3.5" />}
-                  {copied ? 'Copied' : 'Copy Link'}
+                  {copied ? t.copied : t.poolCopyLink}
                 </Button>
                 <a href={authUrl} target="_blank" rel="noreferrer">
                   <Button size="sm" className="gap-1">
                     <ExternalLink className="w-3.5 h-3.5" />
-                    Open Google Sign-In
+                    {t.poolOpenGoogle}
                   </Button>
                 </a>
               </div>
@@ -212,13 +214,13 @@ export function PoolPage() {
 
             <div className="space-y-2">
               <label className="text-xs font-medium">
-                Paste Authorization Code or Redirect URL:
+                {t.poolAuthCodeLabel}
               </label>
               <div className="flex gap-2">
                 <Input
                   value={authCode}
                   onChange={(e) => setAuthCode(e.target.value)}
-                  placeholder="4/0ATsMZq... or https://antigravity.google/oauth-callback?code=..."
+                  placeholder={t.poolAuthCodePlaceholder}
                   className="font-mono text-sm"
                 />
                 <Button
@@ -226,15 +228,12 @@ export function PoolPage() {
                   disabled={submitting || !authCode.trim()}
                   className="shrink-0"
                 >
-                  {submitting ? 'Connecting...' : 'Connect Account'}
+                  {submitting ? t.poolConnecting : t.poolConnectBtn}
                 </Button>
                 <Button variant="ghost" onClick={resetForm} disabled={submitting}>
-                  Cancel
+                  {t.cancel}
                 </Button>
               </div>
-              <p className="text-xs text-muted-foreground">
-                Sign in with the Google account in your browser (make sure to select/switch to the <b>target</b> Google account if multiple profiles exist), then copy the code displayed on page (or from the URL) and paste it above.
-              </p>
             </div>
           </div>
         )}

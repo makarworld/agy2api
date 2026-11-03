@@ -1,10 +1,12 @@
 import { useState, useEffect } from 'react';
 import { apiUrl } from '../lib/api';
+import { useI18n } from '../lib/i18n';
 import { Button } from '../components/ui/button';
 import { Select } from '../components/ui/select';
 import { Mic, Volume2, Loader2 } from 'lucide-react';
 
 export function AudioPage() {
+  const { t } = useI18n();
   const [text, setText] = useState('Привет! Это проверка синтеза речи через локальный сервис AGY2API.');
   const [voice, setVoice] = useState('alloy');
   const [voices, setVoices] = useState<any[]>([]);
@@ -52,10 +54,10 @@ export function AudioPage() {
         <div>
           <h1 className="text-2xl font-semibold tracking-tight flex items-center gap-2.5">
             <Mic className="w-6 h-6 text-primary" />
-            Audio Playground
+            {t.audioTitle}
           </h1>
           <p className="text-sm text-muted-foreground mt-1">
-            Тестирование Text-to-Speech (TTS) и доступных голосов озвучки.
+            {t.audioSubtitle}
           </p>
         </div>
 
@@ -63,13 +65,13 @@ export function AudioPage() {
           <div className="flex items-center gap-2 border-b border-border/60 pb-3">
             <Volume2 className="w-4 h-4 text-primary" />
             <h2 className="text-xs font-semibold tracking-wider uppercase text-muted-foreground">
-              Синтез речи (Text-to-Speech)
+              {t.audioTitle}
             </h2>
           </div>
 
           <div className="space-y-2">
             <label className="text-xs font-medium text-foreground/90 uppercase tracking-wider">
-              Текст для озвучивания
+              {t.audioTextPlaceholder}
             </label>
             <textarea
               rows={4}

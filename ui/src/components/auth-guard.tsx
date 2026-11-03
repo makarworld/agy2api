@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useApiKey } from '../hooks/use-api-key';
+import { useI18n } from '../lib/i18n';
 import { apiUrl } from '../lib/api';
 import { Lock, AlertCircle, Loader2, KeyRound } from 'lucide-react';
 import { Button } from './ui/button';
@@ -7,6 +8,7 @@ import { Input } from './ui/input';
 
 export function AuthGuard({ children }: { children: React.ReactNode }) {
   const { apiKey, saveApiKey, clearApiKey } = useApiKey();
+  const { t } = useI18n();
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -81,9 +83,9 @@ export function AuthGuard({ children }: { children: React.ReactNode }) {
           <div className="rounded-full bg-amber-500/10 p-3 text-amber-500">
             <KeyRound className="h-6 w-6" />
           </div>
-          <h2 className="text-xl font-bold tracking-tight">Требуется авторизация</h2>
+          <h2 className="text-xl font-bold tracking-tight">{t.authModalTitle}</h2>
           <p className="text-sm text-muted-foreground">
-            Запросы возвращают 401. Введите пароль <code className="bg-muted px-1.5 py-0.5 rounded font-mono text-xs">AGY_ADMIN_PASSWORD</code> из <code className="bg-muted px-1.5 py-0.5 rounded text-xs font-mono">.env</code>
+            {t.authModalDesc}
           </p>
         </div>
 
@@ -91,7 +93,7 @@ export function AuthGuard({ children }: { children: React.ReactNode }) {
           <div className="space-y-2">
             <Input
               type="password"
-              placeholder="AGY_ADMIN_PASSWORD..."
+              placeholder={t.authInputPlaceholder}
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               disabled={loading}
@@ -109,7 +111,7 @@ export function AuthGuard({ children }: { children: React.ReactNode }) {
           <div className="flex gap-2">
             <Button type="submit" disabled={loading || !password.trim()} className="w-full">
               {loading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-              Применить пароль
+              {t.authSubmitBtn}
             </Button>
           </div>
         </form>
@@ -173,7 +175,7 @@ export function AuthGuard({ children }: { children: React.ReactNode }) {
 
             <Button type="submit" disabled={loading || !password.trim()} className="w-full">
               {loading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-              Войти
+              {t.authLoginBtn}
             </Button>
           </form>
         </div>

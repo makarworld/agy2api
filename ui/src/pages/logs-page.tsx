@@ -1,5 +1,6 @@
 import { useEffect, useState, useMemo, useRef } from 'react';
 import { useApiKey } from '../hooks/use-api-key';
+import { useI18n } from '../lib/i18n';
 import { RefreshCw, Terminal, Search, Copy, Check, ArrowDown, Trash2 } from 'lucide-react';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
@@ -7,6 +8,7 @@ import { apiUrl } from '../lib/api';
 
 export function LogsPage() {
   const { apiKey } = useApiKey();
+  const { t } = useI18n();
   const [logs, setLogs] = useState<string>('');
   const [loading, setLoading] = useState(false);
   const [lines, setLines] = useState<number>(200);
@@ -18,11 +20,9 @@ export function LogsPage() {
   const fetchLogs = async () => {
     setLoading(true);
     try {
-      const response = await fetch(apiUrl(`/v1/logs?lines=${lines}`), {
-        headers: {
-          Authorization: `Bearer ${apiKey}`,
-        },
-      });
+      const headers: Record<string, string> = {};
+      if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
+      const response = await fetch(apiUrl(`/v1/logs?lines=${lines}`), { headers });
       if (!response.ok) {
         setLogs(`Error: ${response.status} ${response.statusText}`);
       } else {
@@ -37,11 +37,7 @@ export function LogsPage() {
   };
 
   useEffect(() => {
-    if (apiKey) {
-      fetchLogs();
-    } else {
-      setLogs('Сначала укажите API-ключ в настройках.');
-    }
+    fetchLogs();
   }, [apiKey, lines]);
 
   useEffect(() => {
@@ -96,7 +92,7 @@ export function LogsPage() {
 
           <Button onClick={fetchLogs} disabled={loading} variant="outline" size="sm" className="gap-1.5 cursor-pointer">
             <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
-            Обновить
+            {t.refresh}
           </Button>
         </div>
       </div>
