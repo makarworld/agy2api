@@ -14,7 +14,7 @@ GENERATE_CONTENT_URL = f"{CLOUDCODE_BASE}/v1internal:generateContent"
 
 _OS_TYPE = "windows" if platform.system().lower() == "windows" else "linux"
 _DEFAULT_USER_AGENT = (
-    f"antigravity/cli/1.2.4 (aidev_client; os_type={_OS_TYPE}; arch=amd64; cl=982146307; auth_method=consumer)"
+    f"antigravity/cli/1.5.3 (aidev_client; os_type={_OS_TYPE}; arch=amd64; cl=982146307; auth_method=consumer)"
 )
 AGY_HTTP_USER_AGENT = os.environ.get("AGY_HTTP_USER_AGENT", _DEFAULT_USER_AGENT)
 

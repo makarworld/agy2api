@@ -1,3 +1,4 @@
+import hashlib
 import json
 import logging
 import os
@@ -67,6 +68,70 @@ def _gemini_home() -> str:
 
 def _agent_request_id(cascade_id: str, trajectory_id: str, step: int) -> str:
     return f"agent/{cascade_id}/{int(time.time() * 1000)}/{trajectory_id}/{step}"
+
+
+_DEFAULT_ANTIGRAVITY_TOOLS: Optional[List[dict]] = None
+
+
+def _get_default_antigravity_tools() -> List[dict]:
+    global _DEFAULT_ANTIGRAVITY_TOOLS
+    if _DEFAULT_ANTIGRAVITY_TOOLS is None:
+        tools_path = os.path.join(os.path.dirname(__file__), "default_antigravity_tools.json")
+        try:
+            with open(tools_path, "r", encoding="utf-8") as f:
+                _DEFAULT_ANTIGRAVITY_TOOLS = json.load(f)
+        except Exception:
+            _DEFAULT_ANTIGRAVITY_TOOLS = []
+    return _DEFAULT_ANTIGRAVITY_TOOLS
+
+
+def _stable_session_id(seed_key: Optional[str]) -> str:
+    seed = seed_key or "default-antigravity-session"
+    val = int(hashlib.sha256(seed.encode()).hexdigest()[:15], 16)
+    signed_val = -((val % (2**62)) + 10**17)
+    return str(signed_val)
+
+
+_CONVERSATION_SESSIONS: dict[str, dict] = {}
+_MAX_CONVERSATION_SESSIONS = 5000
+
+
+def _get_or_create_session(messages: List[dict]) -> tuple[str, str, int, int]:
+    """Returns (cascade_id, trajectory_id, step, request_seq) maintaining conversation continuity."""
+    now = time.time()
+    if len(_CONVERSATION_SESSIONS) > _MAX_CONVERSATION_SESSIONS:
+        stale_keys = [k for k, v in _CONVERSATION_SESSIONS.items() if now - v.get("last_activity", 0) > 86400]
+        for k in stale_keys:
+            _CONVERSATION_SESSIONS.pop(k, None)
+
+    session_key = ""
+    if messages:
+        first_msg = messages[0]
+        raw_key = f"{first_msg.get('role')}:{str(first_msg.get('content', ''))[:300]}"
+        session_key = hashlib.sha256(raw_key.encode("utf-8", errors="ignore")).hexdigest()[:16]
+
+    if session_key and session_key in _CONVERSATION_SESSIONS:
+        sess = _CONVERSATION_SESSIONS[session_key]
+        sess["step"] += 1
+        sess["request_seq"] += 1
+        sess["last_activity"] = now
+        return sess["cascade_id"], sess["trajectory_id"], sess["step"], sess["request_seq"]
+
+    cascade_id = str(uuid.uuid4())
+    trajectory_id = str(uuid.uuid4())
+    step = 1
+    request_seq = 1
+
+    if session_key:
+        _CONVERSATION_SESSIONS[session_key] = {
+            "cascade_id": cascade_id,
+            "trajectory_id": trajectory_id,
+            "step": step,
+            "request_seq": request_seq,
+            "last_activity": now,
+        }
+
+    return cascade_id, trajectory_id, step, request_seq
 
 
 _HAR_MODEL_ENUMS = {
@@ -291,8 +356,16 @@ def _build_envelope(
     cascade_id: Optional[str] = None,
     step: int = 1,
     request_seq: int = 1,
+    account_id: Optional[str] = None,
+    request_type: str = "agent",
 ) -> dict:
     gemini_tools = anthropic_tools_to_gemini(tools)
+    if not gemini_tools and request_type == "agent":
+        default_tools = _get_default_antigravity_tools()
+        if default_tools:
+            gemini_tools = default_tools
+
+    session_id = _stable_session_id(account_id or project_id)
     inner: dict = {
         "contents": contents,
         "generationConfig": _generation_config(
@@ -301,7 +374,7 @@ def _build_envelope(
             tools_present=bool(gemini_tools),
             max_output_tokens=max_output_tokens,
         ),
-        "sessionId": str(-abs(hash(uuid.uuid4()))),
+        "sessionId": session_id,
     }
 
     if system and any(marker in system for marker in _CLAUDE_CODE_SYSTEM_MARKERS):
@@ -317,25 +390,36 @@ def _build_envelope(
         if mode:
             inner["toolConfig"] = {"functionCallingConfig": {"mode": mode}}
 
+    traj_id = trajectory_id or str(uuid.uuid4())
+    casc_id = cascade_id or str(uuid.uuid4())
+
+    if request_type == "checkpoint":
+        req_id = f"checkpoint/{traj_id}"
+    else:
+        req_id = _agent_request_id(casc_id, traj_id, step)
+
     body = {
         "project": project_id,
-        "requestId": _agent_request_id(cascade_id or str(uuid.uuid4()), trajectory_id or str(uuid.uuid4()), step),
+        "requestId": req_id,
         "model": backend_model,
         "userAgent": "antigravity",
-        "requestType": "agent",
+        "requestType": request_type,
         "request": inner,
     }
 
-    if trajectory_id:
-        body["request"]["labels"] = {
-            "last_step_index": str(step - 1),
+    if request_type == "agent":
+        labels: dict[str, str] = {
+            "last_step_index": str(max(0, step - 1)),
             "model_enum": _model_enum(backend_model),
-            "request_id": f"{trajectory_id}-{request_seq}",
-            "trajectory_id": trajectory_id,
+            "request_id": f"{traj_id}-{request_seq}",
+            "trajectory_id": traj_id,
             "used_claude": str(backend_model.lower().startswith("claude-")).lower(),
             "used_claude_conservative": str(backend_model.lower().startswith("claude-")).lower(),
             "used_non_gemini_model": str(not backend_model.lower().startswith("gemini-")).lower(),
         }
+        if step > 1:
+            labels["last_execution_id"] = f"{traj_id}-{max(0, request_seq - 1)}"
+        body["request"]["labels"] = labels
     return body
 
 
@@ -549,10 +633,9 @@ async def stream_completion(
     thought_prefix = thought_prefix_raw.replace("\\n", "\n")
     thought_suffix = thought_suffix_raw.replace("\\n", "\n")
     max_output_tokens = int(os.environ.get("AGY_HTTP_MAX_OUTPUT_TOKENS") or "65536")
-    cascade_id = str(uuid.uuid4())
-    trajectory_id = str(uuid.uuid4())
-    step = 1
-    request_seq = 1
+    is_checkpoint = _suppress_thought_text(system, messages)
+    request_type = "checkpoint" if is_checkpoint else "agent"
+    cascade_id, trajectory_id, step, request_seq = _get_or_create_session(messages)
 
     max_input_tokens = int(os.environ.get("AGY_HTTP_MAX_INPUT_TOKENS", "950000"))
     trim_aggressive = False
@@ -581,6 +664,8 @@ async def stream_completion(
             cascade_id=cascade_id,
             step=step,
             request_seq=request_seq,
+            account_id=account_id,
+            request_type=request_type,
         )
         if model and model != backend_model and not retried_empty:
             logger.info(f"[http] model {model} -> backend {backend_model}")
