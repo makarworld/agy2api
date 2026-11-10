@@ -66,7 +66,6 @@ async def pool_git_autosync_loop():
 async def lifespan(app: FastAPI):
     stats_store.init_db()
     account_store.init_accounts_table()
-    account_store.sync_all_account_sources()
     await pool_manager.init_pool_state()
     oauth_refresh.init_quota_cache_from_db()
 

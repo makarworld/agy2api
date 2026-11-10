@@ -78,6 +78,51 @@ class TestPoolRotationReasons(unittest.TestCase):
         pool_manager.clear_model_cooldowns("acc-1", model="gemini-3.8-flash-high")
         self.assertEqual(pool_manager.get_account_model_cooldowns("acc-1"), {})
 
+    def test_current_session_matches_pool_by_refresh_token(self):
+        with (
+            patch.object(pool_manager, "_read_gemini_credentials", return_value=("live-rt", "user@example.com")),
+            patch.object(pool_manager.account_store, "find_account_by_refresh_token", return_value={"id": "acc-found"}),
+        ):
+            matched = pool_manager.current_session_matches_pool()
+            self.assertEqual(matched, "acc-found")
+
+    def test_current_session_matches_pool_by_email_fallback(self):
+        with (
+            patch.object(pool_manager, "_read_gemini_credentials", return_value=(None, "user@example.com")),
+            patch.object(pool_manager, "_find_account_by_email", return_value={"id": "acc-by-email"}),
+        ):
+            matched = pool_manager.current_session_matches_pool()
+            self.assertEqual(matched, "acc-by-email")
+
+    def test_delete_account_cleans_runtime_state_and_switches_active(self):
+        async def _run():
+            pool_manager._active_account_id = "acc-to-delete"
+            pool_manager._MODEL_COOLDOWNS["acc-to-delete"] = {"gemini-pro": 999999.0}
+            pool_manager._SESSION_AFFINITY["hash1"] = ("acc-to-delete", 999999.0)
+
+            with (
+                patch.object(pool_manager.account_store, "delete_account") as mock_del_acc,
+                patch.object(
+                    pool_manager,
+                    "_load_manifest",
+                    return_value={"accounts": [{"id": "acc-to-delete"}, {"id": "acc-remaining"}]},
+                ),
+                patch.object(pool_manager, "_save_manifest") as mock_save,
+                patch.object(pool_manager, "list_accounts", return_value=[{"id": "acc-remaining"}]),
+                patch.object(pool_manager.stats_store, "delete_pool_account_state", new=AsyncMock()) as mock_del_state,
+                patch.object(pool_manager.stats_store, "set_active_account_id_db", new=AsyncMock()) as mock_set_active,
+            ):
+                await pool_manager.delete_account("acc-to-delete")
+
+                mock_del_acc.assert_called_once_with("acc-to-delete")
+                mock_del_state.assert_called_once_with("acc-to-delete")
+                self.assertNotIn("acc-to-delete", pool_manager._MODEL_COOLDOWNS)
+                self.assertNotIn("hash1", pool_manager._SESSION_AFFINITY)
+                self.assertEqual(pool_manager.get_active_account_id(), "acc-remaining")
+                mock_set_active.assert_called_once_with("acc-remaining")
+
+        asyncio.run(_run())
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -207,33 +207,36 @@ def _build_messages(system, messages, file_mgr: TempFileManager):
     # Clean assistant messages where raw text contains serialized tool call JSON
     cleaned_normalized = []
     for i, entry in enumerate(normalized):
-        if entry.get("role") == "assistant" and not entry.get("tool_calls"):
+        if entry.get("role") == "assistant":
             raw_text = entry.get("content", "")
-            if raw_text and ("{" in raw_text or "[" in raw_text):
+            if isinstance(raw_text, str) and ("{" in raw_text or "[" in raw_text):
                 from app.core.http_tools_bridge import parse_text_serialized_tool_call
 
                 vis_text, parsed_calls = parse_text_serialized_tool_call(raw_text)
                 if parsed_calls:
-                    # Check if next message is user with tool_results
-                    next_has_results = False
-                    if i + 1 < len(normalized):
-                        next_msg = normalized[i + 1]
-                        if next_msg.get("role") == "user" and next_msg.get("tool_results"):
-                            next_has_results = True
+                    if not entry.get("tool_calls"):
+                        # Check if next message is user with tool_results
+                        next_has_results = False
+                        if i + 1 < len(normalized):
+                            next_msg = normalized[i + 1]
+                            if next_msg.get("role") == "user" and next_msg.get("tool_results"):
+                                next_has_results = True
 
-                    if next_has_results:
-                        entry["content"] = vis_text
-                        entry["tool_calls"] = parsed_calls
-                        cleaned_normalized.append(entry)
-                    elif vis_text:
-                        entry["content"] = vis_text
-                        cleaned_normalized.append(entry)
-                    else:
-                        logger.info(
-                            f"[anthropic] Dropped orphaned serialized tool JSON from assistant context: {parsed_calls[0].get('name')}"
-                        )
+                        if next_has_results:
+                            entry["content"] = vis_text
+                            entry["tool_calls"] = parsed_calls
+                            cleaned_normalized.append(entry)
+                        elif vis_text:
+                            entry["content"] = vis_text
+                            cleaned_normalized.append(entry)
+                        else:
+                            logger.info(
+                                f"[anthropic] Dropped orphaned serialized tool JSON from assistant context: {parsed_calls[0].get('name')}"
+                            )
+                            continue
                         continue
-                    continue
+                    else:
+                        entry["content"] = vis_text
         cleaned_normalized.append(entry)
 
     return cleaned_normalized, _extract_system_text(system), files_to_attach
@@ -241,10 +244,21 @@ def _build_messages(system, messages, file_mgr: TempFileManager):
 
 def _extract_text(agy_response) -> str:
     if isinstance(agy_response, dict):
-        return (
-            agy_response.get("text") or agy_response.get("content") or agy_response.get("response") or str(agy_response)
-        )
-    return str(agy_response)
+        if "text" in agy_response and isinstance(agy_response["text"], str):
+            return agy_response["text"]
+        if "content" in agy_response:
+            val = agy_response["content"]
+            if isinstance(val, str):
+                return val
+            if isinstance(val, list):
+                texts = [b.get("text", "") for b in val if isinstance(b, dict) and b.get("type") == "text"]
+                return "".join(texts)
+        if "response" in agy_response and isinstance(agy_response["response"], str):
+            return agy_response["response"]
+        return ""
+    if isinstance(agy_response, str):
+        return agy_response
+    return ""
 
 
 def _sse(event_type: str, data: dict) -> str:

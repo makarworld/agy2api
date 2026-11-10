@@ -867,6 +867,19 @@ async def list_pool_account_states() -> list:
     return await asyncio.to_thread(_list_pool_account_states_sync)
 
 
+def _delete_pool_account_state_sync(account_id: str) -> None:
+    conn = _conn()
+    try:
+        conn.execute("DELETE FROM pool_account_state WHERE account_id=?", (account_id,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+async def delete_pool_account_state(account_id: str) -> None:
+    await asyncio.to_thread(_delete_pool_account_state_sync, account_id)
+
+
 def _get_active_account_id_sync() -> Optional[str]:
     conn = _conn()
     try:

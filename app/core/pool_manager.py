@@ -312,9 +312,72 @@ def _hash_file(path: str) -> Optional[str]:
         return hashlib.sha256(f.read()).hexdigest()
 
 
+def _read_gemini_credentials() -> Tuple[Optional[str], Optional[str]]:
+    """Return (refresh_token, email) from live ~/.gemini session."""
+    gemini_home = _gemini_home()
+    refresh_token = None
+    email = None
+
+    g_acc_path = os.path.join(gemini_home, "google_accounts.json")
+    if os.path.exists(g_acc_path):
+        try:
+            with open(g_acc_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                email = data.get("active")
+        except Exception:
+            pass
+
+    oauth_path = os.path.join(gemini_home, "oauth_creds.json")
+    if os.path.exists(oauth_path):
+        try:
+            with open(oauth_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                refresh_token = data.get("refresh_token")
+                if not email and data.get("id_token"):
+                    parts = data["id_token"].split(".")
+                    if len(parts) >= 2:
+                        padded = parts[1] + "=" * ((4 - len(parts[1]) % 4) % 4)
+                        jwt = json.loads(base64.urlsafe_b64decode(padded.encode()).decode("utf-8"))
+                        email = jwt.get("email")
+        except Exception:
+            pass
+
+    if not refresh_token:
+        for fname in ("antigravity-cli/antigravity-oauth-token", "antigravity-oauth-token"):
+            anti_path = os.path.join(gemini_home, fname)
+            if os.path.exists(anti_path):
+                try:
+                    with open(anti_path, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                        token_obj = data.get("token") or {}
+                        refresh_token = token_obj.get("refresh_token")
+                        if refresh_token:
+                            break
+                except Exception:
+                    pass
+
+    return refresh_token, email
+
+
 def current_session_matches_pool() -> Optional[str]:
-    """Returns the account_id if the live ~/.gemini/oauth_creds.json matches an
-    existing pool snapshot exactly, else None."""
+    """Returns the account_id if the live ~/.gemini session matches an
+    existing pool account by refresh_token, email, or exact file hash."""
+    live_refresh, live_email = _read_gemini_credentials()
+
+    if live_refresh:
+        matched = account_store.find_account_by_refresh_token(live_refresh)
+        if matched:
+            return matched["id"]
+        for acc in list_accounts():
+            creds = account_store._read_pool_oauth_creds(os.path.join(_pool_dir(), "accounts", acc["id"]))
+            if creds and creds.get("refresh_token") == live_refresh:
+                return acc["id"]
+
+    if live_email:
+        acc_by_email = _find_account_by_email(live_email)
+        if acc_by_email:
+            return acc_by_email["id"]
+
     live_hash = _hash_file(os.path.join(_gemini_home(), "oauth_creds.json"))
     if not live_hash:
         return None
@@ -879,6 +942,30 @@ async def snapshot_current_session_to_account(label: str, proxy: Optional[str] =
     name = jwt.get("name")
     picture = jwt.get("picture")
 
+    creds = account_store._read_pool_oauth_creds(account_dir)
+    refresh_token = creds.get("refresh_token") if creds else None
+    if refresh_token:
+        dup = account_store.find_account_by_refresh_token(refresh_token)
+        if dup:
+            shutil.rmtree(account_dir, ignore_errors=True)
+            logger.info(
+                f"[pool] Snapshot matches existing account {dup['id']} ({dup.get('email')}), skipping duplicate creation"
+            )
+            return _find_account(dup["id"]) or {
+                "id": dup["id"],
+                "label": dup.get("name") or dup.get("email") or dup["id"],
+                "email": dup.get("email"),
+            }
+
+    if email:
+        existing_acc = _find_account_by_email(email)
+        if existing_acc:
+            shutil.rmtree(account_dir, ignore_errors=True)
+            logger.info(
+                f"[pool] Snapshot matches existing email {email} ({existing_acc['id']}), skipping duplicate creation"
+            )
+            return existing_acc
+
     manifest = _load_manifest()
     record = {
         "id": account_id,
@@ -910,6 +997,25 @@ async def delete_account(account_id: str) -> None:
     if os.path.isdir(account_dir):
         shutil.rmtree(account_dir, ignore_errors=True)
 
+    _MODEL_COOLDOWNS.pop(account_id, None)
+    for k in list(_SESSION_AFFINITY.keys()):
+        if _SESSION_AFFINITY[k][0] == account_id:
+            _SESSION_AFFINITY.pop(k, None)
+
+    oauth_refresh.clear_quota_summary_cache()
+    await stats_store.delete_pool_account_state(account_id)
+
+    global _active_account_id
+    if _active_account_id == account_id:
+        remaining = list_accounts()
+        if remaining:
+            new_active_id = remaining[0]["id"]
+            _active_account_id = new_active_id
+            await stats_store.set_active_account_id_db(new_active_id)
+        else:
+            _active_account_id = None
+            await stats_store.set_active_account_id_db(None)
+
 
 async def dedupe_accounts_by_email() -> List[str]:
     """Collapses accounts that resolve to the same Google email, keeping the most
@@ -932,11 +1038,13 @@ async def dedupe_accounts_by_email() -> List[str]:
     manifest["accounts"] = [a for a in manifest.get("accounts", []) if a["id"] not in removed]
     _save_manifest(manifest)
 
-    # The credential snapshots are deliberately left on disk -- dropping them from
-    # the manifest is enough to stop rotation using them, and keeping the files
-    # makes an accidental dedupe recoverable by hand.
     for account_id in removed:
-        logger.info(f"[pool] Dropped duplicate account {account_id} from manifest")
+        account_store.delete_account(account_id)
+        account_dir = os.path.join(_pool_dir(), "accounts", account_id)
+        if os.path.isdir(account_dir):
+            shutil.rmtree(account_dir, ignore_errors=True)
+        await stats_store.delete_pool_account_state(account_id)
+        logger.info(f"[pool] Dropped duplicate account {account_id} from manifest, store, and disk")
     return removed
 
 

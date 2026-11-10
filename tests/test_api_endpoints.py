@@ -105,6 +105,49 @@ class TestApiEndpoints(unittest.TestCase):
         self.assertEqual(data["usage"]["input_tokens"], 12)
         self.assertEqual(data["usage"]["output_tokens"], 4)
 
+    @patch("app.api.anthropic_routes.run_completion", new_callable=AsyncMock)
+    def test_anthropic_non_stream_tool_calls_no_dict_text_leak(self, mock_run):
+        mock_run.return_value = {
+            "text": "",
+            "usage": {
+                "input_tokens": 100,
+                "output_tokens": 15,
+                "thinking_tokens": 0,
+                "total_tokens": 115,
+                "cache_read_tokens": 0,
+            },
+            "tool_calls": [
+                {
+                    "id": "toolu_123",
+                    "name": "Read",
+                    "input": {"file_path": "test.py"},
+                }
+            ],
+            "stop_reason": "tool_use",
+        }
+
+        payload = {
+            "model": "claude-3-5-sonnet",
+            "messages": [{"role": "user", "content": "Read test.py"}],
+            "max_tokens": 1024,
+            "stream": False,
+        }
+        resp = self.client.post(
+            "/anthropic/v1/messages",
+            json=payload,
+            headers={
+                "x-api-key": API_KEY,
+                "anthropic-version": "2023-06-01",
+            },
+        )
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertEqual(data["stop_reason"], "tool_use")
+        # Must NOT contain a text block with Python dictionary representation
+        self.assertEqual(len(data["content"]), 1)
+        self.assertEqual(data["content"][0]["type"], "tool_use")
+        self.assertEqual(data["content"][0]["name"], "Read")
+
     def test_audio_voices_endpoint(self):
         resp = self.client.get("/v1/audio/voices", headers=self.headers)
         self.assertEqual(resp.status_code, 200)

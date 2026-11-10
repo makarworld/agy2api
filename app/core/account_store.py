@@ -1,12 +1,13 @@
 import json
 import logging
 import os
+import shutil
 import sqlite3
 import time
 from typing import Any, Dict, List, Optional
 
 from app.core.db import DATA_DIR, DB_PATH, get_connection
-from app.core.paths import get_accounts_json_path
+from app.core.paths import get_accounts_json_path, get_pool_dir
 
 logger = logging.getLogger(__name__)
 
@@ -440,8 +441,9 @@ def _read_pool_oauth_creds(account_dir: str) -> Optional[Dict[str, Any]]:
 
 
 def sync_accounts_from_pool_manifest(pool_dir: Optional[str] = None) -> int:
-    """Import accounts from legacy ~/.agy2api-pool manifest + credential snapshots."""
-    pool_path = pool_dir or os.path.expanduser(os.environ.get("AGY_POOL_DIR", "~/.agy2api-pool"))
+    """Import accounts from legacy ~/.agy2api-pool manifest + credential snapshots.
+    Automatically prunes any duplicate entries whose refresh token already exists in SQLite."""
+    pool_path = pool_dir or get_pool_dir()
     manifest_path = os.path.join(pool_path, "accounts.json")
     if not os.path.exists(manifest_path):
         return 0
@@ -454,6 +456,7 @@ def sync_accounts_from_pool_manifest(pool_dir: Optional[str] = None) -> int:
         return 0
 
     count = 0
+    to_remove_ids: list[str] = []
     init_accounts_table()
     for item in manifest.get("accounts", []):
         if not isinstance(item, dict):
@@ -476,9 +479,25 @@ def sync_accounts_from_pool_manifest(pool_dir: Optional[str] = None) -> int:
                 picture=str(item.get("picture") or ""),
             )
         except ValueError as exc:
-            logger.warning(f"[account_store] Skipping pool account {acc_id}: {exc}")
+            logger.warning(f"[account_store] Skipping duplicate pool account {acc_id}: {exc}")
+            to_remove_ids.append(acc_id)
             continue
         count += 1
+
+    if to_remove_ids:
+        manifest["accounts"] = [a for a in manifest.get("accounts", []) if a.get("id") not in to_remove_ids]
+        try:
+            with open(manifest_path, "w", encoding="utf-8") as f:
+                json.dump(manifest, f, indent=2, ensure_ascii=False)
+            for dead_id in to_remove_ids:
+                dead_dir = os.path.join(pool_path, "accounts", dead_id)
+                if os.path.isdir(dead_dir):
+                    shutil.rmtree(dead_dir, ignore_errors=True)
+            logger.info(
+                f"[account_store] Pruned {len(to_remove_ids)} duplicate accounts from manifest and disk: {to_remove_ids}"
+            )
+        except Exception as e:
+            logger.warning(f"[account_store] Failed to prune duplicates from manifest: {e}")
 
     if count:
         logger.info(f"[account_store] Imported {count} accounts from pool manifest {manifest_path}")

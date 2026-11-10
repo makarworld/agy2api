@@ -643,6 +643,7 @@ async def stream_completion(
     auth_retried = False
     yielded_any_content = False
     prompt_too_long_retries = 0
+    net_retries = 0
 
     while True:
         contents = messages_to_gemini_contents(messages, trim_aggressive=trim_aggressive)
@@ -887,6 +888,16 @@ async def stream_completion(
                         continue
                     except Exception:
                         pass
+
+                if not yielded_any_content and net_retries < 2:
+                    net_retries += 1
+                    sleep_s = 0.5 * net_retries
+                    logger.info(
+                        f"[http] Retrying network connection on account={account_id} in {sleep_s}s (attempt {net_retries}/2): {net_err}"
+                    )
+                    await asyncio.sleep(sleep_s)
+                    continue
+
                 raise
 
         for item in _flush_thoughts():
