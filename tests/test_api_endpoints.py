@@ -206,6 +206,71 @@ class TestApiEndpoints(unittest.TestCase):
 
         asyncio.run(run_test())
 
+    @patch("app.core.pool_manager.acquire_http_account", new_callable=AsyncMock)
+    @patch("app.core.agy_http_client.get_access_token", new_callable=AsyncMock)
+    @patch("app.core.agy_http_client._get_project_id", new_callable=AsyncMock)
+    def test_stream_completion_network_retry_before_content(self, mock_proj, mock_token, mock_acquire):
+        from app.core.agy_http_client import stream_completion
+
+        mock_acquire.side_effect = [
+            ("test-acc", None, "test-token"),
+            RuntimeError("All pool accounts are rate-limited or unhealthy"),
+        ]
+        mock_token.return_value = "test-token"
+        mock_proj.return_value = "test-proj"
+
+        async def run_test():
+            attempt = 0
+
+            class MockResponse:
+                status_code = 200
+
+                async def aiter_lines(self):
+                    yield 'data: {"response": {"candidates": [{"content": {"parts": [{"text": "Success after retry"}]}}]}}'
+
+            class MockStreamContext:
+                def __init__(self, should_fail):
+                    self.should_fail = should_fail
+
+                async def __aenter__(self):
+                    if self.should_fail:
+                        raise httpx.ConnectError("Connection refused")
+                    return MockResponse()
+
+                async def __aexit__(self, exc_type, exc_val, exc_tb):
+                    pass
+
+            class MockClientInstance:
+                def stream(self, *args, **kwargs):
+                    nonlocal attempt
+                    attempt += 1
+                    return MockStreamContext(should_fail=(attempt == 1))
+
+                async def __aenter__(self):
+                    return self
+
+                async def __aexit__(self, exc_type, exc_val, exc_tb):
+                    pass
+
+            with (
+                patch("httpx.AsyncClient", return_value=MockClientInstance()),
+                patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep,
+            ):
+                chunks = []
+                async for piece in stream_completion(
+                    messages=[{"role": "user", "content": "hello"}],
+                    model="gemini-2.5-flash",
+                ):
+                    chunks.append(piece)
+
+                self.assertEqual(attempt, 2)
+                mock_sleep.assert_called_once()
+                self.assertTrue(any(c.get("delta") == "Success after retry" for c in chunks))
+
+        import asyncio
+
+        asyncio.run(run_test())
+
     @patch("app.api.routes.stream_agy_completion")
     def test_chat_completions_stream_midstream_error_raises(self, mock_stream):
         async def failing_stream(*args, **kwargs):
