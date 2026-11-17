@@ -88,7 +88,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="AGY OpenAI API Wrapper",
     description="An OpenAI compatible API wrapper for Antigravity CLI",
-    version="1.0.0",
+    version="1.3.0",
     lifespan=lifespan,
 )
 
@@ -116,6 +116,21 @@ async def anthropic_style_http_exception_handler(request: Request, exc: HTTPExce
             },
         )
     return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception):
+    logger.error(f"Unhandled exception on {request.method} {request.url.path}: {exc}", exc_info=True)
+    err_msg = str(exc) or type(exc).__name__
+    if request.url.path.startswith("/anthropic/"):
+        return JSONResponse(
+            status_code=502,
+            content={
+                "type": "error",
+                "error": {"type": "api_error", "message": f"Upstream error: {err_msg}"},
+            },
+        )
+    return JSONResponse(status_code=500, content={"detail": err_msg})
 
 
 @app.middleware("http")

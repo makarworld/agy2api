@@ -1366,7 +1366,7 @@ async def acquire_http_account(
                     diag = await get_pool_diagnostics(model=model)
                     err_detail = f"All pool accounts are rate-limited or unhealthy ({diag})"
                     if last_error:
-                        err_detail += f"; last refresh error: {last_error}"
+                        err_detail += f"; original error: {type(last_error).__name__}: {last_error}"
                     raise RuntimeError(err_detail)
                 account = account_store.get_account_by_id(selected["id"])
                 if account is None:
@@ -1391,18 +1391,17 @@ async def acquire_http_account(
                         )
                     else:
                         logger.warning(f"[pool] Account {account_id} token refresh failed: {exc}")
-                        all_ids = {a["id"] for a in account_store.get_all_accounts()}
-                        if not (all_ids - active_exclude):
-                            existing_token = (account.get("access_token") or "").strip()
-                            if existing_token:
-                                logger.warning(
-                                    f"[pool] Account {account_id} token refresh failed, but using existing access_token as fallback: {exc}"
-                                )
-                                global _active_account_id
-                                _active_account_id = account_id
-                                await stats_store.set_active_account_id_db(account_id)
-                                account_store.mark_account_used(account_id)
-                                return account_id, proxy, existing_token
+                        existing_token = (account.get("access_token") or "").strip()
+                        expiry_ts = float(account.get("token_expiry") or 0)
+                        if existing_token and (expiry_ts <= 0 or expiry_ts > time.time() - 300):
+                            logger.warning(
+                                f"[pool] Account {account_id} token refresh failed ({exc}), but using existing access_token as fallback"
+                            )
+                            global _active_account_id
+                            _active_account_id = account_id
+                            await stats_store.set_active_account_id_db(account_id)
+                            account_store.mark_account_used(account_id)
+                            return account_id, proxy, existing_token
 
                         await stats_store.upsert_pool_account_state(
                             account_id, status="cooldown", cooldown_until=time.time() + 15
@@ -1431,7 +1430,7 @@ async def acquire_http_account(
                 diag = await get_pool_diagnostics(model=model)
                 err_detail = f"All pool accounts are rate-limited or unhealthy ({diag})"
                 if last_error:
-                    err_detail += f"; last refresh error: {last_error}"
+                    err_detail += f"; original error: {type(last_error).__name__}: {last_error}"
                 raise RuntimeError(err_detail)
 
             proxy = get_google_proxy(account.get("proxy"))

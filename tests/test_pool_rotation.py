@@ -1,7 +1,9 @@
 import asyncio
+import time
 import unittest
 from unittest.mock import AsyncMock, patch
 
+import httpx
 from app.core import pool_manager
 
 
@@ -120,6 +122,41 @@ class TestPoolRotationReasons(unittest.TestCase):
                 self.assertNotIn("hash1", pool_manager._SESSION_AFFINITY)
                 self.assertEqual(pool_manager.get_active_account_id(), "acc-remaining")
                 mock_set_active.assert_called_once_with("acc-remaining")
+
+        asyncio.run(_run())
+
+    def test_acquire_http_account_refresh_failure_uses_fallback_with_multi_accounts(self):
+        async def _run():
+            now = time.time()
+            acc1 = {
+                "id": "acc-1",
+                "access_token": "token-1",
+                "token_expiry": now + 1800,
+                "proxy": None,
+            }
+            acc2 = {
+                "id": "acc-2",
+                "access_token": "token-2",
+                "token_expiry": now + 1800,
+                "proxy": None,
+            }
+            with (
+                patch.object(pool_manager.account_store, "has_accounts", return_value=True),
+                patch.object(pool_manager, "select_next_healthy_account", new=AsyncMock(return_value={"id": "acc-1"})),
+                patch.object(pool_manager.account_store, "get_account_by_id", return_value=acc1),
+                patch.object(pool_manager.account_store, "get_all_accounts", return_value=[acc1, acc2]),
+                patch.object(pool_manager.account_store, "mark_account_used"),
+                patch.object(pool_manager.stats_store, "set_active_account_id_db", new=AsyncMock()),
+                patch.object(
+                    pool_manager,
+                    "_ensure_oauth_fresh",
+                    new=AsyncMock(side_effect=httpx.ConnectError("Network timeout")),
+                ),
+            ):
+                account_id, proxy, token = await pool_manager.acquire_http_account()
+                # Should stay on acc-1 using its valid fallback token, not rotating to acc-2!
+                self.assertEqual(account_id, "acc-1")
+                self.assertEqual(token, "token-1")
 
         asyncio.run(_run())
 

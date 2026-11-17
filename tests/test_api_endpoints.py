@@ -360,6 +360,28 @@ class TestApiEndpoints(unittest.TestCase):
         self.assertEqual(normalized[1]["tool_calls"][0]["name"], "Bash")
         self.assertEqual(normalized[1]["tool_calls"][0]["input"], {"command": "pwd"})
 
+    @patch("app.api.anthropic_routes.stream_agy_completion")
+    def test_anthropic_stream_start_error_returns_sse_error_event(self, mock_stream):
+        async def failing_stream_at_start(*args, **kwargs):
+            raise RuntimeError("All pool accounts are rate-limited or unhealthy (acc-1 (status=exhausted))")
+            yield {"delta": "never"}
+
+        mock_stream.side_effect = failing_stream_at_start
+
+        payload = {
+            "model": "claude-3-5-sonnet",
+            "messages": [{"role": "user", "content": "Hi"}],
+            "stream": True,
+        }
+        resp = self.client.post(
+            "/anthropic/v1/messages",
+            json=payload,
+            headers={"x-api-key": API_KEY, "anthropic-version": "2023-06-01"},
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("event: error", resp.text)
+        self.assertIn("All pool accounts are rate-limited", resp.text)
+
 
 if __name__ == "__main__":
     unittest.main()

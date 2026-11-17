@@ -499,6 +499,15 @@ async def _stream_response(
             raw_response=trace.raw_response_str if trace else None,
             response_status=trace.response_status if trace and trace.response_status is not None else 500,
         )
+        if not assistant_chunks and not tool_calls_collected:
+            yield _sse(
+                "error",
+                {
+                    "type": "error",
+                    "error": {"type": "api_error", "message": f"Upstream error: {err_str}"},
+                },
+            )
+            return
         raise
 
     assistant_text = "".join(assistant_chunks)

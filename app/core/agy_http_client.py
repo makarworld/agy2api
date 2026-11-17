@@ -786,7 +786,7 @@ async def stream_completion(
                                 max_input_tokens,
                             )
                         else:
-                            if account_id:
+                            if account_id and response.status_code >= 500:
                                 await pool_manager.mark_failure(account_id)
                             raise RuntimeError(f"streamGenerateContent failed (HTTP {response.status_code}): {detail}")
                     else:
@@ -868,38 +868,26 @@ async def stream_completion(
                     logger.error(
                         f"[http] network error after stream started (account={account_id}). Dropping stream to trigger clean client retry: {net_err}"
                     )
-                    raise RuntimeError(f"Network error mid-stream: {net_err}") from net_err
+                    raise RuntimeError(f"Network error mid-stream ({type(net_err).__name__}): {net_err}") from net_err
 
-                logger.warning(
-                    f"[http] rotating account={account_id} model={backend_model} "
-                    f"endpoint=streamGenerateContent reason=network next=select: {net_err}"
-                )
-                if account_id:
-                    previous_account_id = account_id
-                    excluded.add(account_id)
-                    try:
-                        account_id, proxy, access_token = await pool_manager.acquire_http_account(
-                            exclude=excluded, model=backend_model
-                        )
-                        logger.info(
-                            f"[http] rotation complete previous={previous_account_id} next={account_id} model={backend_model} "
-                            "endpoint=streamGenerateContent reason=network"
-                        )
-                        project_id = await _get_project_id(access_token, account_id=account_id, proxy=proxy)
-                        continue
-                    except Exception:
-                        pass
-
+                # Network error before any content was yielded:
+                # Do NOT rotate account! Network glitches are transient host/proxy/upstream network issues,
+                # not an account fault. Rotating accounts burns valid accounts and breaks session affinity.
                 if not yielded_any_content and net_retries < 2:
                     net_retries += 1
                     sleep_s = 0.5 * net_retries
-                    logger.info(
-                        f"[http] Retrying network connection on account={account_id} in {sleep_s}s (attempt {net_retries}/2): {net_err}"
+                    logger.warning(
+                        f"[http] Network error on account={account_id} ({type(net_err).__name__}: {net_err}), retrying on SAME account in {sleep_s}s (attempt {net_retries}/2)"
                     )
                     await asyncio.sleep(sleep_s)
                     continue
 
-                raise
+                logger.error(
+                    f"[http] Network error on account={account_id} ({type(net_err).__name__}: {net_err}) after {net_retries} retries"
+                )
+                raise RuntimeError(
+                    f"Upstream network error ({type(net_err).__name__}): {net_err} (account: {account_id or 'none'})"
+                ) from net_err
 
         for item in _flush_thoughts():
             full_text += item["delta"]
